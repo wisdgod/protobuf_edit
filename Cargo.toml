@@ -1,0 +1,25 @@
+[package]
+name = "protobuf_edit"
+version = "0.1.0"
+edition = "2024"
+authors = ["wisdgod <nav@wisdgod.com>"]
+description = "A low-level, high-performance library for inspecting and editing raw Protocol Buffers binary data without a schema."
+license = "Apache-2.0"
+repository = "https://github.com/wisdgod/protobuf_edit"
+readme = "README.md"
+homepage = "https://github.com/wisdgod/protobuf_edit"
+documentation = "https://docs.rs/protobuf_edit"
+keywords = ["protobuf", "protocol-buffers", "binary", "parser", "no-schema"]
+categories = ["parser-implementations", "encoding", "development-tools::debugging"]
+
+[features]
+default = ["nightly"]
+nightly = ["hashbrown/nightly", "rustc-hash/nightly", "smallvec/may_dangle"]
+group = []
+# for tests
+__std = []
+
+[dependencies]
+hashbrown = { version = "0.16.1", default-features = false, features = ["inline-more"] }
+rustc-hash = { version = "2.1.1", default-features = false }
+smallvec = { version = "1.15.1", features = ["union", "const_generics", "const_new", "specialization"] }

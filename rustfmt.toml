@@ -1,0 +1,11 @@
+style_edition = "2024"
+use_small_heuristics = "Max"
+merge_derives = false
+reorder_modules = false
+reorder_imports = false
+imports_granularity = "Module"
+use_field_init_shorthand = true
+# fn_single_line = true
+# where_single_line = true
+# single_line_if_else_max_width = 100
+# single_line_let_else_max_width = 100
