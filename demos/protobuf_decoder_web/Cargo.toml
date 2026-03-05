@@ -1,0 +1,71 @@
+[package]
+name = "protobuf-decoder-web"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+protobuf_edit = { path = "../..", features = ["nightly"] }
+rustc-hash = { version = "2.1", features = ["nightly"] }
+
+# Leptos (CSR)
+leptos = { version = "0.8", features = ["csr", "nightly"] }
+js-sys = "0.3"
+
+# Browser logging
+tracing = "0.1"
+tracing-subscriber = "0.3"
+tracing-subscriber-wasm = "0.1"
+wasm-bindgen = "0.2"
+wasm-bindgen-futures = "0.4"
+
+# Utilities
+leptos-use = "0.18"
+web-sys = { version = "0.3", features = [
+  "Blob",
+  "Clipboard",
+  "DataTransfer",
+  "Document",
+  "DomException",
+  "DomRect",
+  "DragEvent",
+  "Event",
+  "File",
+  "FileList",
+  "FileReader",
+  "HtmlAnchorElement",
+  "HtmlElement",
+  "HtmlInputElement",
+  "HtmlSelectElement",
+  "HtmlTextAreaElement",
+  "IdbDatabase",
+  "IdbFactory",
+  "IdbObjectStore",
+  "IdbOpenDbRequest",
+  "IdbRequest",
+  "IdbTransaction",
+  "IdbTransactionMode",
+  "KeyboardEvent",
+  "Location",
+  "MouseEvent",
+  "Navigator",
+  "ReadableStream",
+  "ReadableWritablePair",
+  "Response",
+  "Storage",
+  "Url",
+  "Window",
+] }
+
+# Hex / Base64 input parsing
+base64 = "0.22"
+hex = "0.4"
+
+[profile.release]
+opt-level = "z"
+lto = true
+codegen-units = 1
+trim-paths = "all"

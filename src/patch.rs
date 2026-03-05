@@ -8,11 +8,20 @@
 use alloc::vec::Vec;
 use core::cell::Cell;
 use core::fmt;
-use core::iter::FusedIterator;
 use core::marker::PhantomData;
 use core::ops::{Deref, DerefMut};
 
+use crate::document::{RawVarint32, RawVarint64};
+use crate::fx::FxHashMap;
 use crate::{Buf, Tag, TreeError, WireType};
+
+mod parse;
+mod query;
+mod save;
+mod txn;
+
+pub use query::FieldsByTag;
+pub use txn::Txn;
 
 define_valid_range_type!(
     /// Unique field identifier inside a `Patch`.
@@ -113,6 +122,109 @@ pub enum ValueSpans {
     },
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct StoredSpans {
+    field: Span,
+    tag_len: u8,
+    aux_len: u8,
+    payload_len: u32,
+}
+
+impl StoredSpans {
+    #[inline]
+    fn tag_span(self) -> Result<Span, TreeError> {
+        let start = self.field.start();
+        let end = start.checked_add(self.tag_len as u32).ok_or(TreeError::CapacityExceeded)?;
+        Span::new(start, end).ok_or(TreeError::DecodeError)
+    }
+
+    #[inline]
+    fn expand(self, wire: WireType) -> Result<FieldSpans, TreeError> {
+        Ok(FieldSpans { field: self.field, tag: self.tag_span()?, value: self.value_spans(wire)? })
+    }
+
+    #[inline]
+    fn value_spans(self, wire: WireType) -> Result<ValueSpans, TreeError> {
+        match wire {
+            WireType::Varint => {
+                let start = self.field.start();
+                let value_start =
+                    start.checked_add(self.tag_len as u32).ok_or(TreeError::CapacityExceeded)?;
+                let value =
+                    Span::new(value_start, self.field.end()).ok_or(TreeError::DecodeError)?;
+                Ok(ValueSpans::Varint { value })
+            }
+            WireType::I32 => {
+                let end = self.field.end();
+                let start = end.checked_sub(4).ok_or(TreeError::DecodeError)?;
+                let value = Span::new(start, end).ok_or(TreeError::DecodeError)?;
+                Ok(ValueSpans::I32 { value })
+            }
+            WireType::I64 => {
+                let end = self.field.end();
+                let start = end.checked_sub(8).ok_or(TreeError::DecodeError)?;
+                let value = Span::new(start, end).ok_or(TreeError::DecodeError)?;
+                Ok(ValueSpans::I64 { value })
+            }
+            WireType::Len => {
+                let start = self.field.start();
+                let len_start =
+                    start.checked_add(self.tag_len as u32).ok_or(TreeError::CapacityExceeded)?;
+                let len_end = len_start
+                    .checked_add(self.aux_len as u32)
+                    .ok_or(TreeError::CapacityExceeded)?;
+                let len = Span::new(len_start, len_end).ok_or(TreeError::DecodeError)?;
+
+                let payload_start = len_end;
+                let payload_end = payload_start
+                    .checked_add(self.payload_len)
+                    .ok_or(TreeError::CapacityExceeded)?;
+                let payload =
+                    Span::new(payload_start, payload_end).ok_or(TreeError::DecodeError)?;
+                debug_assert_eq!(payload_end, self.field.end());
+                Ok(ValueSpans::Len { len, payload })
+            }
+            #[cfg(feature = "group")]
+            WireType::SGroup => {
+                let start = self.field.start();
+                let body_start =
+                    start.checked_add(self.tag_len as u32).ok_or(TreeError::CapacityExceeded)?;
+                let body_end = self
+                    .field
+                    .end()
+                    .checked_sub(self.aux_len as u32)
+                    .ok_or(TreeError::DecodeError)?;
+                let body = Span::new(body_start, body_end).ok_or(TreeError::DecodeError)?;
+                let end_tag =
+                    Span::new(body_end, self.field.end()).ok_or(TreeError::DecodeError)?;
+                Ok(ValueSpans::Group { body, end_tag })
+            }
+            #[cfg(feature = "group")]
+            WireType::EGroup => Err(TreeError::DecodeError),
+        }
+    }
+
+    #[inline]
+    fn payload_span(self, wire: WireType) -> Result<Span, TreeError> {
+        match wire {
+            WireType::Len => {
+                let ValueSpans::Len { payload, .. } = self.value_spans(wire)? else {
+                    return Err(TreeError::DecodeError);
+                };
+                Ok(payload)
+            }
+            #[cfg(feature = "group")]
+            WireType::SGroup => {
+                let ValueSpans::Group { body, .. } = self.value_spans(wire)? else {
+                    return Err(TreeError::DecodeError);
+                };
+                Ok(body)
+            }
+            _ => Err(TreeError::WireTypeMismatch),
+        }
+    }
+}
+
 /// Span-aware message patch rooted at a source buffer.
 ///
 /// `Patch::from_bytes` clones the input bytes into an owned `Buf`. For a
@@ -177,42 +289,19 @@ impl ReadCache {
     }
 }
 
-#[derive(Clone, Copy)]
-struct MessageSaveInfo {
-    len: u32,
-    dirty: bool,
-}
-
-struct SavePlan {
-    messages: Vec<Option<MessageSaveInfo>>,
-}
-
-impl SavePlan {
-    fn new(messages_len: usize) -> Result<Self, TreeError> {
-        let mut messages = Vec::new();
-        messages.try_reserve(messages_len).map_err(|_| TreeError::CapacityExceeded)?;
-        messages.resize(messages_len, None);
-        Ok(Self { messages })
-    }
-
-    fn get(&self, msg: MessageId) -> Result<Option<MessageSaveInfo>, TreeError> {
-        let idx = msg.as_inner() as usize;
-        Ok(*self.messages.get(idx).ok_or(TreeError::DecodeError)?)
-    }
-
-    fn set(&mut self, msg: MessageId, info: MessageSaveInfo) -> Result<(), TreeError> {
-        let idx = msg.as_inner() as usize;
-        let slot = self.messages.get_mut(idx).ok_or(TreeError::DecodeError)?;
-        *slot = Some(info);
-        Ok(())
-    }
-}
-
 #[derive(Clone)]
 struct MessageNode {
     source: MessageSource,
     parent_field: Option<FieldId>,
     fields_in_order: Vec<FieldId>,
+    query: FxHashMap<Tag, TagBucket>,
+}
+
+#[derive(Clone, Copy, Default)]
+struct TagBucket {
+    head: Option<FieldId>,
+    tail: Option<FieldId>,
+    len: u32,
 }
 
 #[derive(Clone)]
@@ -238,15 +327,31 @@ impl MessageSource {
 struct FieldNode {
     msg: MessageId,
     tag: Tag,
-    spans: Option<FieldSpans>,
+    prev_by_tag: Option<FieldId>,
+    next_by_tag: Option<FieldId>,
+    raw_tag: RawVarint32,
+    spans: Option<StoredSpans>,
     edit: Option<PayloadEdit>,
     child: Option<MessageId>,
     deleted: bool,
 }
 
+#[derive(Clone, Copy)]
+struct VarintEdit {
+    value: u64,
+    raw: RawVarint64,
+}
+
+impl VarintEdit {
+    #[inline]
+    fn new(value: u64) -> Self {
+        Self { value, raw: RawVarint64::from_u64(value) }
+    }
+}
+
 #[derive(Clone)]
 enum PayloadEdit {
-    Varint(u64),
+    Varint(VarintEdit),
     I32(u32),
     I64(u64),
     Bytes(Buf),
@@ -292,41 +397,6 @@ impl DerefMut for BorrowedPatch<'_> {
     }
 }
 
-/// Iterates over fields in `msg` that match `tag`.
-#[derive(Clone)]
-pub struct FieldsByTag<'a> {
-    patch: &'a Patch,
-    tag: Tag,
-    remaining: &'a [FieldId],
-}
-
-impl Iterator for FieldsByTag<'_> {
-    type Item = FieldId;
-
-    #[inline]
-    fn next(&mut self) -> Option<Self::Item> {
-        while let Some((&field, rest)) = self.remaining.split_first() {
-            self.remaining = rest;
-            let idx = field.as_inner() as usize;
-            let Some(node) = self.patch.fields.get(idx) else {
-                debug_assert!(false, "FieldsByTag iterator field id out of bounds");
-                continue;
-            };
-            if node.tag == self.tag {
-                return Some(field);
-            }
-        }
-        None
-    }
-
-    #[inline]
-    fn size_hint(&self) -> (usize, Option<usize>) {
-        (0, Some(self.remaining.len()))
-    }
-}
-
-impl FusedIterator for FieldsByTag<'_> {}
-
 #[derive(Clone)]
 enum UndoAction {
     FieldEdit { field: FieldId, prev: Option<PayloadEdit> },
@@ -343,31 +413,6 @@ struct TxnState {
 }
 
 impl Patch {
-    pub fn from_bytes(data: &[u8]) -> Result<Self, TreeError> {
-        let mut source = Buf::new();
-        source.extend_from_slice(data)?;
-        Self::from_buf(source)
-    }
-
-    pub fn from_buf(source: Buf) -> Result<Self, TreeError> {
-        let source_len = source.len() as usize;
-        let Some(end) = u32::try_from(source_len).ok() else {
-            return Err(TreeError::CapacityExceeded);
-        };
-
-        let mut out = Self {
-            root: MessageId::MIN,
-            source,
-            messages: Vec::new(),
-            fields: Vec::new(),
-            read_cache: ReadCache::default(),
-            txn: None,
-        };
-        let root = out.parse_message_node(MessageSource::Root { start: 0, end }, None)?;
-        out.root = root;
-        Ok(out)
-    }
-
     /// Enables per-field caches for read APIs.
     ///
     /// When enabled, `Patch::varint` memoizes decoded values from the message source bytes.
@@ -445,13 +490,14 @@ impl Patch {
         Ok(self.message(msg)?.fields_in_order.as_slice())
     }
 
-    pub fn fields_by_tag(&self, msg: MessageId, tag: Tag) -> Result<FieldsByTag<'_>, TreeError> {
-        let msg = self.message(msg)?;
-        Ok(FieldsByTag { patch: self, tag, remaining: msg.fields_in_order.as_slice() })
-    }
-
     pub fn field_tag(&self, field: FieldId) -> Result<Tag, TreeError> {
         Ok(self.field(field)?.tag)
+    }
+
+    /// Returns whether `field` is currently marked deleted.
+    #[inline]
+    pub fn field_is_deleted(&self, field: FieldId) -> Result<bool, TreeError> {
+        Ok(self.field(field)?.deleted)
     }
 
     pub fn field_parent_message(&self, field: FieldId) -> Result<MessageId, TreeError> {
@@ -459,7 +505,11 @@ impl Patch {
     }
 
     pub fn field_spans(&self, field: FieldId) -> Result<Option<FieldSpans>, TreeError> {
-        Ok(self.field(field)?.spans)
+        let node = self.field(field)?;
+        let Some(spans) = node.spans else {
+            return Ok(None);
+        };
+        Ok(Some(spans.expand(node.tag.wire_type())?))
     }
 
     /// Returns field spans mapped to absolute root-source coordinates.
@@ -474,10 +524,11 @@ impl Patch {
             return Ok(None);
         };
         let base = msg_span.start();
+        let expanded = spans.expand(node.tag.wire_type())?;
         let out = FieldSpans {
-            field: span_offset_by(spans.field, base)?,
-            tag: span_offset_by(spans.tag, base)?,
-            value: value_spans_offset_by(spans.value, base)?,
+            field: span_offset_by(expanded.field, base)?,
+            tag: span_offset_by(expanded.tag, base)?,
+            value: value_spans_offset_by(expanded.value, base)?,
         };
         Ok(Some(out))
     }
@@ -549,7 +600,7 @@ impl Patch {
         if tag.wire_type() != WireType::Varint {
             return Err(TreeError::WireTypeMismatch);
         }
-        self.insert_field_with_edit(msg, tag, PayloadEdit::Varint(value))
+        self.insert_field_with_edit(msg, tag, PayloadEdit::Varint(VarintEdit::new(value)))
     }
 
     pub fn insert_i32_bits(
@@ -598,7 +649,7 @@ impl Patch {
         if node.tag.wire_type() != WireType::Varint {
             return Err(TreeError::WireTypeMismatch);
         }
-        let prev_edit = node.edit.replace(PayloadEdit::Varint(value));
+        let prev_edit = node.edit.replace(PayloadEdit::Varint(VarintEdit::new(value)));
         if let Some(state) = txn.as_mut() {
             state.undo_log.push(UndoAction::FieldEdit { field, prev: prev_edit });
         }
@@ -652,72 +703,13 @@ impl Patch {
         Ok(())
     }
 
-    pub fn parse_child_message(&mut self, field: FieldId) -> Result<MessageId, TreeError> {
-        let node = self.field(field)?;
-        match node.tag.wire_type() {
-            WireType::Len => {}
-            #[cfg(feature = "group")]
-            WireType::SGroup => {}
-            _ => return Err(TreeError::WireTypeMismatch),
-        }
-
-        let parent_msg = node.msg;
-        if let Some(existing) = node.child {
-            return Ok(existing);
-        }
-
-        let parent_msg_source = self.message(parent_msg)?.source.clone();
-        let child_source = match (node.edit.as_ref(), node.spans) {
-            (Some(PayloadEdit::Bytes(buf)), _spans) => MessageSource::Owned { bytes: buf.clone() },
-            (Some(_), _spans) => return Err(TreeError::WireTypeMismatch),
-            (None, Some(spans)) => {
-                let payload_span = match spans.value {
-                    ValueSpans::Len { payload, .. } => payload,
-                    #[cfg(feature = "group")]
-                    ValueSpans::Group { body, .. } => body,
-                    _ => return Err(TreeError::WireTypeMismatch),
-                };
-
-                let parent_bytes = self.message_bytes(parent_msg)?;
-                let payload_bytes = slice_span(parent_bytes, payload_span)?;
-                match parent_msg_source {
-                    MessageSource::Root { start, .. } => {
-                        let start = start
-                            .checked_add(payload_span.start())
-                            .ok_or(TreeError::CapacityExceeded)?;
-                        let end = start
-                            .checked_add(payload_span.len())
-                            .ok_or(TreeError::CapacityExceeded)?;
-                        MessageSource::Root { start, end }
-                    }
-                    MessageSource::Owned { .. } => {
-                        let mut bytes = Buf::new();
-                        bytes.extend_from_slice(payload_bytes)?;
-                        MessageSource::Owned { bytes }
-                    }
-                }
-            }
-            (None, None) => return Err(TreeError::DecodeError),
-        };
-
-        let child = self.parse_message_node(child_source, Some(field))?;
-        let idx = field.as_inner() as usize;
-        let Patch { txn, fields, .. } = self;
-        let node = fields.get_mut(idx).ok_or(TreeError::DecodeError)?;
-        let prev_child = node.child.replace(child);
-        if let Some(state) = txn.as_mut() {
-            state.undo_log.push(UndoAction::FieldChild { field, prev: prev_child });
-        }
-        Ok(child)
-    }
-
     pub fn varint(&self, field: FieldId) -> Result<u64, TreeError> {
         let node = self.field(field)?;
         if node.tag.wire_type() != WireType::Varint {
             return Err(TreeError::WireTypeMismatch);
         }
-        if let Some(PayloadEdit::Varint(v)) = node.edit.as_ref() {
-            return Ok(*v);
+        if let Some(PayloadEdit::Varint(edit)) = node.edit.as_ref() {
+            return Ok(edit.value);
         }
         let field_idx = field.as_inner() as usize;
         if let Some(cached) = self.read_cache.get_varint(field_idx) {
@@ -727,18 +719,60 @@ impl Patch {
             return Err(TreeError::DecodeError);
         };
         let msg_bytes = self.message_bytes(node.msg)?;
-        let ValueSpans::Varint { value } = spans.value else {
-            return Err(TreeError::DecodeError);
-        };
+        let start = spans.field.start();
+        let value_start =
+            start.checked_add(spans.tag_len as u32).ok_or(TreeError::CapacityExceeded)?;
+        let value = Span::new(value_start, spans.field.end()).ok_or(TreeError::DecodeError)?;
         let data = slice_span(msg_bytes, value)?;
         let (v, _used) = crate::varint::decode64(data).ok_or(TreeError::DecodeError)?;
         self.read_cache.set_varint(field_idx, v);
         Ok(v)
     }
 
+    pub fn i32_bits(&self, field: FieldId) -> Result<u32, TreeError> {
+        let node = self.field(field)?;
+        if node.tag.wire_type() != WireType::I32 {
+            return Err(TreeError::WireTypeMismatch);
+        }
+        if let Some(PayloadEdit::I32(bits)) = node.edit.as_ref() {
+            return Ok(*bits);
+        }
+        let Some(spans) = node.spans else {
+            return Err(TreeError::DecodeError);
+        };
+        let msg_bytes = self.message_bytes(node.msg)?;
+        let end = spans.field.end();
+        let start = end.checked_sub(4).ok_or(TreeError::DecodeError)?;
+        let value = Span::new(start, end).ok_or(TreeError::DecodeError)?;
+        let data = slice_span(msg_bytes, value)?;
+        let b: [u8; 4] = data.try_into().map_err(|_| TreeError::DecodeError)?;
+        Ok(u32::from_le_bytes(b))
+    }
+
+    pub fn i64_bits(&self, field: FieldId) -> Result<u64, TreeError> {
+        let node = self.field(field)?;
+        if node.tag.wire_type() != WireType::I64 {
+            return Err(TreeError::WireTypeMismatch);
+        }
+        if let Some(PayloadEdit::I64(bits)) = node.edit.as_ref() {
+            return Ok(*bits);
+        }
+        let Some(spans) = node.spans else {
+            return Err(TreeError::DecodeError);
+        };
+        let msg_bytes = self.message_bytes(node.msg)?;
+        let end = spans.field.end();
+        let start = end.checked_sub(8).ok_or(TreeError::DecodeError)?;
+        let value = Span::new(start, end).ok_or(TreeError::DecodeError)?;
+        let data = slice_span(msg_bytes, value)?;
+        let b: [u8; 8] = data.try_into().map_err(|_| TreeError::DecodeError)?;
+        Ok(u64::from_le_bytes(b))
+    }
+
     pub fn bytes(&self, field: FieldId) -> Result<&[u8], TreeError> {
         let node = self.field(field)?;
-        match node.tag.wire_type() {
+        let wire = node.tag.wire_type();
+        match wire {
             WireType::Len => {}
             #[cfg(feature = "group")]
             WireType::SGroup => {}
@@ -751,328 +785,8 @@ impl Patch {
             return Err(TreeError::DecodeError);
         };
         let msg_bytes = self.message_bytes(node.msg)?;
-        let payload = spans.payload();
+        let payload = spans.payload_span(wire)?;
         slice_span(msg_bytes, payload)
-    }
-
-    pub fn save(&self) -> Result<Buf, TreeError> {
-        let mut plan = SavePlan::new(self.messages.len())?;
-        let root_info = self.save_message_info(self.root, &mut plan)?;
-        let mut out = Buf::with_capacity(root_info.len)?;
-        self.write_message(self.root, &mut plan, &mut out)?;
-        debug_assert_eq!(out.len(), root_info.len);
-        Ok(out)
-    }
-
-    pub fn save_and_reparse(&self) -> Result<Self, TreeError> {
-        Self::from_buf(self.save()?)
-    }
-
-    fn save_message_info(
-        &self,
-        msg: MessageId,
-        plan: &mut SavePlan,
-    ) -> Result<MessageSaveInfo, TreeError> {
-        if let Some(info) = plan.get(msg)? {
-            return Ok(info);
-        }
-
-        let msg_node = self.message(msg)?;
-        let mut len: u32 = 0;
-        let mut dirty = false;
-
-        for &field_id in &msg_node.fields_in_order {
-            let field = self.field(field_id)?;
-            if field.deleted {
-                dirty = true;
-                continue;
-            }
-
-            let child_dirty = match field.child {
-                Some(child) => self.save_message_info(child, plan)?.dirty,
-                None => false,
-            };
-
-            if field.edit.is_none()
-                && !child_dirty
-                && let Some(spans) = field.spans
-            {
-                len = len.checked_add(spans.field.len()).ok_or(TreeError::CapacityExceeded)?;
-                continue;
-            }
-
-            dirty = true;
-            let field_len = self.save_field_len(field, plan)?;
-            len = len.checked_add(field_len).ok_or(TreeError::CapacityExceeded)?;
-        }
-
-        let info = MessageSaveInfo { len, dirty };
-        plan.set(msg, info)?;
-        Ok(info)
-    }
-
-    fn save_field_len(&self, node: &FieldNode, plan: &mut SavePlan) -> Result<u32, TreeError> {
-        let tag_len = match node.spans {
-            Some(spans) => spans.tag.len(),
-            None => crate::varint::encoded_len32(node.tag.get()),
-        };
-
-        let value_len = match node.tag.wire_type() {
-            WireType::Varint => {
-                let Some(PayloadEdit::Varint(v)) = node.edit.as_ref() else {
-                    return Err(TreeError::DecodeError);
-                };
-                crate::varint::encoded_len64(*v)
-            }
-            WireType::I32 => {
-                let Some(PayloadEdit::I32(_bits)) = node.edit.as_ref() else {
-                    return Err(TreeError::DecodeError);
-                };
-                4
-            }
-            WireType::I64 => {
-                let Some(PayloadEdit::I64(_bits)) = node.edit.as_ref() else {
-                    return Err(TreeError::DecodeError);
-                };
-                8
-            }
-            WireType::Len => {
-                let (orig_len_bytes, orig_payload_len) = match node.spans {
-                    Some(spans) => {
-                        let ValueSpans::Len { len, payload } = spans.value else {
-                            return Err(TreeError::DecodeError);
-                        };
-                        (Some(len.len()), payload.len())
-                    }
-                    None => (None, 0),
-                };
-
-                let payload_len = if let Some(child) = node.child {
-                    self.save_message_info(child, plan)?.len
-                } else {
-                    match node.edit.as_ref() {
-                        Some(PayloadEdit::Bytes(buf)) => buf.len(),
-                        None => return Err(TreeError::DecodeError),
-                        Some(_) => return Err(TreeError::DecodeError),
-                    }
-                };
-
-                let len_prefix_len = match orig_len_bytes {
-                    Some(len_bytes) if payload_len == orig_payload_len => len_bytes,
-                    _ => crate::varint::encoded_len32(payload_len),
-                };
-                len_prefix_len.checked_add(payload_len).ok_or(TreeError::CapacityExceeded)?
-            }
-            #[cfg(feature = "group")]
-            WireType::SGroup => {
-                let end_tag_len = match node.spans {
-                    Some(spans) => {
-                        let ValueSpans::Group { end_tag, .. } = spans.value else {
-                            return Err(TreeError::DecodeError);
-                        };
-                        end_tag.len()
-                    }
-                    None => {
-                        let (field_number, _wire_type) = node.tag.split();
-                        crate::varint::encoded_len32(
-                            Tag::from_parts(field_number, WireType::EGroup).get(),
-                        )
-                    }
-                };
-
-                let body_len = if let Some(child) = node.child {
-                    self.save_message_info(child, plan)?.len
-                } else {
-                    match node.edit.as_ref() {
-                        Some(PayloadEdit::Bytes(buf)) => buf.len(),
-                        None => return Err(TreeError::DecodeError),
-                        Some(_) => return Err(TreeError::DecodeError),
-                    }
-                };
-                body_len.checked_add(end_tag_len).ok_or(TreeError::CapacityExceeded)?
-            }
-            #[cfg(feature = "group")]
-            WireType::EGroup => return Err(TreeError::DecodeError),
-        };
-
-        tag_len.checked_add(value_len).ok_or(TreeError::CapacityExceeded)
-    }
-
-    fn write_message(
-        &self,
-        msg: MessageId,
-        plan: &mut SavePlan,
-        out: &mut Buf,
-    ) -> Result<(), TreeError> {
-        let msg_node = self.message(msg)?;
-        let msg_bytes = msg_node.source.bytes(self.source.as_slice());
-
-        for &field_id in &msg_node.fields_in_order {
-            let field = self.field(field_id)?;
-            if field.deleted {
-                continue;
-            }
-
-            let child_dirty = match field.child {
-                Some(child) => self.save_message_info(child, plan)?.dirty,
-                None => false,
-            };
-
-            if field.edit.is_none()
-                && !child_dirty
-                && let Some(spans) = field.spans
-            {
-                let chunk = slice_span(msg_bytes, spans.field)?;
-                out.extend_from_slice(chunk)?;
-                continue;
-            }
-
-            self.write_field(msg_bytes, field_id, plan, out)?;
-        }
-
-        Ok(())
-    }
-
-    fn write_field(
-        &self,
-        msg_bytes: &[u8],
-        field: FieldId,
-        plan: &mut SavePlan,
-        out: &mut Buf,
-    ) -> Result<(), TreeError> {
-        let node = self.field(field)?;
-        match node.spans {
-            Some(spans) => {
-                let tag_bytes = slice_span(msg_bytes, spans.tag)?;
-                out.extend_from_slice(tag_bytes)?;
-            }
-            None => {
-                crate::wire::encode_tag_value(out, node.tag)?;
-            }
-        }
-
-        match node.tag.wire_type() {
-            WireType::Varint => {
-                let Some(PayloadEdit::Varint(v)) = node.edit.as_ref() else {
-                    return Err(TreeError::DecodeError);
-                };
-                let _ = crate::varint::encode64(out, *v)?;
-            }
-            WireType::I32 => {
-                let Some(PayloadEdit::I32(bits)) = node.edit.as_ref() else {
-                    return Err(TreeError::DecodeError);
-                };
-                out.extend_from_slice(&bits.to_le_bytes())?;
-            }
-            WireType::I64 => {
-                let Some(PayloadEdit::I64(bits)) = node.edit.as_ref() else {
-                    return Err(TreeError::DecodeError);
-                };
-                out.extend_from_slice(&bits.to_le_bytes())?;
-            }
-            WireType::Len => {
-                self.write_len_field(msg_bytes, node, plan, out)?;
-            }
-            #[cfg(feature = "group")]
-            WireType::SGroup => {
-                self.write_group_field(msg_bytes, node, plan, out)?;
-            }
-            #[cfg(feature = "group")]
-            WireType::EGroup => return Err(TreeError::DecodeError),
-        }
-        Ok(())
-    }
-
-    fn write_len_field(
-        &self,
-        msg_bytes: &[u8],
-        node: &FieldNode,
-        plan: &mut SavePlan,
-        out: &mut Buf,
-    ) -> Result<(), TreeError> {
-        let (orig_len_span, orig_payload_len) = match node.spans {
-            Some(spans) => {
-                let ValueSpans::Len { len, payload } = spans.value else {
-                    return Err(TreeError::DecodeError);
-                };
-                (Some(len), payload.len())
-            }
-            None => (None, 0),
-        };
-
-        let payload_len = if let Some(child) = node.child {
-            self.save_message_info(child, plan)?.len
-        } else {
-            match node.edit.as_ref() {
-                Some(PayloadEdit::Bytes(buf)) => buf.len(),
-                None => return Err(TreeError::DecodeError),
-                Some(_) => return Err(TreeError::DecodeError),
-            }
-        };
-
-        match orig_len_span {
-            Some(len_span) if payload_len == orig_payload_len => {
-                let len_bytes = slice_span(msg_bytes, len_span)?;
-                out.extend_from_slice(len_bytes)?;
-            }
-            _ => {
-                let _ = crate::varint::encode32(out, payload_len)?;
-            }
-        }
-
-        if let Some(child) = node.child {
-            self.write_message(child, plan, out)?;
-            return Ok(());
-        }
-
-        let Some(PayloadEdit::Bytes(payload)) = node.edit.as_ref() else {
-            return Err(TreeError::DecodeError);
-        };
-        out.extend_from_slice(payload.as_slice())?;
-        Ok(())
-    }
-
-    #[cfg(feature = "group")]
-    fn write_group_field(
-        &self,
-        msg_bytes: &[u8],
-        node: &FieldNode,
-        plan: &mut SavePlan,
-        out: &mut Buf,
-    ) -> Result<(), TreeError> {
-        let end_tag_span = match node.spans {
-            Some(spans) => {
-                let ValueSpans::Group { end_tag, .. } = spans.value else {
-                    return Err(TreeError::DecodeError);
-                };
-                Some(end_tag)
-            }
-            None => None,
-        };
-
-        if let Some(child) = node.child {
-            self.write_message(child, plan, out)?;
-        } else {
-            let Some(PayloadEdit::Bytes(body)) = node.edit.as_ref() else {
-                return Err(TreeError::DecodeError);
-            };
-            out.extend_from_slice(body.as_slice())?;
-        }
-
-        match end_tag_span {
-            Some(span) => {
-                let end_tag_bytes = slice_span(msg_bytes, span)?;
-                out.extend_from_slice(end_tag_bytes)?;
-            }
-            None => {
-                let (field_number, _wire_type) = node.tag.split();
-                crate::wire::encode_tag_value(
-                    out,
-                    Tag::from_parts(field_number, WireType::EGroup),
-                )?;
-            }
-        }
-        Ok(())
     }
 
     fn message(&self, id: MessageId) -> Result<&MessageNode, TreeError> {
@@ -1091,16 +805,42 @@ impl Patch {
         tag: Tag,
         edit: PayloadEdit,
     ) -> Result<FieldId, TreeError> {
-        let _ = self.message(msg)?;
+        let prev_by_tag = self.message(msg)?.query.get(&tag).and_then(|bucket| bucket.tail);
         let field_id = Self::alloc_field(
             &mut self.fields,
             &mut self.read_cache,
-            FieldNode { msg, tag, spans: None, edit: Some(edit), child: None, deleted: false },
+            FieldNode {
+                msg,
+                tag,
+                prev_by_tag,
+                next_by_tag: None,
+                raw_tag: RawVarint32::from_u32(tag.get()),
+                spans: None,
+                edit: Some(edit),
+                child: None,
+                deleted: false,
+            },
         )?;
+
+        if let Some(prev) = prev_by_tag {
+            let prev_idx = prev.as_inner() as usize;
+            let prev_node = self.fields.get_mut(prev_idx).ok_or(TreeError::DecodeError)?;
+            prev_node.next_by_tag = Some(field_id);
+        }
 
         let msg_node = self.message_mut(msg)?;
         msg_node.fields_in_order.try_reserve(1).map_err(|_| TreeError::CapacityExceeded)?;
         msg_node.fields_in_order.push(field_id);
+
+        let bucket = msg_node.query.entry(tag).or_insert_with(TagBucket::default);
+        debug_assert_eq!(bucket.tail, prev_by_tag);
+        debug_assert_eq!(bucket.head.is_none(), bucket.len == 0);
+        if bucket.len == 0 {
+            bucket.head = Some(field_id);
+        }
+        bucket.tail = Some(field_id);
+        bucket.len = bucket.len.checked_add(1).ok_or(TreeError::CapacityExceeded)?;
+
         if let Some(state) = self.txn.as_mut() {
             state.undo_log.push(UndoAction::InsertField { msg, field: field_id });
         }
@@ -1110,256 +850,6 @@ impl Patch {
     fn field(&self, id: FieldId) -> Result<&FieldNode, TreeError> {
         let idx = id.as_inner() as usize;
         self.fields.get(idx).ok_or(TreeError::DecodeError)
-    }
-
-    fn parse_message_node(
-        &mut self,
-        source: MessageSource,
-        parent_field: Option<FieldId>,
-    ) -> Result<MessageId, TreeError> {
-        let orig_messages_len = self.messages.len();
-        let orig_fields_len = self.fields.len();
-
-        let parsed = (|| {
-            let next = self.messages.len();
-            let Some(id_u32) = u32::try_from(next).ok() else {
-                return Err(TreeError::CapacityExceeded);
-            };
-            if id_u32 == MessageId::MAX.as_inner() {
-                return Err(TreeError::CapacityExceeded);
-            }
-            let msg_id = unsafe { MessageId::new_unchecked(id_u32) };
-
-            let bytes = source.bytes(self.source.as_slice());
-
-            let mut fields_in_order = Vec::new();
-
-            let mut offset = 0usize;
-            while offset < bytes.len() {
-                let field_start = offset;
-                let (tag, tag_len) =
-                    crate::wire::decode_tag(&bytes[offset..]).ok_or(TreeError::DecodeError)?;
-                offset = offset.checked_add(tag_len as usize).ok_or(TreeError::CapacityExceeded)?;
-                if offset > bytes.len() {
-                    return Err(TreeError::DecodeError);
-                }
-                let tag_span =
-                    Span::new(field_start as u32, offset as u32).ok_or(TreeError::DecodeError)?;
-
-                let spans = match tag.wire_type() {
-                    WireType::Varint => {
-                        let val_start = offset;
-                        let (_v, used) = crate::varint::decode64(&bytes[offset..])
-                            .ok_or(TreeError::DecodeError)?;
-                        offset =
-                            offset.checked_add(used as usize).ok_or(TreeError::CapacityExceeded)?;
-                        if offset > bytes.len() {
-                            return Err(TreeError::DecodeError);
-                        }
-                        let value = Span::new(val_start as u32, offset as u32)
-                            .ok_or(TreeError::DecodeError)?;
-                        let field = Span::new(field_start as u32, offset as u32)
-                            .ok_or(TreeError::DecodeError)?;
-                        FieldSpans { field, tag: tag_span, value: ValueSpans::Varint { value } }
-                    }
-                    WireType::I64 => {
-                        let val_start = offset;
-                        let val_end = offset.checked_add(8).ok_or(TreeError::CapacityExceeded)?;
-                        if val_end > bytes.len() {
-                            return Err(TreeError::DecodeError);
-                        }
-                        offset = val_end;
-                        let value = Span::new(val_start as u32, val_end as u32)
-                            .ok_or(TreeError::DecodeError)?;
-                        let field = Span::new(field_start as u32, val_end as u32)
-                            .ok_or(TreeError::DecodeError)?;
-                        FieldSpans { field, tag: tag_span, value: ValueSpans::I64 { value } }
-                    }
-                    WireType::Len => {
-                        let len_start = offset;
-                        let (len, used) = crate::varint::decode32(&bytes[offset..])
-                            .ok_or(TreeError::DecodeError)?;
-                        offset =
-                            offset.checked_add(used as usize).ok_or(TreeError::CapacityExceeded)?;
-                        let len_span = Span::new(len_start as u32, offset as u32)
-                            .ok_or(TreeError::DecodeError)?;
-
-                        let payload_start = offset;
-                        let payload_end = payload_start
-                            .checked_add(len as usize)
-                            .ok_or(TreeError::CapacityExceeded)?;
-                        if payload_end > bytes.len() {
-                            return Err(TreeError::DecodeError);
-                        }
-                        offset = payload_end;
-                        let payload = Span::new(payload_start as u32, payload_end as u32)
-                            .ok_or(TreeError::DecodeError)?;
-                        let field = Span::new(field_start as u32, payload_end as u32)
-                            .ok_or(TreeError::DecodeError)?;
-                        FieldSpans {
-                            field,
-                            tag: tag_span,
-                            value: ValueSpans::Len { len: len_span, payload },
-                        }
-                    }
-                    #[cfg(feature = "group")]
-                    WireType::SGroup => {
-                        let (field_number, _wire_type) = tag.split();
-                        let body_start = offset;
-                        let (end_tag_start, end_after) =
-                            crate::wire::find_group_end(bytes, body_start, field_number)
-                                .ok_or(TreeError::DecodeError)?;
-                        offset = end_after;
-
-                        let body = Span::new(body_start as u32, end_tag_start as u32)
-                            .ok_or(TreeError::DecodeError)?;
-                        let end_tag = Span::new(end_tag_start as u32, end_after as u32)
-                            .ok_or(TreeError::DecodeError)?;
-                        let field = Span::new(field_start as u32, end_after as u32)
-                            .ok_or(TreeError::DecodeError)?;
-                        FieldSpans {
-                            field,
-                            tag: tag_span,
-                            value: ValueSpans::Group { body, end_tag },
-                        }
-                    }
-                    #[cfg(feature = "group")]
-                    WireType::EGroup => return Err(TreeError::DecodeError),
-                    WireType::I32 => {
-                        let val_start = offset;
-                        let val_end = offset.checked_add(4).ok_or(TreeError::CapacityExceeded)?;
-                        if val_end > bytes.len() {
-                            return Err(TreeError::DecodeError);
-                        }
-                        offset = val_end;
-                        let value = Span::new(val_start as u32, val_end as u32)
-                            .ok_or(TreeError::DecodeError)?;
-                        let field = Span::new(field_start as u32, val_end as u32)
-                            .ok_or(TreeError::DecodeError)?;
-                        FieldSpans { field, tag: tag_span, value: ValueSpans::I32 { value } }
-                    }
-                };
-
-                let field_id = Self::alloc_field(
-                    &mut self.fields,
-                    &mut self.read_cache,
-                    FieldNode {
-                        msg: msg_id,
-                        tag,
-                        spans: Some(spans),
-                        edit: None,
-                        child: None,
-                        deleted: false,
-                    },
-                )?;
-
-                if fields_in_order.len() == fields_in_order.capacity() {
-                    fields_in_order.try_reserve(1).map_err(|_| TreeError::CapacityExceeded)?;
-                }
-                fields_in_order.push(field_id);
-            }
-
-            self.messages.try_reserve(1).map_err(|_| TreeError::CapacityExceeded)?;
-            self.messages.push(MessageNode { source, parent_field, fields_in_order });
-            Ok(msg_id)
-        })();
-
-        match parsed {
-            Ok(id) => Ok(id),
-            Err(err) => {
-                self.messages.truncate(orig_messages_len);
-                self.fields.truncate(orig_fields_len);
-                self.read_cache.truncate_fields(orig_fields_len);
-                Err(err)
-            }
-        }
-    }
-
-    fn alloc_field(
-        fields: &mut Vec<FieldNode>,
-        read_cache: &mut ReadCache,
-        node: FieldNode,
-    ) -> Result<FieldId, TreeError> {
-        debug_assert!(!read_cache.enabled || read_cache.varints.len() == fields.len());
-
-        let next = fields.len();
-        let Some(id_u32) = u32::try_from(next).ok() else {
-            return Err(TreeError::CapacityExceeded);
-        };
-        if id_u32 == FieldId::MAX.as_inner() {
-            return Err(TreeError::CapacityExceeded);
-        }
-        if read_cache.enabled {
-            read_cache.varints.try_reserve(1).map_err(|_| TreeError::CapacityExceeded)?;
-        }
-        fields.try_reserve(1).map_err(|_| TreeError::CapacityExceeded)?;
-        fields.push(node);
-        if read_cache.enabled {
-            read_cache.varints.push(Cell::new(None));
-        }
-        Ok(unsafe { FieldId::new_unchecked(id_u32) })
-    }
-
-    fn txn_begin(&mut self) {
-        assert!(self.txn.is_none(), "nested Patch txn is not supported");
-        self.txn = Some(TxnState {
-            orig_messages_len: self.messages.len(),
-            orig_fields_len: self.fields.len(),
-            undo_log: Vec::new(),
-        });
-    }
-
-    fn txn_commit(&mut self) {
-        let _ = self.txn.take();
-    }
-
-    fn txn_rollback(&mut self) {
-        let Some(state) = self.txn.take() else {
-            return;
-        };
-
-        for action in state.undo_log.into_iter().rev() {
-            match action {
-                UndoAction::FieldEdit { field, prev } => {
-                    let idx = field.as_inner() as usize;
-                    if let Some(node) = self.fields.get_mut(idx) {
-                        node.edit = prev;
-                    } else {
-                        debug_assert!(false, "txn undo field edit out of bounds");
-                    }
-                }
-                UndoAction::FieldDeleted { field, prev } => {
-                    let idx = field.as_inner() as usize;
-                    if let Some(node) = self.fields.get_mut(idx) {
-                        node.deleted = prev;
-                    } else {
-                        debug_assert!(false, "txn undo field deleted out of bounds");
-                    }
-                }
-                UndoAction::FieldChild { field, prev } => {
-                    let idx = field.as_inner() as usize;
-                    if let Some(node) = self.fields.get_mut(idx) {
-                        node.child = prev;
-                    } else {
-                        debug_assert!(false, "txn undo field child out of bounds");
-                    }
-                }
-                UndoAction::InsertField { msg, field } => {
-                    let msg_idx = msg.as_inner() as usize;
-                    let Some(msg_node) = self.messages.get_mut(msg_idx) else {
-                        debug_assert!(false, "txn undo insert msg out of bounds");
-                        continue;
-                    };
-
-                    let popped = msg_node.fields_in_order.pop();
-                    debug_assert_eq!(popped, Some(field), "txn undo insert order mismatch");
-                }
-            }
-        }
-
-        self.messages.truncate(state.orig_messages_len);
-        self.fields.truncate(state.orig_fields_len);
-        self.read_cache.truncate_fields(state.orig_fields_len);
     }
 }
 
@@ -1410,42 +900,6 @@ fn value_spans_offset_by(value: ValueSpans, base: u32) -> Result<ValueSpans, Tre
             body: span_offset_by(body, base)?,
             end_tag: span_offset_by(end_tag, base)?,
         }),
-    }
-}
-
-/// Transaction that rolls back on drop unless committed.
-pub struct Txn<'a> {
-    tree: &'a mut Patch,
-    committed: bool,
-}
-
-impl<'a> Txn<'a> {
-    pub fn begin(tree: &'a mut Patch) -> Self {
-        tree.txn_begin();
-        Self { tree, committed: false }
-    }
-
-    #[inline]
-    pub fn tree(&mut self) -> &mut Patch {
-        self.tree
-    }
-
-    pub fn commit(mut self) {
-        self.tree.txn_commit();
-        self.committed = true;
-    }
-
-    pub fn rollback(mut self) {
-        self.tree.txn_rollback();
-        self.committed = true;
-    }
-}
-
-impl Drop for Txn<'_> {
-    fn drop(&mut self) {
-        if !self.committed {
-            self.tree.txn_rollback();
-        }
     }
 }
 

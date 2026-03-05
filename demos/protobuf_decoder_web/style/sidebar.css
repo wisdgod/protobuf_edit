@@ -1,0 +1,238 @@
+.sidebar {
+  width: 320px;
+  flex: 0 0 auto;
+  min-width: 240px;
+  max-width: 420px;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  background: var(--color-bg-elevated);
+  border-right: 1px solid var(--color-border);
+}
+
+.sidebar--collapsed {
+  width: 40px;
+  min-width: 40px;
+}
+
+.sidebar-header {
+  padding: var(--spacing-sm);
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-sm);
+  border-bottom: 1px solid var(--color-border);
+  background: var(--color-bg-secondary);
+}
+
+.sidebar-title {
+  flex: 1;
+  font-size: var(--font-size-sm);
+  color: var(--color-text-secondary);
+  font-family: var(--font-mono);
+}
+
+.sidebar-body {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.sidebar-footer {
+  margin-top: auto;
+  padding: var(--spacing-sm);
+  border-top: 1px solid var(--color-border);
+  background: var(--color-bg-secondary);
+  display: flex;
+  justify-content: flex-start;
+}
+
+.sidebar--collapsed .sidebar-footer {
+  padding: var(--spacing-xs);
+  position: relative;
+  overflow: hidden;
+  height: 32px;
+  align-items: center;
+  justify-content: center;
+}
+
+.sidebar--collapsed .theme-switcher {
+  position: relative;
+  transform: scale(0.7);
+  transform-origin: center;
+}
+
+.sidebar-actions {
+  padding: var(--spacing-sm);
+  display: flex;
+  gap: var(--spacing-xs);
+  align-items: center;
+  flex-wrap: wrap;
+  border-bottom: 1px solid var(--color-border);
+}
+
+.sidebar-list-controls {
+  padding: var(--spacing-sm);
+  display: flex;
+  gap: var(--spacing-xs);
+  align-items: center;
+  border-bottom: 1px solid var(--color-border);
+}
+
+.sidebar-search {
+  flex: 1;
+  min-width: 0;
+}
+
+.sidebar-current {
+  padding: var(--spacing-sm);
+  border-bottom: 1px solid var(--color-border);
+  display: grid;
+  gap: var(--spacing-xs);
+}
+
+.sidebar-label {
+  font-size: var(--font-size-sm);
+  color: var(--color-text-secondary);
+}
+
+.sidebar-current-row {
+  display: flex;
+  gap: var(--spacing-xs);
+  align-items: center;
+}
+
+.sidebar-input {
+  flex: 1;
+  min-width: 0;
+}
+
+.sidebar-section {
+  border-bottom: 1px solid var(--color-border);
+}
+
+.sidebar-summary {
+  padding: var(--spacing-sm);
+  cursor: pointer;
+  user-select: none;
+  color: var(--color-text-secondary);
+  font-size: var(--font-size-sm);
+}
+
+.sidebar-summary::-webkit-details-marker {
+  display: none;
+}
+
+.sidebar-import {
+  padding: var(--spacing-sm);
+  display: grid;
+  gap: var(--spacing-sm);
+}
+
+.sidebar-import-row {
+  display: flex;
+  gap: var(--spacing-xs);
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+.sidebar-textarea {
+  width: 100%;
+  min-width: 0;
+  min-height: 96px;
+  resize: vertical;
+  font-family: var(--font-mono);
+  font-size: var(--font-size-sm);
+}
+
+.message-list {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+}
+
+.message-empty {
+  padding: var(--spacing-sm);
+  color: var(--color-text-tertiary);
+  font-size: var(--font-size-sm);
+}
+
+.message-row,
+.message-class-row {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-xs);
+  padding: 6px var(--spacing-sm);
+  border-bottom: 1px solid var(--color-border);
+  cursor: pointer;
+}
+
+.message-row:hover,
+.message-class-row:hover {
+  background: var(--color-bg-secondary);
+}
+
+.message-row--current {
+  background: var(--color-bg-secondary);
+}
+
+.message-caret {
+  padding: 4px 8px;
+  font-family: var(--font-mono);
+}
+
+.message-indent {
+  flex: 0 0 auto;
+}
+
+.message-checkbox {
+  margin: 0;
+}
+
+.message-class-title,
+.message-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.message-class-title {
+  font-family: var(--font-mono);
+  color: var(--color-text-secondary);
+}
+
+.message-name {
+  color: var(--color-text-primary);
+}
+
+.message-bytes {
+  flex: 0 0 auto;
+  font-family: var(--font-mono);
+  font-size: var(--font-size-xs);
+  color: var(--color-text-tertiary);
+}
+
+.message-rename-input {
+  min-width: 0;
+  width: 100%;
+  padding: 4px 6px;
+  font-size: var(--font-size-sm);
+}
+
+.message-rename-btn {
+  padding: 4px 8px;
+  font-family: var(--font-mono);
+  opacity: 0;
+  transition: opacity 0.12s ease;
+}
+
+.message-row:hover .message-rename-btn,
+.message-class-row:hover .message-rename-btn,
+.message-row:focus-within .message-rename-btn,
+.message-class-row:focus-within .message-rename-btn {
+  opacity: 1;
+}

@@ -9,6 +9,13 @@ generated protobuf types, but still need to:
 - edit selected fields,
 - keep byte-level fidelity where possible.
 
+## Design principles
+
+- Performance-oriented: keep hot paths simple and allocation-light.
+- Practical correctness: prefer explicit, testable invariants over cleverness.
+- Byte fidelity: preserve original bytes for unchanged fields when possible.
+- Two models on purpose: choose between `Document` and `Patch` based on workload.
+
 ## Editing models
 
 `protobuf_edit` intentionally exposes two different models:

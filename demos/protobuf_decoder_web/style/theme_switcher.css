@@ -1,0 +1,165 @@
+:root {
+  --theme-switcher-day-bg: #0dbdf6;
+  --theme-switcher-night-bg: #272a30;
+  --theme-switcher-sun: #fabc1c;
+  --theme-switcher-moon: #fffdf2;
+  --theme-switcher-cloud: #fffdf2;
+  --theme-switcher-star: #fffdf2;
+}
+
+.theme-switcher {
+  display: grid;
+  grid-template-columns: repeat(54, 1px);
+  grid-template-rows: repeat(24, 1px);
+  gap: 0;
+  position: relative;
+  width: 54px;
+  height: 24px;
+  padding: 0;
+  border-radius: 999px;
+  border: 1px solid var(--color-border);
+  background-color: var(--theme-switcher-day-bg);
+  cursor: pointer;
+  transition: background-color 0.8s ease, border-color 0.8s ease;
+  appearance: none;
+}
+
+.theme-switcher:focus {
+  outline: 2px solid var(--color-border-focus);
+  outline-offset: 2px;
+}
+
+.theme-switcher--night {
+  background-color: var(--theme-switcher-night-bg);
+}
+
+.theme-switcher__sun {
+  background-color: var(--theme-switcher-sun);
+  grid-column: 3 / 23;
+  grid-row: 3 / 23;
+  border-radius: 50%;
+  transition: grid-column 0.8s ease, background-color 0.8s ease;
+  width: 20px;
+  height: 20px;
+}
+
+.theme-switcher--night .theme-switcher__sun {
+  grid-column: 33 / 53;
+  background-color: var(--theme-switcher-moon);
+}
+
+.theme-switcher__moon-overlay {
+  position: absolute;
+  border-radius: 50%;
+  transition: left 0.8s ease, background-color 0.8s ease;
+  z-index: 1;
+  background-color: var(--theme-switcher-day-bg);
+  display: none;
+}
+
+.theme-switcher--night .theme-switcher__moon-overlay {
+  display: block;
+  left: calc(28 / 54 * 100%);
+  top: calc(4 / 24 * 100%);
+  width: 18px;
+  height: 18px;
+  background-color: var(--theme-switcher-night-bg);
+}
+
+.theme-switcher__cloud-ball {
+  background-color: var(--theme-switcher-cloud);
+  border-radius: 50%;
+  width: 9px;
+  height: 9px;
+  position: absolute;
+  transition: all 0.8s ease;
+  z-index: 2;
+}
+
+.theme-switcher__cloud-ball--1 {
+  top: calc((8 / 24) * 100%);
+  left: calc((12 / 54) * 100%);
+}
+
+.theme-switcher__cloud-ball--2 {
+  top: calc((8 / 24) * 100%);
+  left: calc((17 / 54) * 100%);
+}
+
+.theme-switcher__cloud-ball--3 {
+  top: calc((8 / 24) * 100%);
+  left: calc((22 / 54) * 100%);
+}
+
+.theme-switcher__cloud-ball--4 {
+  top: calc((6 / 24) * 100%);
+  left: calc((17 / 54) * 100%);
+}
+
+.theme-switcher--night .theme-switcher__cloud-ball--1 {
+  top: calc((16 / 24) * 100%);
+  left: calc((16 / 54) * 100%);
+  width: 2px;
+  height: 2px;
+}
+
+.theme-switcher--night .theme-switcher__cloud-ball--2 {
+  top: calc((3 / 24) * 100%);
+  left: calc((22 / 54) * 100%);
+  width: 2px;
+  height: 2px;
+}
+
+.theme-switcher--night .theme-switcher__cloud-ball--3 {
+  top: calc((10 / 24) * 100%);
+  left: calc((29 / 54) * 100%);
+  width: 2px;
+  height: 2px;
+}
+
+.theme-switcher--night .theme-switcher__cloud-ball--4 {
+  top: calc((5 / 24) * 100%);
+  left: calc((34 / 54) * 100%);
+  width: 2px;
+  height: 2px;
+}
+
+.theme-switcher__star {
+  background-color: var(--theme-switcher-star);
+  width: 1px;
+  height: 1px;
+  position: absolute;
+  opacity: 0;
+  transition: opacity 0.8s ease;
+}
+
+.theme-switcher__star--1 {
+  top: calc((7 / 24) * 100%);
+  left: calc((10 / 54) * 100%);
+  border-radius: 50%;
+}
+
+.theme-switcher__star--2 {
+  top: calc((9 / 24) * 100%);
+  left: calc((16 / 54) * 100%);
+  border-radius: 50%;
+}
+
+.theme-switcher__star--3 {
+  top: calc((13 / 24) * 100%);
+  left: calc((23 / 54) * 100%);
+  border-radius: 50%;
+}
+
+.theme-switcher__star--4 {
+  top: calc((18 / 24) * 100%);
+  left: calc((29 / 54) * 100%);
+  border-radius: 50%;
+}
+
+.theme-switcher--night .theme-switcher__star--1,
+.theme-switcher--night .theme-switcher__star--2,
+.theme-switcher--night .theme-switcher__star--3,
+.theme-switcher--night .theme-switcher__star--4 {
+  opacity: 1;
+}

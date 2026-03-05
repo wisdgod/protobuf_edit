@@ -1,0 +1,56 @@
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  height: 100%;
+}
+
+html[data-theme="light"] {
+  color-scheme: light;
+}
+
+html[data-theme="dark"] {
+  color-scheme: dark;
+}
+
+body {
+  margin: 0;
+  font-family: var(--font-sans);
+  font-size: var(--font-size-base);
+  color: var(--color-text-primary);
+  background: var(--color-bg-primary);
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  html.theme-transition body,
+  html.theme-transition .sidebar,
+  html.theme-transition .panel,
+  html.theme-transition .structure,
+  html.theme-transition .status-bar,
+  html.theme-transition .btn,
+  html.theme-transition .input,
+  html.theme-transition .select,
+  html.theme-transition textarea,
+  html.theme-transition .toast {
+    transition:
+      background-color 160ms ease,
+      color 160ms ease,
+      border-color 160ms ease,
+      outline-color 160ms ease;
+  }
+}
+
+button,
+input,
+select,
+textarea {
+  font: inherit;
+}
+
+.hidden {
+  display: none !important;
+}

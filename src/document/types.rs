@@ -242,6 +242,13 @@ impl RawVarint32 {
     }
 }
 
+impl Default for RawVarint32 {
+    #[inline]
+    fn default() -> Self {
+        Self::new_uninit()
+    }
+}
+
 impl fmt::Debug for RawVarint32 {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let (bytes, len) = self.to_array();
@@ -334,6 +341,13 @@ impl RawVarint64 {
             out[9] = self.tail & Self::LAST_BYTE_MASK;
         }
         (out, len)
+    }
+}
+
+impl Default for RawVarint64 {
+    #[inline]
+    fn default() -> Self {
+        Self::new_uninit()
     }
 }
 

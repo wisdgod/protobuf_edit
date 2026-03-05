@@ -1,0 +1,11 @@
+{
+  "name": "protobuf-decoder-web-minify-dist",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "minify": "node ./minify_dist.mjs ../../dist"
+  },
+  "dependencies": {
+    "esbuild": "^0.25.0"
+  }
+}

@@ -1,0 +1,62 @@
+.app {
+  height: 100%;
+  display: grid;
+  grid-template-rows: 1fr auto;
+}
+
+.main {
+  min-height: 0;
+}
+
+.workspace {
+  height: 100%;
+  display: flex;
+  min-height: 0;
+}
+
+.split-pane {
+  height: 100%;
+  display: flex;
+  background: var(--color-bg-secondary);
+  flex: 1;
+  min-width: 0;
+}
+
+.split-left,
+.split-right {
+  flex: 1 1 0;
+  min-width: 0;
+  height: 100%;
+}
+
+.split-handle {
+  width: var(--split-handle-width);
+  cursor: col-resize;
+  background: var(--color-border);
+}
+
+.panel {
+  height: 100%;
+  background: var(--color-bg-elevated);
+  border-right: 1px solid var(--color-border);
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.panel--right {
+  border-right: none;
+  border-left: 1px solid var(--color-border);
+}
+
+.panel-header {
+  padding: var(--spacing-sm);
+  border-bottom: 1px solid var(--color-border);
+  color: var(--color-text-secondary);
+  font-size: var(--font-size-sm);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--spacing-sm);
+  flex-wrap: wrap;
+}

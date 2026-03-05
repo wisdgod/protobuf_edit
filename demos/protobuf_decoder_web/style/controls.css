@@ -1,0 +1,85 @@
+.input {
+  border: 1px solid var(--color-border);
+  border-radius: var(--border-radius);
+  background: var(--color-bg-elevated);
+  color: var(--color-text-primary);
+  padding: 6px 8px;
+  min-width: 240px;
+}
+
+.input::placeholder {
+  color: var(--color-text-secondary);
+  opacity: 1;
+}
+
+.input--textarea {
+  flex: 1;
+  min-width: 360px;
+  resize: vertical;
+  height: 34px;
+}
+
+.input:focus {
+  outline: none;
+  border-color: var(--color-border-focus);
+}
+
+.btn {
+  border-radius: var(--border-radius);
+  padding: 6px 10px;
+  border: 1px solid transparent;
+  cursor: pointer;
+}
+
+.btn--primary {
+  background: var(--color-btn-primary-bg);
+  color: var(--color-btn-primary-text);
+}
+
+.btn--primary:hover {
+  background: var(--color-btn-primary-hover);
+}
+
+.btn--secondary {
+  background: var(--color-btn-secondary-bg);
+  color: var(--color-btn-secondary-text);
+  border-color: var(--color-btn-secondary-border);
+}
+
+.btn--danger {
+  background: var(--color-error-bg);
+  color: var(--color-error);
+  border-color: var(--color-error);
+}
+
+.btn--danger:hover {
+  background: color-mix(in srgb, var(--color-error-bg) 60%, var(--color-error) 10%);
+}
+
+.btn:disabled {
+  cursor: not-allowed;
+  background: var(--color-btn-disabled-bg);
+  color: var(--color-btn-disabled-text);
+}
+
+.select {
+  border: 1px solid var(--color-border);
+  border-radius: var(--border-radius);
+  background: var(--color-bg-elevated);
+  color: var(--color-text-primary);
+  padding: 6px 8px;
+}
+
+.select--small {
+  padding: 4px 6px;
+  font-size: var(--font-size-xs);
+}
+
+.select option {
+  background: var(--color-bg-elevated);
+  color: var(--color-text-primary);
+}
+
+.file-input {
+  display: none;
+}

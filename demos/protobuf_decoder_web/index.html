@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="en" data-theme="light">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>protobuf-decoder-web</title>
+    <link rel="icon" href="data:," />
+
+    <script>
+      // Apply saved theme immediately to prevent FOUC.
+      try {
+        const STORAGE_KEY = "protobuf_decoder_web.v1.theme";
+        const VALID = ["dark", "light", "system"];
+
+        let pref = localStorage.getItem(STORAGE_KEY);
+        if (!VALID.includes(pref)) {
+          pref = "system";
+          localStorage.setItem(STORAGE_KEY, pref);
+        }
+
+        let theme;
+        if (pref === "system") {
+          const prefersDark = matchMedia("(prefers-color-scheme: dark)").matches;
+          theme = prefersDark ? "dark" : "light";
+        } else {
+          theme = pref;
+        }
+
+        document.documentElement.dataset.theme = theme;
+      } catch {
+        // localStorage may be blocked; fall back to default in HTML.
+      }
+    </script>
+
+    <link data-trunk rel="css" href="style/tokens.css" />
+    <link data-trunk rel="css" href="style/reset.css" />
+    <link data-trunk rel="css" href="style/layout.css" />
+    <link data-trunk rel="css" href="style/controls.css" />
+    <link data-trunk rel="css" href="style/sidebar.css" />
+    <link data-trunk rel="css" href="style/theme_switcher.css" />
+    <link data-trunk rel="css" href="style/hex.css" />
+    <link data-trunk rel="css" href="style/structure.css" />
+    <link data-trunk rel="css" href="style/status.css" />
+    <link data-trunk rel="css" href="style/toast.css" />
+
+    <link data-trunk rel="rust" href="Cargo.toml" />
+  </head>
+  <body>
+    <noscript>This app requires JavaScript.</noscript>
+  </body>
+</html>

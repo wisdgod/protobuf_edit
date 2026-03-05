@@ -13,7 +13,7 @@
 use alloc::alloc::{alloc, dealloc, handle_alloc_error, realloc, Layout};
 use core::fmt;
 use core::intrinsics;
-use core::mem::MaybeUninit;
+use core::mem::{ManuallyDrop, MaybeUninit};
 use core::ops::{Deref, DerefMut};
 use core::ptr::{self, NonNull};
 use core::slice;
@@ -129,6 +129,46 @@ impl Buf {
         let mut b = Self::new();
         b.try_reserve_exact(capacity)?;
         Ok(b)
+    }
+
+    /// Builds an owned `Buf` from a `Vec<u8>`.
+    ///
+    /// Small payloads (`len <= INLINE_CAP`) are copied into the inline representation.
+    ///
+    /// # Panics
+    /// Panics if the vector length or capacity exceeds `MAX_CAP`.
+    pub fn from_vec(bytes: alloc::vec::Vec<u8>) -> Self {
+        assert!(bytes.len() <= MAX_CAP as usize, "vec len exceeds MAX_CAP");
+
+        let len = bytes.len() as u32;
+        if len <= INLINE_CAP {
+            let mut out = Self::new();
+            unsafe {
+                ptr::copy_nonoverlapping(
+                    bytes.as_ptr(),
+                    out.inline.buf.as_mut_ptr().cast::<u8>(),
+                    len as usize,
+                );
+                out.inline.tag = make_tag(len, false);
+            }
+            return out;
+        }
+
+        let mut bytes = ManuallyDrop::new(bytes);
+        let cap = bytes.capacity();
+        assert!(cap <= MAX_CAP as usize, "vec capacity exceeds MAX_CAP");
+        let ptr = bytes.as_mut_ptr();
+        let ptr = NonNull::new(ptr).expect("Vec::as_mut_ptr returned null");
+
+        Self {
+            heap: HeapData {
+                ptr,
+                len,
+                #[cfg(target_pointer_width = "32")]
+                _padding: 0,
+                tag: make_tag(cap as u32, false),
+            },
+        }
     }
 
     /// Build a borrowed `Buf` from raw pointer/length.
@@ -587,6 +627,13 @@ impl Default for Buf {
     }
 }
 
+impl From<alloc::vec::Vec<u8>> for Buf {
+    #[inline]
+    fn from(bytes: alloc::vec::Vec<u8>) -> Self {
+        Self::from_vec(bytes)
+    }
+}
+
 impl Deref for Buf {
     type Target = [u8];
     #[inline]
@@ -692,7 +739,8 @@ unsafe fn realloc_non_null(ptr: *mut u8, old_layout: Layout, new_cap: u32) -> No
 
 #[cfg(test)]
 mod tests {
-    use super::{growth_target, Buf, BufAllocError, MAX_CAP};
+    use alloc::vec;
+    use super::{growth_target, Buf, BufAllocError, INLINE_CAP, MAX_CAP};
 
     #[test]
     fn growth_target_can_reach_max_cap() {
@@ -709,5 +757,38 @@ mod tests {
     fn buf_is_send_and_sync() {
         fn assert_send_sync<T: Send + Sync>() {}
         assert_send_sync::<Buf>();
+    }
+
+    #[test]
+    fn from_vec_inlines_small_payload() {
+        let buf = Buf::from_vec(vec![1, 2, 3]);
+        assert!(buf.is_inline());
+        assert_eq!(buf.len(), 3);
+        assert_eq!(buf.as_slice(), &[1, 2, 3]);
+    }
+
+    #[test]
+    fn from_vec_reuses_allocation_for_large_payload() {
+        let len = (INLINE_CAP + 1) as usize;
+        let mut v = vec![0u8; len];
+        v[0] = 7;
+        v[len - 1] = 9;
+
+        let ptr = v.as_ptr();
+        let cap = v.capacity() as u32;
+
+        let buf = Buf::from_vec(v);
+        assert!(!buf.is_inline());
+        assert!(!buf.is_borrowed());
+        assert_eq!(buf.as_ptr(), ptr);
+        assert_eq!(buf.len(), len as u32);
+        assert_eq!(buf.capacity(), cap);
+        assert_eq!(buf.as_slice()[0], 7);
+        assert_eq!(buf.as_slice()[len - 1], 9);
+
+        let v2 = buf.into_vec();
+        assert_eq!(v2.as_ptr(), ptr);
+        assert_eq!(v2.len(), len);
+        assert_eq!(v2.capacity(), cap as usize);
     }
 }
