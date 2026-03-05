@@ -1,6 +1,6 @@
 use alloc::vec::Vec;
 
-use crate::document::TreeError;
+use crate::error::TreeError;
 use crate::wire::{FieldNumber, WireType};
 
 use super::decode::{decode_tag_prefix, decode_varint32_prefix, decode_varint64_prefix};

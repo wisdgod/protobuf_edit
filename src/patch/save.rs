@@ -1,6 +1,8 @@
 use alloc::vec::Vec;
 
-use crate::{Buf, TreeError, WireType};
+use crate::buf::Buf;
+use crate::error::TreeError;
+use crate::wire::WireType;
 
 use super::{slice_span, FieldId, FieldNode, MessageId, Patch, PayloadEdit, Span, StoredSpans};
 

@@ -35,12 +35,26 @@ Short aliases are also provided:
 - `ArenaTree` = `Document`
 - `SpanTree` = `Patch`
 
+## API layout
+
+Public modules are grouped by concern:
+
+- `protobuf_edit::buf`: shared byte storage (`Buf`, `BufAllocError`)
+- `protobuf_edit::error`: shared crate error (`TreeError`)
+- `protobuf_edit::document`: arena-backed structured editing API
+- `protobuf_edit::patch`: span-based editing API
+- `protobuf_edit::wire`: tag primitives (`Tag`, `FieldNumber`, `WireType`)
+- `protobuf_edit::varint`: varint and zigzag codecs
+- `protobuf_edit::stream`: incremental wire parser
+
+Common entry types are still re-exported at the crate root for convenience.
+
 ## Quick start
 
 ### Build / edit with `Document`
 
 ```rust
-use protobuf_edit::{Buf, FieldNumber, Document};
+use protobuf_edit::{buf::Buf, document::Document, wire::FieldNumber};
 
 let mut doc = Document::new();
 let f1 = FieldNumber::new(1).unwrap();
@@ -53,7 +67,7 @@ assert!(!bytes.is_empty());
 ### Patch bytes with `Patch`
 
 ```rust
-use protobuf_edit::{FieldNumber, Patch, Tag, WireType};
+use protobuf_edit::{patch::Patch, wire::{FieldNumber, Tag, WireType}};
 
 let mut patch = Patch::from_bytes(&[0x08, 0x96, 0x01]).unwrap(); // field 1 = 150
 let root = patch.root();

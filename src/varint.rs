@@ -17,7 +17,7 @@
 
 use core::mem::MaybeUninit;
 
-use crate::data_structures::{Buf, BufAllocError};
+use crate::buf::{Buf, BufAllocError};
 
 pub(crate) use sealed::Varint;
 

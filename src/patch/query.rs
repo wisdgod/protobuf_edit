@@ -1,6 +1,7 @@
 use core::iter::FusedIterator;
 
-use crate::{Tag, TreeError};
+use crate::error::TreeError;
+use crate::wire::Tag;
 
 use super::{FieldId, MessageId, Patch};
 

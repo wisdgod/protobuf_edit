@@ -1,6 +1,6 @@
 use core::intrinsics::{likely, unlikely};
 
-use crate::data_structures::Buf;
+use crate::buf::Buf;
 use crate::varint;
 use crate::wire::{self, WireType};
 

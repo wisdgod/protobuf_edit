@@ -1,4 +1,4 @@
-use crate::data_structures::{Buf, BufAllocError};
+use crate::buf::{Buf, BufAllocError};
 use crate::varint;
 
 use super::tag::{FieldNumber, Tag, WireType};

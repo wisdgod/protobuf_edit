@@ -19,7 +19,8 @@ use core::intrinsics::unlikely;
 use core::marker::PhantomData;
 use core::ops::{Deref, DerefMut};
 
-use crate::data_structures::Buf;
+use crate::buf::Buf;
+use crate::error::TreeError;
 use crate::fx::FxHashMap;
 use crate::wire::{FieldNumber, Tag, WireType};
 
@@ -34,9 +35,10 @@ mod types;
 pub use field_mut::FieldMut;
 pub use field_ref::FieldRef;
 pub use repeated::RepeatedRefIter;
+pub(crate) use types::{RawVarint32, RawVarint64};
 pub use types::{
     Bucket, Capacities, Field, Fixed32, Fixed64, Ix, LengthDelimited, Link, MAX_FIELDS, Document,
-    RawVarint32, RawVarint64, TreeError, Varint,
+    Varint,
 };
 #[cfg(feature = "group")]
 pub use types::Group;

@@ -1,4 +1,4 @@
-use crate::data_structures::Buf;
+use crate::buf::Buf;
 use crate::wire::{Tag, WireType};
 
 use super::helpers::ensure_decode_len;

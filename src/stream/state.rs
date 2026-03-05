@@ -1,6 +1,6 @@
 use alloc::vec::Vec;
 
-use crate::document::TreeError;
+use crate::error::TreeError;
 #[cfg(feature = "group")]
 use crate::wire::FieldNumber;
 use crate::wire::Tag;

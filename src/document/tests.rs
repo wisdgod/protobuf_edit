@@ -1,5 +1,5 @@
 use super::*;
-use crate::data_structures::Buf;
+use crate::buf::Buf;
 use crate::{varint, wire};
 use crate::wire::WireType;
 

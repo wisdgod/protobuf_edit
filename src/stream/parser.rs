@@ -2,7 +2,7 @@ use alloc::vec;
 use alloc::vec::Vec;
 use core::intrinsics::unlikely;
 
-use crate::document::TreeError;
+use crate::error::TreeError;
 use crate::wire::{Tag, WireType};
 
 use super::decode::{decode_tag_prefix, decode_varint32_prefix, decode_varint64_prefix};

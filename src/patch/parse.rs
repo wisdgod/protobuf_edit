@@ -3,7 +3,9 @@ use core::cell::Cell;
 
 use crate::document::RawVarint32;
 use crate::fx::FxHashMap;
-use crate::{Buf, TreeError, WireType};
+use crate::buf::Buf;
+use crate::error::TreeError;
+use crate::wire::WireType;
 
 use super::{
     slice_span, FieldId, FieldNode, MessageId, MessageNode, MessageSource, Patch, PayloadEdit,

@@ -52,7 +52,7 @@ mod tests {
     #[test]
     #[cfg(feature = "group")]
     fn group_end_finder_handles_nested_groups() {
-        use crate::data_structures::Buf;
+        use crate::buf::Buf;
 
         let mut buf = Buf::new();
         encode_tag(&mut buf, FieldNumber::new(1).unwrap(), WireType::SGroup).unwrap();

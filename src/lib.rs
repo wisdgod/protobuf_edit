@@ -18,25 +18,38 @@
 //!   records byte spans into the original source buffer; payload edits are tracked
 //!   lazily and materialized on `Patch::save()` by copying unchanged spans verbatim.
 //!
+//! Public modules are organized by concern:
+//! - `buf`: shared owned/borrowed byte storage
+//! - `error`: shared error type used across editing and parsing APIs
+//! - `document`: arena-backed structured editing model
+//! - `patch`: span-based editing model
+//! - `wire`: protobuf tag primitives
+//! - `varint`: varint and zigzag codecs
+//! - `stream`: incremental wire parser
+//!
+//! Common entry types remain re-exported at the crate root as convenience aliases.
+//!
 //! `ArenaTree`/`SpanTree` aliases are provided as a shorter mental model.
 
 extern crate alloc;
 
 #[macro_use]
 mod _macro;
-mod data_structures;
 mod fx;
+pub mod buf;
+pub mod error;
 pub mod varint;
 pub mod wire;
 pub mod stream;
-mod document;
-mod patch;
+pub mod document;
+pub mod patch;
 
-pub use data_structures::Buf;
+pub use buf::{Buf, BufAllocError};
 pub use document::{
-    BorrowedDocument, Bucket, Capacities, Field, FieldMut, FieldRef, Fixed32, Fixed64, Ix,
-    LengthDelimited, Link, Document, RepeatedRefIter, TreeError, Varint, MAX_FIELDS,
+    BorrowedDocument, Bucket, Capacities, Document, Field, FieldMut, FieldRef, Fixed32, Fixed64,
+    Ix, LengthDelimited, Link, RepeatedRefIter, Varint, MAX_FIELDS,
 };
+pub use error::TreeError;
 pub use patch::{
     BorrowedPatch, FieldId, FieldSpans, FieldsByTag, MessageId, Patch, Span, Txn, ValueSpans,
 };

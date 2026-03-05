@@ -1,4 +1,4 @@
-use crate::document::TreeError;
+use crate::error::TreeError;
 use crate::wire::Tag;
 
 #[derive(Clone, Copy)]

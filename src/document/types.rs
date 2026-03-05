@@ -2,7 +2,8 @@ use alloc::vec::Vec;
 use core::fmt;
 use core::mem::MaybeUninit;
 
-use crate::data_structures::{Buf, BufAllocError};
+use crate::buf::Buf;
+use crate::error::TreeError;
 use crate::fx::FxHashMap;
 use crate::varint;
 use crate::wire::Tag;
@@ -42,58 +43,6 @@ impl Bucket {
     #[inline]
     pub const fn empty() -> Self {
         Self { head: None, tail: None }
-    }
-}
-
-#[derive(Clone, Copy, PartialEq, Eq)]
-/// Errors returned by message decoding and mutation helpers.
-pub enum TreeError {
-    CapacityExceeded,
-    DecodeError,
-    InvalidTag,
-    WireTypeMismatch,
-}
-
-impl TreeError {
-    #[inline]
-    const fn label(self) -> &'static str {
-        match self {
-            TreeError::CapacityExceeded => "CapacityExceeded",
-            TreeError::DecodeError => "DecodeError",
-            TreeError::InvalidTag => "InvalidTag",
-            TreeError::WireTypeMismatch => "WireTypeMismatch",
-        }
-    }
-
-    #[inline]
-    const fn message(self) -> &'static str {
-        match self {
-            TreeError::CapacityExceeded => "capacity exceeded",
-            TreeError::DecodeError => "decode error",
-            TreeError::InvalidTag => "invalid tag",
-            TreeError::WireTypeMismatch => "wire type mismatch",
-        }
-    }
-}
-
-impl fmt::Debug for TreeError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(self.label())
-    }
-}
-
-impl fmt::Display for TreeError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(self.message())
-    }
-}
-
-impl From<BufAllocError> for TreeError {
-    #[inline]
-    fn from(value: BufAllocError) -> Self {
-        match value {
-            BufAllocError::CapacityOverflow => TreeError::CapacityExceeded,
-        }
     }
 }
 
