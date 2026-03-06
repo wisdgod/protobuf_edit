@@ -152,14 +152,14 @@ fn frame_row_view(
                     out.push_str(&info.output_len.to_string());
                     out.push_str("B]");
                 }
-                if let Some(err) = meta.decompression_error.as_deref() {
+                if let Some(err) = meta.decompression_error.as_ref() {
                     out.push_str(" [decompression_error=");
-                    out.push_str(err);
+                    out.push_str(err.as_ref());
                     out.push(']');
                 }
-                if let Some(err) = meta.protobuf_error.as_deref() {
+                if let Some(err) = meta.protobuf_error.as_ref() {
                     out.push_str(" [protobuf_error=");
-                    out.push_str(err);
+                    out.push_str(err.as_ref());
                     out.push(']');
                 }
             });

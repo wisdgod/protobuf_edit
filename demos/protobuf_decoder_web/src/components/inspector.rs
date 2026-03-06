@@ -50,7 +50,6 @@ pub(crate) fn InspectorDrawer() -> impl IntoView {
     let fixed_text = RwSignal::new(String::new());
 
     let varint_base: RwSignal<Option<u64>> = RwSignal::new(None);
-    let bytes_base: RwSignal<Vec<u8>> = RwSignal::new(Vec::new());
     let fixed_base: RwSignal<Option<u64>> = RwSignal::new(None);
 
     let insert_field_number = RwSignal::new(String::new());
@@ -74,7 +73,6 @@ pub(crate) fn InspectorDrawer() -> impl IntoView {
             bytes_text.set(String::new());
             fixed_text.set(String::new());
             varint_base.set(None);
-            bytes_base.set(Vec::new());
             fixed_base.set(None);
             return;
         };
@@ -95,15 +93,13 @@ pub(crate) fn InspectorDrawer() -> impl IntoView {
                 }
                 WireType::Len => {
                     if let Ok(bytes) = patch.bytes(fid) {
-                        let owned = bytes.to_vec();
-                        if let Ok(s) = core::str::from_utf8(&owned) {
+                        if let Ok(s) = core::str::from_utf8(bytes) {
                             bytes_view.set(BytesView::Utf8);
                             bytes_text.set(s.to_string());
                         } else {
                             bytes_view.set(BytesView::Hex);
-                            bytes_text.set(hex::encode(&owned));
+                            bytes_text.set(hex::encode(bytes));
                         }
-                        bytes_base.set(owned);
                     }
                 }
                 WireType::I32 => {
@@ -194,7 +190,18 @@ pub(crate) fn InspectorDrawer() -> impl IntoView {
                 let Ok(Some(bytes)) = bytes_validation.get() else {
                     return false;
                 };
-                bytes_base.with(|base| bytes.as_slice() != base.as_slice())
+                let Some(fid) = selected.get() else {
+                    return false;
+                };
+                patch_state.with(|p| {
+                    let Some(patch) = p.as_ref() else {
+                        return false;
+                    };
+                    match patch.bytes(fid) {
+                        Ok(base) => bytes.as_slice() != base,
+                        Err(_) => true,
+                    }
+                })
             }
             WireType::I32 | WireType::I64 => {
                 let Ok(Some(v)) = fixed_validation.get() else {
@@ -343,7 +350,6 @@ pub(crate) fn InspectorDrawer() -> impl IntoView {
                             s.insert(fid);
                         });
                         bytes_text.set(canonical_text);
-                        bytes_base.set(bytes);
                         show_toast(
                             toasts,
                             next_toast_id,
@@ -597,9 +603,7 @@ pub(crate) fn InspectorDrawer() -> impl IntoView {
                         WireType::Len => {
                             if let Ok(bytes) = patch.bytes(fid) {
                                 bytes_view.set(BytesView::Hex);
-                                let owned = bytes.to_vec();
-                                bytes_text.set(hex::encode(&owned));
-                                bytes_base.set(owned);
+                                bytes_text.set(hex::encode(bytes));
                             }
                         }
                         WireType::I32 => {

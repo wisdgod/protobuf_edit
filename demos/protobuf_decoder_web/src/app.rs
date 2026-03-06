@@ -18,8 +18,12 @@ use crate::web::{
     set_document_theme, start_theme_transition,
 };
 use crate::workspace::{
-    build_selection_path, collect_visible_fields, compute_highlights, decode_selection_path,
-    encode_selection_path, format_frame_name_template, resolve_selection_path,
+    build_selection_path, close_envelope_browser, compute_highlights,
+    confirm_discard_edits as confirm_workspace_discard_edits, encode_selection_path,
+    format_frame_name_template, load_patch_from_view as load_patch_into_session,
+    open_envelope_frame as open_workspace_envelope_frame,
+    revert_pending_edits as revert_workspace_edits, save_and_reparse as save_workspace_and_reparse,
+    show_envelope_browser, visible_fields as visible_workspace_fields, WorkspaceSession,
 };
 use core::future::Future;
 use core::pin::Pin;
@@ -89,98 +93,45 @@ pub fn App() -> impl IntoView {
 
     let read_only = Memo::new(move |_| envelope_view.with(|s| s.is_some()));
 
-    let reset_ui_state = move || {
-        selected.set(None);
-        hovered.set(None);
-        expanded.set(FxHashSet::default());
-        dirty_fields.set(FxHashSet::default());
+    let workspace_session = WorkspaceSession {
+        patch_state,
+        patch_bytes,
+        raw_bytes,
+        envelope_view,
+        envelope_selected,
+        selected,
+        hovered,
+        expanded,
+        dirty_fields,
     };
 
-    let reset_ui_state_keep_selected =
-        move |new_selected: Option<FieldId>, new_expanded: FxHashSet<FieldId>| {
-            selected.set(new_selected);
-            hovered.set(None);
-            expanded.set(new_expanded);
-            dirty_fields.set(FxHashSet::default());
-        };
+    let reset_ui_state = {
+        let workspace_session = workspace_session.clone();
+        move || workspace_session.reset_ui_state()
+    };
 
-    let confirm_discard_edits = move |action: &str| -> bool {
-        let pending = dirty_fields.with_untracked(|s| s.len());
-        if pending == 0 {
-            return true;
-        }
-        let Some(window) = web_sys::window() else {
-            return false;
-        };
-        window
-            .confirm_with_message(&format!(
-                "You have {pending} pending edit(s). Discard and {action}?"
-            ))
-            .unwrap_or(false)
+    type ConfirmDiscardFn = dyn Fn(&str) -> bool;
+
+    let confirm_discard_edits: Rc<ConfirmDiscardFn> = {
+        let workspace_session = workspace_session.clone();
+        Rc::new(move |action: &str| confirm_workspace_discard_edits(&workspace_session, action))
     };
 
     type LoadPatchFn = dyn Fn(&str, ByteView, Vec<String>);
 
-    let load_patch_from_view: Rc<LoadPatchFn> = Rc::new(
-        move |label: &str, bytes: ByteView, auto_expand_paths: Vec<String>| {
-            envelope_view.set(None);
-            raw_bytes.set(None);
-            patch_bytes.set(Some(bytes.clone()));
-
-            // SAFETY: `patch_bytes` keeps the backing `Rc<Vec<u8>>` alive for the lifetime of
-            // `patch_state`.
-            let source = unsafe { protobuf_edit::Buf::from_borrowed_slice(bytes.as_slice()) };
-            let res = Patch::from_buf(source);
-            match res {
-                Ok(mut patch) => {
-                    let _ = patch.enable_read_cache();
-                    let field_count =
-                        patch.message_fields(patch.root()).map(|f| f.len()).unwrap_or(0);
-
-                    let expanded_by_default = {
-                        let mut out: FxHashSet<FieldId> = FxHashSet::default();
-                        for raw in auto_expand_paths {
-                            let Some(path) = decode_selection_path(&raw) else {
-                                continue;
-                            };
-                            let Ok(Some((_fid, expanded))) =
-                                resolve_selection_path(&mut patch, &path, true)
-                            else {
-                                continue;
-                            };
-                            out.extend(expanded);
-                        }
-                        out
-                    };
-
-                    patch_state.set(Some(patch));
-                    reset_ui_state_keep_selected(None, expanded_by_default);
-                    show_toast(
-                        toasts,
-                        next_toast_id,
-                        ToastKind::Success,
-                        format!("Loaded {label}: {} bytes, {field_count} field(s).", bytes.len()),
-                    );
-                }
-                Err(e) => {
-                    patch_state.set(None);
-                    patch_bytes.set(None);
-                    reset_ui_state();
-                    let frames = parse_envelope_frames(bytes.as_slice()).ok();
-                    raw_bytes.set(Some(bytes));
-                    let msg = match frames {
-                        Some(frames) if !frames.is_empty() => format!(
-                            "Failed to load {label}: {e:?}. Bytes match envelope framing ({} frame(s)). Use \"View Frames\", \"Import Envelope\", or \"Extract Frames\".",
-                            frames.len()
-                        ),
-                        _ => format!("Failed to load {label}: {e:?}"),
-                    };
-                    show_toast(toasts, next_toast_id, ToastKind::Error, msg);
-                }
-            }
-        },
-    );
-
+    let load_patch_from_view: Rc<LoadPatchFn> = {
+        let workspace_session = workspace_session.clone();
+        Rc::new(move |label: &str, bytes: ByteView, auto_expand_paths: Vec<String>| {
+            load_patch_into_session(
+                &workspace_session,
+                label,
+                bytes,
+                auto_expand_paths,
+                toasts,
+                next_toast_id,
+            );
+        })
+    };
     type RefreshMessagesFn = dyn Fn() -> Pin<Box<dyn Future<Output = ()> + 'static>>;
 
     let refresh_messages: Rc<RefreshMessagesFn> = Rc::new(move || {
@@ -237,7 +188,9 @@ pub fn App() -> impl IntoView {
     });
 
     let switch_to_message = {
+        let confirm_discard_edits = confirm_discard_edits.clone();
         let load_patch_from_view = load_patch_from_view.clone();
+        let workspace_session = workspace_session.clone();
         Rc::new(move |id: MessageId| {
             let already_current = current_message_id.get_untracked() == Some(id);
             if dirty_fields.with_untracked(|s| !s.is_empty())
@@ -261,11 +214,7 @@ pub fn App() -> impl IntoView {
                 s.push_str(name.as_ref());
             });
 
-            patch_state.set(None);
-            patch_bytes.set(None);
-            raw_bytes.set(None);
-            envelope_view.set(None);
-            reset_ui_state();
+            workspace_session.clear_loaded_data();
 
             let nonce = load_nonce.get_untracked().wrapping_add(1);
             load_nonce.set(nonce);
@@ -275,6 +224,7 @@ pub fn App() -> impl IntoView {
                 .with_untracked(|list| list.iter().find(|m| m.id == id).map(|m| m.class_id))
                 .unwrap_or(id);
             let load_patch_from_view = load_patch_from_view.clone();
+            let workspace_session = workspace_session.clone();
             spawn_local(async move {
                 match messages::load_message_bytes(id).await {
                     Ok(loaded) => {
@@ -297,10 +247,7 @@ pub fn App() -> impl IntoView {
                                 load_patch_from_view(&label, loaded.bytes, auto_expand);
                             }
                             LoadedBytesMode::Raw => {
-                                patch_state.set(None);
-                                patch_bytes.set(None);
-                                raw_bytes.set(Some(loaded.bytes));
-                                reset_ui_state();
+                                workspace_session.show_root_raw_bytes(loaded.bytes);
                                 if let Some(note) = loaded.note {
                                     show_toast(toasts, next_toast_id, ToastKind::Success, note);
                                 }
@@ -358,7 +305,7 @@ pub fn App() -> impl IntoView {
                     hash.strip_prefix("#base64=").or_else(|| hash.strip_prefix("#b64="))
                 else {
                     if let Some(id) = current_message_id.get_untracked() {
-                        switch_to_message(id);
+                        switch_to_message.as_ref()(id);
                     }
                     return;
                 };
@@ -387,7 +334,10 @@ pub fn App() -> impl IntoView {
                                     ToastKind::Success,
                                     format!("Imported URL hash as message \"{name}\"."),
                                 );
-                                message_name_text.set(name);
+                                message_name_text.update(|s| {
+                                    s.clear();
+                                    s.push_str(name.as_ref());
+                                });
                             }
                             Err(msg) => show_toast(toasts, next_toast_id, ToastKind::Error, msg),
                         }
@@ -401,7 +351,7 @@ pub fn App() -> impl IntoView {
     let on_select_message = {
         let switch_to_message = switch_to_message.clone();
         UnsyncCallback::new(move |id: MessageId| {
-            switch_to_message(id);
+            switch_to_message.as_ref()(id);
         })
     };
 
@@ -416,7 +366,7 @@ pub fn App() -> impl IntoView {
             if name.is_empty() {
                 return;
             }
-            let name = name.to_string();
+            let name = Arc::<str>::from(name);
             let refresh_messages = refresh_messages.clone();
             spawn_local(async move {
                 if let Err(msg) = messages::rename_message(id, &name).await {
@@ -429,6 +379,7 @@ pub fn App() -> impl IntoView {
     };
 
     let on_new_message = {
+        let confirm_discard_edits = confirm_discard_edits.clone();
         let refresh_messages = refresh_messages.clone();
         let load_patch_from_view = load_patch_from_view.clone();
         UnsyncCallback::new(move |_| {
@@ -461,6 +412,7 @@ pub fn App() -> impl IntoView {
     };
 
     let on_delete_selected_messages = {
+        let confirm_discard_edits = confirm_discard_edits.clone();
         let refresh_messages = refresh_messages.clone();
         let switch_to_message = switch_to_message.clone();
         UnsyncCallback::new(move |ids: Vec<MessageId>| {
@@ -515,7 +467,7 @@ pub fn App() -> impl IntoView {
 
                 refresh_messages().await;
                 if deleting_current && let Some(next_id) = current_message_id.get_untracked() {
-                    switch_to_message(next_id);
+                    switch_to_message.as_ref()(next_id);
                 }
 
                 show_toast(
@@ -529,6 +481,7 @@ pub fn App() -> impl IntoView {
     };
 
     let import_text = {
+        let confirm_discard_edits = confirm_discard_edits.clone();
         let refresh_messages = refresh_messages.clone();
         let load_patch_from_view = load_patch_from_view.clone();
         move |label: &str, input: &str, name_prefix: &str| {
@@ -537,12 +490,12 @@ pub fn App() -> impl IntoView {
             }
             match decode_user_input(input) {
                 Ok(bytes) => {
-                    let label = label.to_string();
+                    let label = Arc::<str>::from(label);
                     let name = import_name_text.get_untracked();
-                    let name = if name.trim().is_empty() {
-                        format!("{name_prefix} ({}B)", bytes.len())
+                    let name: Arc<str> = if name.trim().is_empty() {
+                        Arc::<str>::from(format!("{name_prefix} ({}B)", bytes.len()))
                     } else {
-                        name.trim().to_string()
+                        Arc::<str>::from(name.trim())
                     };
                     let bytes_len = bytes.len();
                     let bytes_value = js_sys::Uint8Array::from(bytes.as_slice());
@@ -558,7 +511,10 @@ pub fn App() -> impl IntoView {
                                     ByteView::from_vec(bytes),
                                     Vec::new(),
                                 );
-                                message_name_text.set(name);
+                                message_name_text.update(|s| {
+                                    s.clear();
+                                    s.push_str(name.as_ref());
+                                });
                             }
                             Err(msg) => show_toast(toasts, next_toast_id, ToastKind::Error, msg),
                         }
@@ -587,12 +543,9 @@ pub fn App() -> impl IntoView {
     let extract_envelope_bytes = {
         let switch_to_message = switch_to_message.clone();
         let refresh_messages = refresh_messages.clone();
-        Rc::new(move |source_id: MessageId, source_name: String, bytes: Vec<u8>| {
-            envelope_view.set(None);
-            patch_state.set(None);
-            patch_bytes.set(None);
-            raw_bytes.set(None);
-            reset_ui_state();
+        let workspace_session = workspace_session.clone();
+        Rc::new(move |source_id: MessageId, source_name: Arc<str>, bytes: Vec<u8>| {
+            workspace_session.clear_loaded_data();
 
             let bytes = Rc::new(bytes);
             let template = frame_name_template_text.get_untracked();
@@ -677,7 +630,7 @@ pub fn App() -> impl IntoView {
                 };
 
                 refresh_messages().await;
-                switch_to_message(open_id);
+                switch_to_message.as_ref()(open_id);
                 let msg = match (compressed, json) {
                     (0, 0) => format!("Extracted {created} frame(s) into new messages."),
                     (_, 0) => format!(
@@ -696,6 +649,7 @@ pub fn App() -> impl IntoView {
     };
 
     let on_import_envelope_click = {
+        let confirm_discard_edits = confirm_discard_edits.clone();
         let extract_envelope_bytes = extract_envelope_bytes.clone();
         UnsyncCallback::new(move |_| {
             if !confirm_discard_edits("import envelope bytes") {
@@ -721,10 +675,10 @@ pub fn App() -> impl IntoView {
             }
 
             let import_name = import_name_text.get_untracked();
-            let source_name = if import_name.trim().is_empty() {
-                format!("Envelope import ({}B)", bytes.len())
+            let source_name: Arc<str> = if import_name.trim().is_empty() {
+                Arc::<str>::from(format!("Envelope import ({}B)", bytes.len()))
             } else {
-                import_name.trim().to_string()
+                Arc::<str>::from(import_name.trim())
             };
             let bytes_len = bytes.len();
             let bytes_value = js_sys::Uint8Array::from(bytes.as_slice());
@@ -738,194 +692,95 @@ pub fn App() -> impl IntoView {
                             return;
                         }
                     };
-                extract_envelope_bytes(source_id, source_name, bytes);
+                extract_envelope_bytes.as_ref()(source_id, source_name, bytes);
             });
         })
     };
 
-    let open_envelope_frame = UnsyncCallback::new(move |idx: usize| {
-        let Some((bytes, frame, cached_err)) = envelope_view.with_untracked(|state| {
-            let view = state.as_ref()?;
-            let frame = view.frames.get(idx).copied()?;
-            let cached_err =
-                view.meta.get(idx).and_then(|meta| meta.protobuf_error.as_ref()).cloned();
-            Some((view.bytes.clone(), frame, cached_err))
-        }) else {
-            return;
-        };
+    let open_envelope_frame = {
+        let workspace_session = workspace_session.clone();
+        UnsyncCallback::new(move |idx: usize| {
+            open_workspace_envelope_frame(&workspace_session, idx, toasts, next_toast_id);
+        })
+    };
 
-        envelope_selected.set(idx);
-
-        let Some(view) = ByteView::slice(
-            bytes.clone(),
-            frame.payload_offset,
-            frame.payload_offset.saturating_add(frame.payload_len),
-        ) else {
-            show_toast(
-                toasts,
-                next_toast_id,
-                ToastKind::Error,
-                "Envelope frame payload range is out of bounds.",
-            );
-            return;
-        };
-
-        if frame.is_compressed() {
-            patch_state.set(None);
-            patch_bytes.set(None);
-            raw_bytes.set(Some(view));
-            reset_ui_state();
-            return;
-        }
-
-        if frame.is_json() {
-            patch_state.set(None);
-            patch_bytes.set(None);
-            raw_bytes.set(Some(view));
-            reset_ui_state();
-            return;
-        }
-
-        if cached_err.is_some() {
-            patch_state.set(None);
-            patch_bytes.set(None);
-            raw_bytes.set(Some(view));
-            reset_ui_state();
-            return;
-        }
-
-        patch_bytes.set(Some(view.clone()));
-        // SAFETY: `patch_bytes` keeps the backing `Rc<Vec<u8>>` alive while `patch_state` is set.
-        let source = unsafe { protobuf_edit::Buf::from_borrowed_slice(view.as_slice()) };
-        match Patch::from_buf(source) {
-            Ok(mut patch) => {
-                let _ = patch.enable_read_cache();
-                patch_state.set(Some(patch));
-                raw_bytes.set(None);
-                reset_ui_state();
-            }
-            Err(e) => {
-                let msg = format!("{e:?}");
-                envelope_view.update(|state| {
-                    let Some(view) = state.as_mut() else {
-                        return;
-                    };
-                    let Some(meta) = view.meta.get_mut(idx) else {
-                        return;
-                    };
-                    meta.protobuf_error = Some(msg.clone());
-                });
-
-                patch_state.set(None);
-                patch_bytes.set(None);
-                raw_bytes.set(Some(view));
-                reset_ui_state();
-                show_toast(
-                    toasts,
-                    next_toast_id,
-                    ToastKind::Error,
-                    format!("Failed to parse envelope frame as protobuf: {msg}"),
-                );
-            }
-        }
-    });
-
-    let on_view_frames = UnsyncCallback::new(move |_| {
-        let Some(source_id) = current_message_id.get_untracked() else {
-            show_toast(toasts, next_toast_id, ToastKind::Error, "No message selected.");
-            return;
-        };
-        if !confirm_discard_edits("view envelope frames") {
-            return;
-        }
-
-        spawn_local(async move {
-            let revision = match messages::message_modified_ms(source_id).await {
-                Ok(v) => v,
-                Err(msg) => {
-                    show_toast(toasts, next_toast_id, ToastKind::Error, msg);
-                    return;
-                }
+    let on_view_frames = {
+        let workspace_session = workspace_session.clone();
+        UnsyncCallback::new(move |_| {
+            let Some(source_id) = current_message_id.get_untracked() else {
+                show_toast(toasts, next_toast_id, ToastKind::Error, "No message selected.");
+                return;
             };
-
-            let loaded = match messages::load_message_bytes(source_id).await {
-                Ok(v) => v,
-                Err(msg) => {
-                    show_toast(toasts, next_toast_id, ToastKind::Error, msg);
-                    return;
-                }
-            };
-
-            let bytes_view = loaded.bytes;
-            let bytes = bytes_view.bytes_rc();
-            if bytes_view.len() != bytes.len() {
-                show_toast(
-                    toasts,
-                    next_toast_id,
-                    ToastKind::Error,
-                    "View Frames is not supported for sliced messages.",
-                );
+            if !confirm_workspace_discard_edits(&workspace_session, "view envelope frames") {
                 return;
             }
 
-            page_cache::store_message_bytes(source_id, revision, bytes.clone());
-            let frames = match parse_envelope_frames(bytes_view.as_slice()) {
-                Ok(v) => v,
-                Err(msg) => {
-                    show_toast(toasts, next_toast_id, ToastKind::Error, msg);
+            let workspace_session = workspace_session.clone();
+            spawn_local(async move {
+                let loaded = match messages::load_message_bytes(source_id).await {
+                    Ok(value) => value,
+                    Err(msg) => {
+                        show_toast(toasts, next_toast_id, ToastKind::Error, msg);
+                        return;
+                    }
+                };
+
+                let bytes_view = loaded.bytes;
+                let bytes = bytes_view.bytes_rc();
+                if bytes_view.len() != bytes.len() {
+                    show_toast(
+                        toasts,
+                        next_toast_id,
+                        ToastKind::Error,
+                        "View Frames is not supported for sliced messages.",
+                    );
                     return;
                 }
-            };
-            if frames.is_empty() {
+
+                page_cache::store_message_bytes(source_id, loaded.revision, bytes.clone());
+                let frames = match parse_envelope_frames(bytes_view.as_slice()) {
+                    Ok(value) => value,
+                    Err(msg) => {
+                        show_toast(toasts, next_toast_id, ToastKind::Error, msg);
+                        return;
+                    }
+                };
+                if frames.is_empty() {
+                    show_toast(
+                        toasts,
+                        next_toast_id,
+                        ToastKind::Error,
+                        "Envelope did not contain any frames.",
+                    );
+                    return;
+                }
+
+                let frames_len = frames.len();
+                let selected = frames
+                    .iter()
+                    .position(|frame| !frame.is_compressed() && !frame.is_json())
+                    .or_else(|| frames.iter().position(|frame| !frame.is_compressed()))
+                    .unwrap_or(0);
+
+                let meta = vec![EnvelopeFrameMeta::default(); frames_len];
+                show_envelope_browser(&workspace_session, source_id, bytes, frames, meta);
+                open_envelope_frame.run(selected);
                 show_toast(
                     toasts,
                     next_toast_id,
-                    ToastKind::Error,
-                    "Envelope did not contain any frames.",
+                    ToastKind::Success,
+                    format!("Loaded envelope view: {frames_len} frame(s)."),
                 );
-                return;
-            }
+            });
+        })
+    };
 
-            patch_state.set(None);
-            patch_bytes.set(None);
-            raw_bytes.set(None);
-            reset_ui_state();
-
-            let frames_len = frames.len();
-            let selected = frames
-                .iter()
-                .position(|f| !f.is_compressed() && !f.is_json())
-                .or_else(|| frames.iter().position(|f| !f.is_compressed()))
-                .unwrap_or(0);
-
-            let meta = vec![EnvelopeFrameMeta::default(); frames.len()];
-            envelope_view.set(Some(EnvelopeView { source_id, bytes, frames, meta }));
-            envelope_selected.set(selected);
-            open_envelope_frame.run(selected);
-            show_toast(
-                toasts,
-                next_toast_id,
-                ToastKind::Success,
-                format!("Loaded envelope view: {frames_len} frame(s)."),
-            );
-        });
-    });
-
-    let on_close_frames = UnsyncCallback::new(move |_| {
-        let Some(bytes) =
-            envelope_view.with_untracked(|state| state.as_ref().map(|v| v.bytes.clone()))
-        else {
-            return;
-        };
-        let len = bytes.len();
-        envelope_view.set(None);
-        envelope_selected.set(0);
-        patch_state.set(None);
-        patch_bytes.set(None);
-        raw_bytes.set(ByteView::slice(bytes, 0, len));
-        reset_ui_state();
-        show_toast(toasts, next_toast_id, ToastKind::Success, "Showing raw envelope bytes.");
-    });
+    let on_close_frames = {
+        let workspace_session = workspace_session.clone();
+        UnsyncCallback::new(move |_| {
+            close_envelope_browser(&workspace_session, toasts, next_toast_id);
+        })
+    };
 
     let on_decompress_selected_frame = {
         let switch_to_message = switch_to_message.clone();
@@ -981,7 +836,7 @@ pub fn App() -> impl IntoView {
                 };
 
                 refresh_messages().await;
-                switch_to_message(id);
+                switch_to_message.as_ref()(id);
                 show_toast(
                     toasts,
                     next_toast_id,
@@ -1186,10 +1041,10 @@ pub fn App() -> impl IntoView {
 
                 raw_input.set(encode_base64(&bytes));
                 let import_name = import_name_text.get_untracked();
-                let name = if import_name.trim().is_empty() {
-                    format!("Upload: {filename}")
+                let name: Arc<str> = if import_name.trim().is_empty() {
+                    Arc::<str>::from(format!("Upload: {filename}"))
                 } else {
-                    import_name.trim().to_string()
+                    Arc::<str>::from(import_name.trim())
                 };
                 let bytes_len = bytes.len();
                 let bytes_value = js_sys::Uint8Array::from(bytes.as_slice());
@@ -1205,7 +1060,10 @@ pub fn App() -> impl IntoView {
                                 ByteView::from_vec(bytes),
                                 Vec::new(),
                             );
-                            message_name_text.set(name);
+                            message_name_text.update(|s| {
+                                s.clear();
+                                s.push_str(name.as_ref());
+                            });
                         }
                         Err(msg) => show_toast(toasts, next_toast_id, ToastKind::Error, msg),
                     }
@@ -1248,7 +1106,7 @@ pub fn App() -> impl IntoView {
             if name.is_empty() {
                 return;
             }
-            let name = name.to_string();
+            let name = Arc::<str>::from(name);
             let refresh_messages = refresh_messages.clone();
             spawn_local(async move {
                 if let Err(msg) = messages::rename_message(id, &name).await {
@@ -1267,7 +1125,7 @@ pub fn App() -> impl IntoView {
             if name.is_empty() {
                 return;
             }
-            let name = name.to_string();
+            let name = Arc::<str>::from(name);
             let refresh_messages = refresh_messages.clone();
             spawn_local(async move {
                 if let Err(msg) = messages::rename_class(class_id, &name).await {
@@ -1624,117 +1482,46 @@ pub fn App() -> impl IntoView {
         });
     });
 
-    let revert_pending_edits = Rc::new(move || {
-        let pending = dirty_fields.with_untracked(|s| s.len());
-        if pending == 0 {
-            return;
-        }
-
-        let bytes_view = patch_bytes.get_untracked();
-        let prev_selected = selected.get_untracked();
-        let prev_path = patch_state.with(|p| {
-            let patch = p.as_ref()?;
-            let fid = prev_selected?;
-            build_selection_path(patch, fid)
-        });
-
-        let mut undo_error: Option<String> = None;
-        let mut resolved: Option<(Option<FieldId>, FxHashSet<FieldId>)> = None;
-
-        patch_state.update(|p| {
-            let Some(mut patch) = p.take() else {
-                undo_error = Some("Undo failed: no message loaded.".to_string());
+    let revert_pending_edits = {
+        let workspace_session = workspace_session.clone();
+        Rc::new(move || {
+            let pending = workspace_session.dirty_fields.with_untracked(|state| state.len());
+            if pending == 0 {
                 return;
-            };
-
-            if patch.txn_active() {
-                patch.txn_rollback();
-            } else {
-                let Some(bytes_view) = bytes_view.as_ref() else {
-                    undo_error = Some("Undo failed: missing root bytes view.".to_string());
-                    *p = Some(patch);
-                    return;
-                };
-                // SAFETY: `patch_bytes` keeps the backing bytes alive while `patch_state` is set.
-                let source =
-                    unsafe { protobuf_edit::Buf::from_borrowed_slice(bytes_view.as_slice()) };
-                match Patch::from_buf(source) {
-                    Ok(v) => patch = v,
-                    Err(e) => {
-                        undo_error = Some(format!("Undo failed: {e:?}"));
-                        *p = Some(patch);
-                        return;
-                    }
-                };
             }
 
-            let _ = patch.enable_read_cache();
-
-            resolved = Some(match prev_path.as_ref() {
-                Some(path) => match resolve_selection_path(&mut patch, path, false) {
-                    Ok(Some((fid, expanded))) => (Some(fid), expanded),
-                    Ok(None) => (None, FxHashSet::default()),
-                    Err(_) => (None, FxHashSet::default()),
-                },
-                None => (None, FxHashSet::default()),
-            });
-
-            *p = Some(patch);
-        });
-
-        if let Some(msg) = undo_error {
-            show_toast(toasts, next_toast_id, ToastKind::Error, msg);
-            return;
-        }
-
-        let (new_selected, new_expanded) = resolved.unwrap_or((None, FxHashSet::default()));
-        selected.set(new_selected);
-        hovered.set(None);
-        expanded.set(new_expanded);
-        dirty_fields.set(FxHashSet::default());
-        show_toast(
-            toasts,
-            next_toast_id,
-            ToastKind::Success,
-            format!("Reverted {pending} pending edit(s)."),
-        );
-    });
+            match revert_workspace_edits(&workspace_session) {
+                Ok(()) => show_toast(
+                    toasts,
+                    next_toast_id,
+                    ToastKind::Success,
+                    format!("Reverted {pending} pending edit(s)."),
+                ),
+                Err(err) => show_toast(
+                    toasts,
+                    next_toast_id,
+                    ToastKind::Error,
+                    format!("Undo failed: {err:?}"),
+                ),
+            }
+        })
+    };
 
     let save_and_reparse = {
         let refresh_messages = refresh_messages.clone();
+        let workspace_session = workspace_session.clone();
         Rc::new(move || {
             let before_len = bytes_count.get_untracked().unwrap_or(0);
             let message_id = current_message_id.get_untracked();
-            let prev_selected = selected.get_untracked();
-            let prev_path = patch_state.with(|p| {
-                let patch = p.as_ref()?;
-                let fid = prev_selected?;
-                build_selection_path(patch, fid)
-            });
 
-            let t0 = js_sys::Date::now();
-            let res: Result<(Patch, ByteView), TreeError> = patch_state.with(|p| {
-                let Some(patch) = p.as_ref() else {
-                    return Err(TreeError::DecodeError);
-                };
-                let bytes = patch.save()?;
-                let bytes = ByteView::from_vec(bytes.into_vec());
-                // SAFETY: `patch_bytes` stores the backing bytes for the lifetime of `patch_state`.
-                let source = unsafe { protobuf_edit::Buf::from_borrowed_slice(bytes.as_slice()) };
-                let patch = Patch::from_buf(source)?;
-                Ok((patch, bytes))
-            });
-            let elapsed_ms = (js_sys::Date::now() - t0).max(0.0);
-
-            match res {
-                Ok((mut patch, bytes_view)) => {
-                    let _ = patch.enable_read_cache();
-                    let field_count =
-                        patch.message_fields(patch.root()).map(|f| f.len()).unwrap_or(0);
-                    let bytes_len = patch.root_bytes().len();
+            match save_workspace_and_reparse(&workspace_session) {
+                Ok(info) => {
+                    let bytes_len = info.bytes_len;
+                    let field_count = info.field_count;
+                    let elapsed_ms = info.elapsed_ms;
 
                     if let Some(id) = message_id {
-                        let bytes_value = js_sys::Uint8Array::from(bytes_view.as_slice());
+                        let bytes_value = js_sys::Uint8Array::from(info.bytes.as_slice());
                         let refresh_messages = refresh_messages.clone();
                         spawn_local(async move {
                             match messages::update_message_bytes(id, bytes_len, bytes_value).await {
@@ -1746,18 +1533,6 @@ pub fn App() -> impl IntoView {
                         });
                     }
 
-                    let (new_selected, new_expanded) = match prev_path {
-                        Some(path) => match resolve_selection_path(&mut patch, &path, false) {
-                            Ok(Some((fid, expanded))) => (Some(fid), expanded),
-                            Ok(None) => (None, FxHashSet::default()),
-                            Err(_) => (None, FxHashSet::default()),
-                        },
-                        None => (None, FxHashSet::default()),
-                    };
-
-                    patch_bytes.set(Some(bytes_view));
-                    patch_state.set(Some(patch));
-                    reset_ui_state_keep_selected(new_selected, new_expanded);
                     show_toast(
                         toasts,
                         next_toast_id,
@@ -1767,11 +1542,11 @@ pub fn App() -> impl IntoView {
                         ),
                     );
                 }
-                Err(e) => show_toast(
+                Err(err) => show_toast(
                     toasts,
                     next_toast_id,
                     ToastKind::Error,
-                    format!("Save & reparse failed: {e:?}"),
+                    format!("Save & reparse failed: {err:?}"),
                 ),
             }
         })
@@ -1779,7 +1554,7 @@ pub fn App() -> impl IntoView {
 
     let on_save_reparse = {
         let save_and_reparse = save_and_reparse.clone();
-        UnsyncCallback::new(move |_| save_and_reparse())
+        UnsyncCallback::new(move |_| save_and_reparse.as_ref()())
     };
 
     let on_bump_modified = UnsyncCallback::new(move |_| {
@@ -1851,7 +1626,7 @@ pub fn App() -> impl IntoView {
                         && dirty_count.get_untracked() > 0
                     {
                         ev.prevent_default();
-                        revert_pending_edits();
+                        revert_pending_edits.as_ref()();
                     }
                     return;
                 }
@@ -1861,7 +1636,7 @@ pub fn App() -> impl IntoView {
                     if patch_state.with_untracked(|p| p.is_some())
                         && dirty_count.get_untracked() > 0
                     {
-                        save_and_reparse();
+                        save_and_reparse.as_ref()();
                     }
                     return;
                 }
@@ -1873,16 +1648,7 @@ pub fn App() -> impl IntoView {
                     }
                     "ArrowDown" => {
                         ev.prevent_default();
-                        let visible = patch_state.with_untracked(|p| {
-                            let Some(patch) = p.as_ref() else {
-                                return Vec::new();
-                            };
-                            expanded.with_untracked(|expanded| {
-                                let mut out = Vec::new();
-                                collect_visible_fields(patch, patch.root(), expanded, &mut out);
-                                out
-                            })
-                        });
+                        let visible = visible_workspace_fields(&workspace_session);
                         if visible.is_empty() {
                             return;
                         }
@@ -1900,16 +1666,7 @@ pub fn App() -> impl IntoView {
                     }
                     "ArrowUp" => {
                         ev.prevent_default();
-                        let visible = patch_state.with_untracked(|p| {
-                            let Some(patch) = p.as_ref() else {
-                                return Vec::new();
-                            };
-                            expanded.with_untracked(|expanded| {
-                                let mut out = Vec::new();
-                                collect_visible_fields(patch, patch.root(), expanded, &mut out);
-                                out
-                            })
-                        });
+                        let visible = visible_workspace_fields(&workspace_session);
                         if visible.is_empty() {
                             return;
                         }

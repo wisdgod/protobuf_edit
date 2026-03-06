@@ -52,6 +52,7 @@ pub(crate) async fn load_message_bytes(id: MessageId) -> UiResult<LoadedBytes> {
     if let Some(bytes) = page_cache::cached_message_bytes(id, revision) {
         return Ok(LoadedBytes {
             bytes: ByteView::from_rc(bytes),
+            revision,
             mode: LoadedBytesMode::Protobuf,
             note: None,
         });
@@ -64,7 +65,12 @@ pub(crate) async fn load_message_bytes(id: MessageId) -> UiResult<LoadedBytes> {
 
     let bytes = Rc::new(bytes);
     page_cache::store_message_bytes(id, revision, bytes.clone());
-    Ok(LoadedBytes { bytes: ByteView::from_rc(bytes), mode: LoadedBytesMode::Protobuf, note: None })
+    Ok(LoadedBytes {
+        bytes: ByteView::from_rc(bytes),
+        revision,
+        mode: LoadedBytesMode::Protobuf,
+        note: None,
+    })
 }
 
 async fn load_message_record(id: MessageId) -> UiResult<MessageRecord> {
@@ -297,16 +303,23 @@ async fn load_envelope_frame_ref(
         if is_json {
             return Ok(LoadedBytes {
                 bytes: payload,
+                revision: current_source_rev,
                 mode: LoadedBytesMode::Raw,
                 note: Some("Frame is marked as JSON; showing raw bytes.".into()),
             });
         }
-        return Ok(LoadedBytes { bytes: payload, mode: LoadedBytesMode::Protobuf, note: None });
+        return Ok(LoadedBytes {
+            bytes: payload,
+            revision: current_source_rev,
+            mode: LoadedBytesMode::Protobuf,
+            note: None,
+        });
     }
 
     if let Some(out) = page_cache::cached_decompressed_bytes(id) {
         return Ok(LoadedBytes {
             bytes: ByteView::from_rc(out),
+            revision: current_source_rev,
             mode: if is_json { LoadedBytesMode::Raw } else { LoadedBytesMode::Protobuf },
             note: if is_json {
                 Some("Frame is marked as JSON; showing decompressed bytes.".into())
@@ -319,8 +332,9 @@ async fn load_envelope_frame_ref(
     if let Some(error) = page_cache::cached_decompressed_error(id) {
         return Ok(LoadedBytes {
             bytes: payload,
+            revision: current_source_rev,
             mode: LoadedBytesMode::Raw,
-            note: Some(error.into()),
+            note: Some(error),
         });
     }
 
@@ -359,6 +373,7 @@ async fn load_envelope_frame_ref(
         page_cache::set_class_decompress_preference(class_id, fmt);
         return Ok(LoadedBytes {
             bytes: ByteView::from_rc(out),
+            revision: current_source_rev,
             mode: if is_json { LoadedBytesMode::Raw } else { LoadedBytesMode::Protobuf },
             note: if is_json {
                 Some("Frame is marked as JSON; showing decompressed bytes.".into())
@@ -369,9 +384,13 @@ async fn load_envelope_frame_ref(
     }
 
     let msg = last_err.unwrap_or_else(|| "Decompression failed.".into());
-    let msg = msg.into_owned();
     page_cache::store_decompressed_error(id, msg.clone());
-    Ok(LoadedBytes { bytes: payload, mode: LoadedBytesMode::Raw, note: Some(msg.into()) })
+    Ok(LoadedBytes {
+        bytes: payload,
+        revision: current_source_rev,
+        mode: LoadedBytesMode::Raw,
+        note: Some(msg),
+    })
 }
 
 fn now_ms() -> u64 {
