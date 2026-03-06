@@ -1,4 +1,5 @@
 use crate::state::{MessageCatalogState, StatusBarActions, WorkspaceState};
+use leptos::oco::Oco;
 use leptos::prelude::*;
 
 #[component]
@@ -36,8 +37,8 @@ pub(crate) fn StatusBar(actions: StatusBarActions) -> impl IntoView {
             <div class="status-center">
                 <div>
                     {move || match workspace.selected.get() {
-                        None => "No selection".to_string(),
-                        Some(fid) => format!("FieldId={fid:?} selected"),
+                        None => Oco::Borrowed("No selection"),
+                        Some(fid) => Oco::from(format!("FieldId={fid:?} selected")),
                     }}
                 </div>
 
@@ -47,7 +48,11 @@ pub(crate) fn StatusBar(actions: StatusBarActions) -> impl IntoView {
                     </span>
                     {move || {
                         let n = workspace.dirty_count.get();
-                        if n == 0 { "0 edits".to_string() } else { format!("{n} edit(s) pending") }
+                        if n == 0 {
+                            Oco::Borrowed("0 edits")
+                        } else {
+                            Oco::from(format!("{n} edit(s) pending"))
+                        }
                     }}
                 </div>
             </div>

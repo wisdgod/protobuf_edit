@@ -1,5 +1,6 @@
 use crate::state::{EnvelopeActions, WorkspaceState};
 use leptos::prelude::*;
+use std::sync::Arc;
 
 #[component]
 pub(crate) fn EnvelopeFramesPanel() -> impl IntoView {
@@ -90,10 +91,10 @@ fn frame_row_view(
         if selected.get() == idx { "frame-row frame-row--selected" } else { "frame-row" }
     };
 
-    let meta_line = format!(
+    let meta_line: Arc<str> = Arc::<str>::from(format!(
         "frame {idx}  flags=0x{:02X}  payload={}B  header@{}  payload@{}",
         frame.flags, frame.payload_len, frame.header_offset, frame.payload_offset
-    );
+    ));
 
     let suffix = move || {
         let mut out = String::new();
@@ -129,7 +130,7 @@ fn frame_row_view(
     let title = {
         let meta_line = meta_line.clone();
         move || {
-            let mut out = meta_line.clone();
+            let mut out = String::from(meta_line.as_ref());
             if frame.is_compressed() {
                 out.push_str(" [compressed]");
             }
@@ -152,14 +153,14 @@ fn frame_row_view(
                     out.push_str(&info.output_len.to_string());
                     out.push_str("B]");
                 }
-                if let Some(err) = meta.decompression_error.as_deref() {
+                if let Some(err) = meta.decompression_error.as_ref() {
                     out.push_str(" [decompression_error=");
-                    out.push_str(err);
+                    out.push_str(err.as_ref());
                     out.push(']');
                 }
-                if let Some(err) = meta.protobuf_error.as_deref() {
+                if let Some(err) = meta.protobuf_error.as_ref() {
                     out.push_str(" [protobuf_error=");
-                    out.push_str(err);
+                    out.push_str(err.as_ref());
                     out.push(']');
                 }
             });
@@ -171,7 +172,7 @@ fn frame_row_view(
     view! {
         <div class=row_class prop:title=title on:click=move |_| on_open.run(idx)>
             <div class="frame-meta">
-                <span>{meta_line}</span>
+                <span>{Oco::from(meta_line.clone())}</span>
                 <span class="frame-suffix">{suffix}</span>
             </div>
             <div class="frame-actions">

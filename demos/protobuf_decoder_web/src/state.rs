@@ -6,6 +6,7 @@ use crate::toast::Toast;
 use crate::workspace::HighlightRange;
 use leptos::prelude::*;
 use protobuf_edit::{FieldId, Patch};
+use std::sync::Arc;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Theme {
@@ -76,9 +77,9 @@ pub(crate) struct UiState {
 #[derive(Clone)]
 pub(crate) struct MessageSidebarActions {
     pub on_select_message: UnsyncCallback<MessageId>,
-    pub on_message_name_change: UnsyncCallback<leptos::ev::Event>,
-    pub on_rename_message: UnsyncCallback<(MessageId, String)>,
-    pub on_rename_class: UnsyncCallback<(MessageId, String)>,
+    pub on_message_name_change: UnsyncCallback<Arc<str>>,
+    pub on_rename_message: UnsyncCallback<(MessageId, Arc<str>)>,
+    pub on_rename_class: UnsyncCallback<(MessageId, Arc<str>)>,
     pub on_new_message: UnsyncCallback<()>,
     pub on_delete_selected_messages: UnsyncCallback<Vec<MessageId>>,
     pub on_view_frames: UnsyncCallback<()>,

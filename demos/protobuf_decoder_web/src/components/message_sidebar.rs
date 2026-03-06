@@ -3,6 +3,7 @@ use crate::messages::{MessageId, MessageMeta};
 use crate::state::{MessageCatalogState, MessageSidebarActions, UiState};
 use super::ThemeSwitcher;
 use leptos::prelude::*;
+use std::sync::Arc;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum ImportMode {
@@ -185,7 +186,10 @@ pub(crate) fn MessageSidebar(actions: MessageSidebarActions) -> impl IntoView {
                             placeholder="Message name"
                             prop:value=move || message_name_text.get()
                             on:input=move |ev| message_name_text.set(event_target_value(&ev))
-                            on:change=move |ev| on_message_name_change.run(ev)
+                            on:change=move |ev| {
+                                let value = event_target_value(&ev);
+                                on_message_name_change.run(Arc::<str>::from(value.trim()));
+                            }
                             disabled=move || !has_current_message()
                         />
                     </div>
@@ -327,8 +331,8 @@ struct MessageRowCtx {
     renaming_id: RwSignal<Option<MessageId>>,
     rename_text: RwSignal<String>,
     on_select_message: UnsyncCallback<MessageId>,
-    on_rename_message: UnsyncCallback<(MessageId, String)>,
-    on_rename_class: UnsyncCallback<(MessageId, String)>,
+    on_rename_message: UnsyncCallback<(MessageId, Arc<str>)>,
+    on_rename_class: UnsyncCallback<(MessageId, Arc<str>)>,
 }
 
 fn normalize_filter(raw: &str) -> String {
@@ -401,7 +405,7 @@ fn class_select_state(
 fn commit_rename(
     target_id: Option<MessageId>,
     rename_text: RwSignal<String>,
-    on_rename: UnsyncCallback<(MessageId, String)>,
+    on_rename: UnsyncCallback<(MessageId, Arc<str>)>,
 ) {
     let Some(id) = target_id else {
         return;
@@ -411,7 +415,7 @@ fn commit_rename(
         if name.is_empty() {
             return;
         }
-        on_rename.run((id, name.to_string()));
+        on_rename.run((id, Arc::<str>::from(name)));
     });
 }
 
@@ -419,7 +423,7 @@ fn handle_rename_keydown(
     target_id: Option<MessageId>,
     rename_text: RwSignal<String>,
     renaming_id: RwSignal<Option<MessageId>>,
-    on_rename: UnsyncCallback<(MessageId, String)>,
+    on_rename: UnsyncCallback<(MessageId, Arc<str>)>,
 ) -> impl FnMut(leptos::ev::KeyboardEvent) + 'static {
     move |ev: leptos::ev::KeyboardEvent| {
         let key = ev.key();
@@ -442,7 +446,7 @@ fn handle_rename_blur(
     target_id: Option<MessageId>,
     rename_text: RwSignal<String>,
     renaming_id: RwSignal<Option<MessageId>>,
-    on_rename: UnsyncCallback<(MessageId, String)>,
+    on_rename: UnsyncCallback<(MessageId, Arc<str>)>,
 ) -> impl FnMut(leptos::ev::FocusEvent) + 'static {
     move |_| {
         if renaming_id.get_untracked() != target_id {
@@ -475,7 +479,7 @@ fn class_row_view(
         .map(|meta| meta.class_name.clone())
         .or_else(|| members.first().map(|m| m.class_name.clone()))
         .unwrap_or_else(|| std::sync::Arc::<str>::from(format!("Class {class_id}")));
-    let label = format!("{title} ({})", members.len());
+    let label = Arc::<str>::from(format!("{title} ({})", members.len()));
     let expanded = !collapsed_classes.with(|s| s.contains(&class_id));
     let caret = if expanded { "▾" } else { "▸" };
 
@@ -534,7 +538,7 @@ fn class_row_view(
                     }
                 }
             >
-                <Show when=class_is_renaming fallback=move || view! { {label.clone()} }>
+                <Show when=class_is_renaming fallback=move || view! { {Oco::from(label.clone())} }>
                     <input
                         class="input message-rename-input"
                         prop:value=move || rename_text.get()

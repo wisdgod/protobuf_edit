@@ -48,6 +48,7 @@ pub(crate) enum LoadedBytesMode {
 
 pub(crate) struct LoadedBytes {
     pub bytes: ByteView,
+    pub revision: u64,
     pub mode: LoadedBytesMode,
     pub note: Option<UiError>,
 }

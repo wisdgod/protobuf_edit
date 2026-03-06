@@ -1,10 +1,11 @@
 use crate::state::WorkspaceState;
 use leptos::prelude::*;
 use protobuf_edit::FieldId;
+use std::sync::Arc;
 
 #[derive(Clone, PartialEq, Eq)]
 struct Crumb {
-    label: String,
+    label: Arc<str>,
     field_id: Option<FieldId>,
 }
 
@@ -18,7 +19,7 @@ pub(crate) fn Breadcrumb() -> impl IntoView {
         let selected_field = selected.get();
         patch_state.with(|p| {
             let Some(patch) = p.as_ref() else {
-                return vec![Crumb { label: "root".to_string(), field_id: None }];
+                return vec![Crumb { label: Arc::<str>::from("root"), field_id: None }];
             };
 
             let mut chain_fields: Vec<FieldId> = Vec::new();
@@ -39,11 +40,11 @@ pub(crate) fn Breadcrumb() -> impl IntoView {
             chain_fields.reverse();
 
             let mut out = Vec::with_capacity(chain_fields.len().saturating_add(1));
-            out.push(Crumb { label: "root".to_string(), field_id: None });
+            out.push(Crumb { label: Arc::<str>::from("root"), field_id: None });
             for fid in chain_fields {
                 let label = match patch.field_tag(fid) {
-                    Ok(tag) => format!("field {}", tag.field_number().as_inner()),
-                    Err(_) => "field ?".to_string(),
+                    Ok(tag) => Arc::<str>::from(format!("field {}", tag.field_number().as_inner())),
+                    Err(_) => Arc::<str>::from("field ?"),
                 };
                 out.push(Crumb { label, field_id: Some(fid) });
             }
@@ -65,7 +66,7 @@ pub(crate) fn Breadcrumb() -> impl IntoView {
                         let field_id = crumb.field_id;
                         view! {
                             <span class="breadcrumb-item" on:click=move |_| selected.set(field_id)>
-                                {label}
+                                {Oco::from(label)}
                             </span>
                             <Show when=move || !is_last fallback=|| ()>
                                 <span class="breadcrumb-sep">"›"</span>

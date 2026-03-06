@@ -1,4 +1,4 @@
-use crate::error::UiResult;
+use crate::error::{UiError, UiResult};
 use crate::messages::MessageId;
 use std::rc::Rc;
 
@@ -18,9 +18,9 @@ pub(crate) struct FrameDecompressionMeta {
 
 #[derive(Clone, Debug, Default)]
 pub(crate) struct EnvelopeFrameMeta {
-    pub protobuf_error: Option<String>,
+    pub protobuf_error: Option<UiError>,
     pub decompression: Option<FrameDecompressionMeta>,
-    pub decompression_error: Option<String>,
+    pub decompression_error: Option<UiError>,
 }
 
 pub(crate) struct EnvelopeView {

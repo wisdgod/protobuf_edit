@@ -1,7 +1,6 @@
 #![cfg_attr(not(feature = "__std"), no_std)]
 #![feature(core_intrinsics)]
 #![feature(const_trait_impl)]
-#![feature(uint_bit_width)]
 #![feature(panic_internals)]
 #![feature(allow_internal_unsafe)]
 #![feature(allow_internal_unstable)]

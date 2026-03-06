@@ -1,12 +1,12 @@
-use std::borrow::Cow;
-use leptos::prelude::*;
+use crate::error::{shared_error, UiError};
 use leptos::leptos_dom::helpers::set_timeout;
+use leptos::prelude::*;
 use std::time::Duration;
 
 #[derive(Clone)]
 pub struct Toast {
     pub id: u64,
-    pub message: Cow<'static, str>,
+    pub message: UiError,
     pub kind: ToastKind,
 }
 
@@ -20,11 +20,12 @@ pub fn show_toast(
     toasts: RwSignal<Vec<Toast>>,
     next_toast_id: RwSignal<u64>,
     kind: ToastKind,
-    message: impl Into<Cow<'static, str>>,
+    message: impl Into<UiError>,
 ) {
     let id = next_toast_id.get_untracked();
     next_toast_id.set(id.saturating_add(1));
-    toasts.update(|t| t.push(Toast { id, message: message.into(), kind }));
+    let message = shared_error(message);
+    toasts.update(|t| t.push(Toast { id, message, kind }));
 
     set_timeout(
         move || {
