@@ -1,57 +1,52 @@
-use crate::messages::MessageId;
+use crate::state::{MessageCatalogState, StatusBarActions, WorkspaceState};
 use leptos::prelude::*;
-use protobuf_edit::{FieldId, Patch};
 
 #[component]
-pub(crate) fn StatusBar(
-    bytes_count: Memo<Option<usize>>,
-    field_count: Memo<Option<usize>>,
-    highlight_range_count: Memo<usize>,
-    selected: RwSignal<Option<FieldId>>,
-    dirty_count: Memo<usize>,
-    current_message_id: RwSignal<Option<MessageId>>,
-    read_only: Memo<bool>,
-    patch_state: RwSignal<Option<Patch>, LocalStorage>,
-    on_copy_hex: UnsyncCallback<()>,
-    on_copy_base64: UnsyncCallback<()>,
-    on_copy_share_url: UnsyncCallback<()>,
-    on_download_bin: UnsyncCallback<()>,
-    on_save_expand_defaults: UnsyncCallback<()>,
-    on_save_reparse: UnsyncCallback<()>,
-    on_bump_modified: UnsyncCallback<()>,
-) -> impl IntoView {
-    let has_current_message = move || current_message_id.get().is_some();
+pub(crate) fn StatusBar(actions: StatusBarActions) -> impl IntoView {
+    let workspace = expect_context::<WorkspaceState>();
+    let messages = expect_context::<MessageCatalogState>();
+    let StatusBarActions {
+        on_copy_hex,
+        on_copy_base64,
+        on_copy_share_url,
+        on_download_bin,
+        on_save_expand_defaults,
+        on_save_reparse,
+        on_bump_modified,
+    } = actions;
+
+    let has_current_message = move || messages.current_message_id.get().is_some();
 
     view! {
         <div class="status-bar">
             <div class="status-left">
                 <div>
-                    {move || bytes_count.get().unwrap_or(0)}
+                    {move || workspace.bytes_count.get().unwrap_or(0)}
                     " bytes | "
-                    {move || bytes_count.get().unwrap_or(0).saturating_add(15) / 16}
+                    {move || workspace.bytes_count.get().unwrap_or(0).saturating_add(15) / 16}
                     " rows | "
-                    {move || field_count.get().unwrap_or(0)}
+                    {move || workspace.field_count.get().unwrap_or(0)}
                     " field(s)"
                     " | "
-                    {move || highlight_range_count.get()}
+                    {move || workspace.highlight_range_count.get()}
                     " highlight(s)"
                 </div>
             </div>
 
             <div class="status-center">
                 <div>
-                    {move || match selected.get() {
+                    {move || match workspace.selected.get() {
                         None => "No selection".to_string(),
                         Some(fid) => format!("FieldId={fid:?} selected"),
                     }}
                 </div>
 
                 <div class="status-dirty">
-                    <span class="status-dirty-dot" class:hidden=move || dirty_count.get() == 0>
+                    <span class="status-dirty-dot" class:hidden=move || workspace.dirty_count.get() == 0>
                         "●"
                     </span>
                     {move || {
-                        let n = dirty_count.get();
+                        let n = workspace.dirty_count.get();
                         if n == 0 { "0 edits".to_string() } else { format!("{n} edit(s) pending") }
                     }}
                 </div>
@@ -89,28 +84,39 @@ pub(crate) fn StatusBar(
                 <button
                     class="btn btn--secondary"
                     on:click=move |_| on_save_expand_defaults.run(())
-                    disabled=move || !has_current_message() || read_only.get() || patch_state.with(|p| p.is_none())
+                    disabled=move || {
+                        !has_current_message()
+                            || workspace.read_only.get()
+                            || workspace.patch_state.with(|p| p.is_none())
+                    }
                 >
                     "Save Expand"
                 </button>
                 <button
                     class="btn btn--primary"
                     on:click=move |_| {
-                        if dirty_count.get() != 0 {
+                        if workspace.dirty_count.get() != 0 {
                             on_save_reparse.run(());
                         } else {
                             on_bump_modified.run(());
                         }
                     }
                     disabled=move || {
-                        if dirty_count.get() == 0 {
+                        if workspace.dirty_count.get() == 0 {
                             !has_current_message()
                         } else {
-                            read_only.get() || patch_state.with(|p| p.is_none())
+                            workspace.read_only.get()
+                                || workspace.patch_state.with(|p| p.is_none())
                         }
                     }
                 >
-                    {move || if dirty_count.get() == 0 { "Bump (reorder)" } else { "Save & Reparse" }}
+                    {move || {
+                        if workspace.dirty_count.get() == 0 {
+                            "Bump (reorder)"
+                        } else {
+                            "Save & Reparse"
+                        }
+                    }}
                 </button>
             </div>
         </div>

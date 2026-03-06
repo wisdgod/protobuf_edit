@@ -1,20 +1,13 @@
-use crate::toast::{show_toast, Toast, ToastKind};
-use crate::fx::FxHashSet;
+use crate::state::{UiState, WorkspaceState};
+use crate::toast::{show_toast, ToastKind};
 use leptos::prelude::*;
 use protobuf_edit::{FieldId, MessageId, Patch, TreeError, WireType};
 
 #[component]
-pub(crate) fn FieldTree(
-    msg: MessageId,
-    depth: usize,
-    patch_state: RwSignal<Option<Patch>, LocalStorage>,
-    selected: RwSignal<Option<FieldId>>,
-    hovered: RwSignal<Option<FieldId>>,
-    expanded: RwSignal<FxHashSet<FieldId>>,
-    dirty_fields: RwSignal<FxHashSet<FieldId>>,
-    toasts: RwSignal<Vec<Toast>>,
-    next_toast_id: RwSignal<u64>,
-) -> AnyView {
+pub(crate) fn FieldTree(msg: MessageId, depth: usize) -> AnyView {
+    let workspace = expect_context::<WorkspaceState>();
+    let patch_state = workspace.patch_state;
+
     let fields = Memo::new(move |_| {
         patch_state.with(|p| {
             let Some(patch) = p.as_ref() else {
@@ -39,17 +32,7 @@ pub(crate) fn FieldTree(
             each=move || fields.get()
             key=|fid| fid.as_inner()
             children=move |fid| view! {
-                <FieldRow
-                    field=fid
-                    depth=depth
-                    patch_state=patch_state
-                    selected=selected
-                    hovered=hovered
-                    expanded=expanded
-                    dirty_fields=dirty_fields
-                    toasts=toasts
-                    next_toast_id=next_toast_id
-                />
+                <FieldRow field=fid depth=depth />
             }
         />
     }
@@ -57,17 +40,17 @@ pub(crate) fn FieldTree(
 }
 
 #[component]
-fn FieldRow(
-    field: FieldId,
-    depth: usize,
-    patch_state: RwSignal<Option<Patch>, LocalStorage>,
-    selected: RwSignal<Option<FieldId>>,
-    hovered: RwSignal<Option<FieldId>>,
-    expanded: RwSignal<FxHashSet<FieldId>>,
-    dirty_fields: RwSignal<FxHashSet<FieldId>>,
-    toasts: RwSignal<Vec<Toast>>,
-    next_toast_id: RwSignal<u64>,
-) -> AnyView {
+fn FieldRow(field: FieldId, depth: usize) -> AnyView {
+    let workspace = expect_context::<WorkspaceState>();
+    let ui = expect_context::<UiState>();
+    let patch_state = workspace.patch_state;
+    let selected = workspace.selected;
+    let hovered = workspace.hovered;
+    let expanded = workspace.expanded;
+    let dirty_fields = workspace.dirty_fields;
+    let toasts = ui.toasts;
+    let next_toast_id = ui.next_toast_id;
+
     let tag_info = Memo::new(move |_| {
         patch_state.with(|p| {
             let patch = p.as_ref()?;
@@ -203,19 +186,7 @@ fn FieldRow(
             <Show when=move || child_msg.get().is_some() fallback=|| ()>
                 {move || {
                     let child = child_msg.get().expect("Show ensures child_msg is Some");
-                    view! {
-                        <FieldTree
-                            msg=child
-                            depth=depth + 1
-                            patch_state=patch_state
-                            selected=selected
-                            hovered=hovered
-                            expanded=expanded
-                            dirty_fields=dirty_fields
-                            toasts=toasts
-                            next_toast_id=next_toast_id
-                        />
-                    }
+                    view! { <FieldTree msg=child depth=depth + 1 /> }
                 }}
             </Show>
         </>
@@ -228,20 +199,20 @@ fn format_len_summary(bytes: &[u8]) -> String {
         return "0B".to_string();
     }
 
-    let mut prefix = String::new();
     let len = bytes.len();
-
-    prefix.push_str(&format!("{len}B"));
+    let mut prefix = len.to_string();
+    prefix.push('B');
 
     if let Ok(s) = core::str::from_utf8(bytes) {
         let looks_printable = s.chars().all(|c| c.is_ascii_graphic() || c == ' ');
         if looks_printable {
             let preview: String = s.chars().take(32).collect();
-            if preview.len() == s.len() {
-                prefix.push_str(&format!(" \"{preview}\""));
-            } else {
-                prefix.push_str(&format!(" \"{preview}…\""));
+            prefix.push_str(" \"");
+            prefix.push_str(&preview);
+            if preview.len() != s.len() {
+                prefix.push('…');
             }
+            prefix.push('"');
         }
     }
 

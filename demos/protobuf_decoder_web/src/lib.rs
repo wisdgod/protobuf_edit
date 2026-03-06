@@ -9,8 +9,10 @@ mod hex_view;
 mod idb;
 mod messages;
 mod page_cache;
+mod state;
 mod toast;
 mod web;
+mod workspace;
 
 use leptos::prelude::*;
 use wasm_bindgen::prelude::wasm_bindgen;

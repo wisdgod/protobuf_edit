@@ -1,10 +1,11 @@
 use leptos::html;
 use leptos::prelude::*;
-use protobuf_edit::{FieldId, Patch, ValueSpans, WireType};
+use protobuf_edit::{FieldId, Patch, WireType};
 use std::cmp::min;
 
 use crate::bytes::ByteView;
-use crate::fx::FxHashSet;
+use crate::state::WorkspaceState;
+use crate::workspace::{drilldown_byte, HighlightKind, HighlightRange};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum HexTextMode {
@@ -126,113 +127,15 @@ fn utf8_cell(bytes: &[u8], idx: usize) -> Utf8Cell {
     Utf8Cell::Static(ascii_cell(byte))
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum HighlightKind {
-    Ancestor,
-    Hovered,
-    SelectedTag,
-    SelectedLenPrefix,
-    SelectedField(WireType),
-}
-
-impl HighlightKind {
-    const fn priority(self) -> u8 {
-        match self {
-            Self::Ancestor => 1,
-            Self::Hovered => 2,
-            Self::SelectedField(_) => 3,
-            Self::SelectedLenPrefix => 4,
-            Self::SelectedTag => 5,
-        }
-    }
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct HighlightRange {
-    pub start: usize,
-    pub end: usize,
-    pub kind: HighlightKind,
-}
-
-impl HighlightRange {
-    pub const fn contains(self, i: usize) -> bool {
-        self.start <= i && i < self.end
-    }
-
-    pub const fn intersects(self, start: usize, end: usize) -> bool {
-        self.start < end && self.end > start
-    }
-}
-
-pub fn compute_highlights(
-    patch: &Patch,
-    selected: Option<FieldId>,
-    hovered: Option<FieldId>,
-) -> Vec<HighlightRange> {
-    let mut out = Vec::new();
-
-    if let Some(fid) = selected {
-        if let (Ok(tag), Ok(Some(spans))) = (patch.field_tag(fid), patch.field_root_spans(fid)) {
-            out.push(HighlightRange {
-                start: spans.field.start() as usize,
-                end: spans.field.end() as usize,
-                kind: HighlightKind::SelectedField(tag.wire_type()),
-            });
-            if let ValueSpans::Len { len, .. } = spans.value {
-                out.push(HighlightRange {
-                    start: len.start() as usize,
-                    end: len.end() as usize,
-                    kind: HighlightKind::SelectedLenPrefix,
-                });
-            }
-            out.push(HighlightRange {
-                start: spans.tag.start() as usize,
-                end: spans.tag.end() as usize,
-                kind: HighlightKind::SelectedTag,
-            });
-        }
-
-        if let Ok(mut msg) = patch.field_parent_message(fid) {
-            while let Ok(Some(parent_field)) = patch.message_parent_field(msg) {
-                if let Ok(Some(spans)) = patch.field_root_spans(parent_field) {
-                    out.push(HighlightRange {
-                        start: spans.field.start() as usize,
-                        end: spans.field.end() as usize,
-                        kind: HighlightKind::Ancestor,
-                    });
-                }
-                if let Ok(parent_msg) = patch.field_parent_message(parent_field) {
-                    msg = parent_msg;
-                } else {
-                    break;
-                }
-            }
-        }
-    }
-
-    if let Some(fid) = hovered
-        && let Ok(Some(spans)) = patch.field_root_spans(fid)
-    {
-        out.push(HighlightRange {
-            start: spans.field.start() as usize,
-            end: spans.field.end() as usize,
-            kind: HighlightKind::Hovered,
-        });
-    }
-
-    out
-}
-
 #[component]
-pub fn HexGrid(
-    patch_state: RwSignal<Option<Patch>, LocalStorage>,
-    raw_bytes: RwSignal<Option<ByteView>, LocalStorage>,
-    highlights: Memo<Vec<HighlightRange>>,
-    text_mode: RwSignal<HexTextMode>,
-    selected: RwSignal<Option<FieldId>>,
-    expanded: RwSignal<FxHashSet<FieldId>>,
-    container_ref: NodeRef<html::Div>,
-) -> impl IntoView {
+pub fn HexGrid(container_ref: NodeRef<html::Div>) -> impl IntoView {
+    let workspace = expect_context::<WorkspaceState>();
+    let patch_state = workspace.patch_state;
+    let raw_bytes = workspace.raw_bytes;
+    let highlights = workspace.highlights;
+    let text_mode = workspace.hex_text_mode;
+    let selected = workspace.selected;
+    let expanded = workspace.expanded;
     const ROW_HEIGHT_PX: f64 = 20.0;
     const BYTES_PER_ROW: usize = 16;
 
@@ -586,82 +489,4 @@ fn HexRow(
                 </span>
         </div>
     }
-}
-
-fn drilldown_byte(patch: &mut Patch, idx: usize) -> (Option<FieldId>, Vec<FieldId>) {
-    let mut msg = patch.root();
-    let mut expand = Vec::new();
-    let mut selected = None;
-    let mut depth: u32 = 0;
-
-    loop {
-        depth = depth.saturating_add(1);
-        if depth > 128 {
-            break;
-        }
-
-        let fields = match patch.message_fields(msg) {
-            Ok(v) => v,
-            Err(_) => break,
-        };
-
-        let mut best: Option<(FieldId, protobuf_edit::Span)> = None;
-        for &fid in fields {
-            if matches!(patch.field_is_deleted(fid), Ok(true)) {
-                continue;
-            }
-            let Ok(Some(spans)) = patch.field_root_spans(fid) else {
-                continue;
-            };
-            let field_span = spans.field;
-            let start = field_span.start() as usize;
-            let end = field_span.end() as usize;
-            if start <= idx && idx < end {
-                best = match best {
-                    None => Some((fid, field_span)),
-                    Some((_prev, prev_span)) => {
-                        if field_span.len() < prev_span.len() {
-                            Some((fid, field_span))
-                        } else {
-                            Some((_prev, prev_span))
-                        }
-                    }
-                };
-            }
-        }
-
-        let Some((fid, _span)) = best else {
-            break;
-        };
-        selected = Some(fid);
-
-        let Ok(tag) = patch.field_tag(fid) else {
-            break;
-        };
-        if tag.wire_type() != WireType::Len {
-            break;
-        }
-
-        let Ok(Some(root_spans)) = patch.field_root_spans(fid) else {
-            break;
-        };
-        let ValueSpans::Len { payload, .. } = root_spans.value else {
-            break;
-        };
-        let payload_start = payload.start() as usize;
-        let payload_end = payload.end() as usize;
-        if idx < payload_start || idx >= payload_end {
-            break;
-        }
-
-        match patch.parse_child_message(fid) {
-            Ok(child) => {
-                expand.push(fid);
-                msg = child;
-            }
-            Err(_) => break,
-        }
-    }
-
-    (selected, expand)
 }

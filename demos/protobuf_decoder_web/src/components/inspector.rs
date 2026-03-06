@@ -1,5 +1,5 @@
-use crate::fx::FxHashSet;
 use crate::error::UiError;
+use crate::state::{UiState, WorkspaceState};
 use crate::toast::{show_toast, Toast, ToastKind};
 use base64::Engine as _;
 use leptos::prelude::*;
@@ -32,15 +32,16 @@ impl BytesView {
 }
 
 #[component]
-pub(crate) fn InspectorDrawer(
-    patch_state: RwSignal<Option<Patch>, LocalStorage>,
-    read_only: Memo<bool>,
-    selected: RwSignal<Option<FieldId>>,
-    expanded: RwSignal<FxHashSet<FieldId>>,
-    dirty_fields: RwSignal<FxHashSet<FieldId>>,
-    toasts: RwSignal<Vec<Toast>>,
-    next_toast_id: RwSignal<u64>,
-) -> impl IntoView {
+pub(crate) fn InspectorDrawer() -> impl IntoView {
+    let workspace = expect_context::<WorkspaceState>();
+    let ui = expect_context::<UiState>();
+    let patch_state = workspace.patch_state;
+    let read_only = workspace.read_only;
+    let selected = workspace.selected;
+    let expanded = workspace.expanded;
+    let dirty_fields = workspace.dirty_fields;
+    let toasts = ui.toasts;
+    let next_toast_id = ui.next_toast_id;
     let collapsed = RwSignal::new(false);
 
     let varint_text = RwSignal::new(String::new());
