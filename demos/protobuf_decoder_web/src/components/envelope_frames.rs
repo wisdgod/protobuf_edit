@@ -1,16 +1,14 @@
-use crate::envelope::EnvelopeView;
+use crate::state::{EnvelopeActions, WorkspaceState};
 use leptos::prelude::*;
 
 #[component]
-pub(crate) fn EnvelopeFramesPanel(
-    envelope_view: RwSignal<Option<EnvelopeView>, LocalStorage>,
-    selected: RwSignal<usize>,
-    on_close: UnsyncCallback<()>,
-    on_decompress: UnsyncCallback<()>,
-    on_open: UnsyncCallback<usize>,
-    on_extract: UnsyncCallback<usize>,
-    on_extract_all: UnsyncCallback<()>,
-) -> impl IntoView {
+pub(crate) fn EnvelopeFramesPanel() -> impl IntoView {
+    let workspace = expect_context::<WorkspaceState>();
+    let actions = expect_context::<EnvelopeActions>();
+    let envelope_view = workspace.envelope_view;
+    let selected = workspace.envelope_selected;
+    let EnvelopeActions { on_close, on_decompress, on_open, on_extract, on_extract_all } = actions;
+
     let list_collapsed = RwSignal::new(true);
 
     let frames_len =
@@ -66,7 +64,9 @@ pub(crate) fn EnvelopeFramesPanel(
                     <For
                         each=move || 0..frames_len()
                         key=|idx| *idx
-                        children=move |idx| frame_row_view(idx, envelope_view, selected, on_open, on_extract)
+                        children=move |idx| {
+                            frame_row_view(idx, envelope_view, selected, on_open, on_extract)
+                        }
                     />
                 </div>
             </Show>
@@ -76,7 +76,7 @@ pub(crate) fn EnvelopeFramesPanel(
 
 fn frame_row_view(
     idx: usize,
-    envelope_view: RwSignal<Option<EnvelopeView>, LocalStorage>,
+    envelope_view: RwSignal<Option<crate::envelope::EnvelopeView>, LocalStorage>,
     selected: RwSignal<usize>,
     on_open: UnsyncCallback<usize>,
     on_extract: UnsyncCallback<usize>,
@@ -146,16 +146,21 @@ fn frame_row_view(
                 };
 
                 if let Some(info) = meta.decompression {
-                    out.push_str(&format!(
-                        " [decompressed format={} output={}B]",
-                        info.format, info.output_len
-                    ));
+                    out.push_str(" [decompressed format=");
+                    out.push_str(info.format);
+                    out.push_str(" output=");
+                    out.push_str(&info.output_len.to_string());
+                    out.push_str("B]");
                 }
                 if let Some(err) = meta.decompression_error.as_deref() {
-                    out.push_str(&format!(" [decompression_error={err}]"));
+                    out.push_str(" [decompression_error=");
+                    out.push_str(err);
+                    out.push(']');
                 }
                 if let Some(err) = meta.protobuf_error.as_deref() {
-                    out.push_str(&format!(" [protobuf_error={err}]"));
+                    out.push_str(" [protobuf_error=");
+                    out.push_str(err);
+                    out.push(']');
                 }
             });
 

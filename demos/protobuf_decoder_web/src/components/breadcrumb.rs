@@ -1,5 +1,6 @@
+use crate::state::WorkspaceState;
 use leptos::prelude::*;
-use protobuf_edit::{FieldId, Patch};
+use protobuf_edit::FieldId;
 
 #[derive(Clone, PartialEq, Eq)]
 struct Crumb {
@@ -8,10 +9,11 @@ struct Crumb {
 }
 
 #[component]
-pub(crate) fn Breadcrumb(
-    patch_state: RwSignal<Option<Patch>, LocalStorage>,
-    selected: RwSignal<Option<FieldId>>,
-) -> impl IntoView {
+pub(crate) fn Breadcrumb() -> impl IntoView {
+    let workspace = expect_context::<WorkspaceState>();
+    let patch_state = workspace.patch_state;
+    let selected = workspace.selected;
+
     let crumbs = Memo::new(move |_| {
         let selected_field = selected.get();
         patch_state.with(|p| {

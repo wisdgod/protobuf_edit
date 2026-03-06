@@ -1,287 +1,37 @@
-use crate::decode::{decode_base64_url, decode_user_input, encode_base64, encode_base64_url};
-use crate::envelope::{parse_envelope_frames, EnvelopeFrameMeta, EnvelopeView};
-use crate::fx::FxHashSet;
 use crate::bytes::ByteView;
-use crate::hex_view::{compute_highlights, HexGrid, HexTextMode};
 use crate::components::{
     Breadcrumb, EnvelopeFramesPanel, FieldTree, InspectorDrawer, MessageSidebar, StatusBar,
 };
+use crate::decode::{decode_base64_url, decode_user_input, encode_base64, encode_base64_url};
+use crate::envelope::{parse_envelope_frames, EnvelopeFrameMeta, EnvelopeView};
+use crate::fx::FxHashSet;
+use crate::hex_view::{HexGrid, HexTextMode};
 use crate::messages::{self, LoadedBytesMode, MessageId, MessageMeta};
 use crate::page_cache;
+use crate::state::{
+    parse_theme, EnvelopeActions, MessageCatalogState, MessageSidebarActions, StatusBarActions,
+    Theme, UiState, WorkspaceState,
+};
 use crate::toast::{show_toast, Toast, ToastContainer, ToastKind};
 use crate::web::{
     build_share_url, clipboard_write_text, download_bytes, get_document_theme, get_url_hash,
     set_document_theme, start_theme_transition,
 };
+use crate::workspace::{
+    build_selection_path, collect_visible_fields, compute_highlights, decode_selection_path,
+    encode_selection_path, format_frame_name_template, resolve_selection_path,
+};
+use core::future::Future;
+use core::pin::Pin;
 use leptos::html;
 use leptos::prelude::*;
 use leptos_use::use_event_listener;
 use protobuf_edit::{FieldId, Patch, TreeError};
-use core::future::Future;
-use core::pin::Pin;
 use std::rc::Rc;
 use std::sync::Arc;
 use wasm_bindgen::closure::Closure;
 use wasm_bindgen::JsCast;
 use wasm_bindgen_futures::spawn_local;
-
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum Theme {
-    Light,
-    Dark,
-}
-
-impl Theme {
-    const fn toggle(self) -> Self {
-        match self {
-            Self::Light => Self::Dark,
-            Self::Dark => Self::Light,
-        }
-    }
-
-    const fn as_str(self) -> &'static str {
-        match self {
-            Self::Light => "light",
-            Self::Dark => "dark",
-        }
-    }
-}
-
-fn parse_theme(raw: &str) -> Option<Theme> {
-    match raw.trim() {
-        "light" => Some(Theme::Light),
-        "dark" => Some(Theme::Dark),
-        _ => None,
-    }
-}
-
-fn format_frame_name_template(
-    template: &str,
-    source: &str,
-    idx: usize,
-    payload_len: usize,
-) -> String {
-    use core::fmt::Write as _;
-
-    let template = template.trim();
-    let template =
-        if template.is_empty() { messages::DEFAULT_FRAME_NAME_TEMPLATE } else { template };
-
-    let mut out = String::with_capacity(template.len().saturating_add(source.len()));
-    let mut last: usize = 0;
-    while let Some(open_rel) = template[last..].find('{') {
-        let open = last.saturating_add(open_rel);
-        let Some(close_rel) = template[open.saturating_add(1)..].find('}') else {
-            break;
-        };
-        let close = open.saturating_add(1).saturating_add(close_rel);
-
-        out.push_str(&template[last..open]);
-        match &template[open.saturating_add(1)..close] {
-            "source" => out.push_str(source),
-            "idx" => {
-                let _ = write!(out, "{idx}");
-            }
-            "idx1" => {
-                let _ = write!(out, "{}", idx.saturating_add(1));
-            }
-            "len" => {
-                let _ = write!(out, "{payload_len}");
-            }
-            other => {
-                out.push('{');
-                out.push_str(other);
-                out.push('}');
-            }
-        }
-        last = close.saturating_add(1);
-    }
-    out.push_str(&template[last..]);
-    out
-}
-
-fn collect_visible_fields(
-    patch: &Patch,
-    msg: protobuf_edit::MessageId,
-    expanded: &FxHashSet<FieldId>,
-    out: &mut Vec<FieldId>,
-) {
-    let Ok(fields) = patch.message_fields(msg) else {
-        return;
-    };
-    for &field in fields {
-        if matches!(patch.field_is_deleted(field), Ok(true)) {
-            continue;
-        }
-        out.push(field);
-        if !expanded.contains(&field) {
-            continue;
-        }
-        let Ok(Some(child)) = patch.field_child_message(field) else {
-            continue;
-        };
-        collect_visible_fields(patch, child, expanded, out);
-    }
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-struct SelectionStep {
-    tag: protobuf_edit::Tag,
-    occurrence: u32,
-}
-
-fn encode_selection_path(path: &[SelectionStep]) -> String {
-    use core::fmt::Write as _;
-
-    let mut out = String::new();
-    for (i, step) in path.iter().enumerate() {
-        if i != 0 {
-            out.push('/');
-        }
-        let (field_number, wire_type) = step.tag.split();
-        let _ =
-            write!(&mut out, "{}:{}:{}", field_number.as_inner(), wire_type as u8, step.occurrence);
-    }
-    out
-}
-
-fn decode_selection_path(input: &str) -> Option<Vec<SelectionStep>> {
-    let input = input.trim();
-    if input.is_empty() {
-        return None;
-    }
-
-    let mut out = Vec::new();
-    for part in input.split('/') {
-        let mut it = part.trim().split(':');
-        let field_number = it.next()?.parse::<u32>().ok()?;
-        let wire_type = it.next()?.parse::<u32>().ok()?;
-        let occurrence = it.next()?.parse::<u32>().ok()?;
-        if it.next().is_some() {
-            return None;
-        }
-
-        let field_number = protobuf_edit::FieldNumber::new(field_number)?;
-        let wire_type = protobuf_edit::WireType::from_low3(wire_type)?;
-        let tag = protobuf_edit::Tag::from_parts(field_number, wire_type);
-        out.push(SelectionStep { tag, occurrence });
-    }
-
-    Some(out)
-}
-
-fn build_selection_path(patch: &Patch, selected: FieldId) -> Option<Vec<SelectionStep>> {
-    let mut chain_fields: Vec<FieldId> = Vec::new();
-    chain_fields.push(selected);
-    let mut msg = patch.field_parent_message(selected).ok();
-    while let Some(m) = msg {
-        match patch.message_parent_field(m) {
-            Ok(Some(parent_field)) => {
-                chain_fields.push(parent_field);
-                msg = patch.field_parent_message(parent_field).ok();
-            }
-            Ok(None) => break,
-            Err(_) => break,
-        }
-    }
-    chain_fields.reverse();
-
-    let mut out = Vec::with_capacity(chain_fields.len());
-    for fid in chain_fields {
-        let tag = patch.field_tag(fid).ok()?;
-        let parent = patch.field_parent_message(fid).ok()?;
-        let fields = patch.message_fields(parent).ok()?;
-
-        let mut occurrence: u32 = 0;
-        let mut found = false;
-        for &f in fields {
-            if matches!(patch.field_is_deleted(f), Ok(true)) {
-                continue;
-            }
-            let t = patch.field_tag(f).ok()?;
-            if t != tag {
-                continue;
-            }
-            if f == fid {
-                found = true;
-                break;
-            }
-            occurrence = occurrence.saturating_add(1);
-        }
-        if !found {
-            return None;
-        }
-
-        out.push(SelectionStep { tag, occurrence });
-    }
-    Some(out)
-}
-
-fn find_field_by_tag_occurrence(
-    patch: &Patch,
-    msg: protobuf_edit::MessageId,
-    tag: protobuf_edit::Tag,
-    occurrence: u32,
-) -> Result<Option<FieldId>, TreeError> {
-    let fields = patch.message_fields(msg)?;
-    let mut seen: u32 = 0;
-    for &field in fields {
-        if patch.field_is_deleted(field)? {
-            continue;
-        }
-        if patch.field_tag(field)? != tag {
-            continue;
-        }
-        if seen == occurrence {
-            return Ok(Some(field));
-        }
-        seen = seen.saturating_add(1);
-    }
-    Ok(None)
-}
-
-fn resolve_selection_path(
-    patch: &mut Patch,
-    path: &[SelectionStep],
-    expand_last_len: bool,
-) -> Result<Option<(FieldId, FxHashSet<FieldId>)>, TreeError> {
-    let mut msg = patch.root();
-    let mut expanded: FxHashSet<FieldId> = FxHashSet::default();
-    let mut current: Option<FieldId> = None;
-
-    for (i, step) in path.iter().enumerate() {
-        let Some(field) = find_field_by_tag_occurrence(patch, msg, step.tag, step.occurrence)?
-        else {
-            return Ok(None);
-        };
-        current = Some(field);
-
-        let is_last = i + 1 == path.len();
-        if is_last {
-            if expand_last_len
-                && step.tag.wire_type() == protobuf_edit::WireType::Len
-                && patch.parse_child_message(field).is_ok()
-            {
-                expanded.insert(field);
-            }
-            break;
-        }
-
-        if step.tag.wire_type() != protobuf_edit::WireType::Len {
-            break;
-        }
-
-        match patch.parse_child_message(field) {
-            Ok(child) => {
-                expanded.insert(field);
-                msg = child;
-            }
-            Err(_) => break,
-        }
-    }
-
-    Ok(current.map(|fid| (fid, expanded)))
-}
 
 #[component]
 pub fn App() -> impl IntoView {
@@ -2249,18 +1999,12 @@ pub fn App() -> impl IntoView {
         split_dragging.set(false);
     };
 
-    let envelope_frames_panel = move || {
-        view! {
-            <EnvelopeFramesPanel
-                envelope_view=envelope_view
-                selected=envelope_selected
-                on_close=on_close_frames
-                on_decompress=on_decompress_selected_frame
-                on_open=open_envelope_frame
-                on_extract=extract_envelope_frame
-                on_extract_all=on_extract_all_frames
-            />
-        }
+    let envelope_actions = EnvelopeActions {
+        on_close: on_close_frames,
+        on_decompress: on_decompress_selected_frame,
+        on_open: open_envelope_frame,
+        on_extract: extract_envelope_frame,
+        on_extract_all: on_extract_all_frames,
     };
 
     let structure_tree_fallback = move || {
@@ -2278,42 +2022,71 @@ pub fn App() -> impl IntoView {
             <FieldTree
                 msg=root
                 depth=0
-                patch_state=patch_state
-                selected=selected
-                hovered=hovered
-                expanded=expanded
-                dirty_fields=dirty_fields
-                toasts=toasts
-                next_toast_id=next_toast_id
             />
         }
+    };
+
+    let workspace_state = WorkspaceState {
+        patch_state,
+        raw_bytes,
+        envelope_view,
+        envelope_selected,
+        selected,
+        hovered,
+        expanded,
+        dirty_fields,
+        hex_text_mode,
+        highlights,
+        highlight_range_count,
+        read_only,
+        bytes_count,
+        field_count,
+        dirty_count,
+    };
+    let message_catalog_state = MessageCatalogState {
+        raw_input,
+        import_name_text,
+        messages_list,
+        current_message_id,
+        message_name_text,
+        frame_name_template_text,
+    };
+    let ui_state = UiState { theme_is_dark, toasts, next_toast_id };
+
+    provide_context(workspace_state.clone());
+    provide_context(message_catalog_state.clone());
+    provide_context(ui_state.clone());
+    provide_context(envelope_actions.clone());
+
+    let message_sidebar_actions = MessageSidebarActions {
+        on_select_message,
+        on_message_name_change,
+        on_rename_message,
+        on_rename_class,
+        on_new_message,
+        on_delete_selected_messages,
+        on_view_frames,
+        on_import: on_import_click,
+        on_import_envelope: on_import_envelope_click,
+        on_upload_change,
+        on_toggle_theme,
+        on_store_frame_name_template,
+    };
+    let status_bar_actions = StatusBarActions {
+        on_copy_hex,
+        on_copy_base64,
+        on_copy_share_url,
+        on_download_bin,
+        on_save_expand_defaults,
+        on_save_reparse,
+        on_bump_modified,
     };
 
     view! {
         <div class="app">
             <div class="main">
                 <div class="workspace">
-                        <MessageSidebar
-                            messages_list=messages_list
-                            current_message_id=current_message_id
-                            message_name_text=message_name_text
-                            import_name_text=import_name_text
-                            raw_input=raw_input
-                            frame_name_template_text=frame_name_template_text
-                            theme_is_dark=theme_is_dark
-                            on_select_message=on_select_message
-                            on_message_name_change=on_message_name_change
-                            on_rename_message=on_rename_message
-                            on_rename_class=on_rename_class
-                            on_new_message=on_new_message
-                            on_delete_selected_messages=on_delete_selected_messages
-                            on_view_frames=on_view_frames
-                            on_import=on_import_click
-                        on_import_envelope=on_import_envelope_click
-                        on_upload_change=on_upload_change
-                        on_toggle_theme=on_toggle_theme
-                        on_store_frame_name_template=on_store_frame_name_template
-                    />
+                        <MessageSidebar actions=message_sidebar_actions.clone() />
 
                     <div
                         node_ref=split_ref
@@ -2336,15 +2109,7 @@ pub fn App() -> impl IntoView {
                                         {move || hex_text_mode.get().label()}
                                     </button>
                                 </div>
-                                <HexGrid
-                                    patch_state=patch_state
-                                    raw_bytes=raw_bytes
-                                    highlights=highlights
-                                    text_mode=hex_text_mode
-                                    selected=selected
-                                    expanded=expanded
-                                    container_ref=hex_container_ref
-                                />
+                                <HexGrid container_ref=hex_container_ref />
                             </div>
                         </div>
                         <div
@@ -2358,13 +2123,13 @@ pub fn App() -> impl IntoView {
                             <div class="panel panel--right">
                                 <div class="panel-header">"Structure Tree"</div>
                                 <div class="structure">
-                                    <Breadcrumb patch_state=patch_state selected=selected />
+                                    <Breadcrumb />
 
                                     <Show
                                         when=move || envelope_view.with(|s| s.is_some())
                                         fallback=|| ()
                                     >
-                                        {envelope_frames_panel}
+                                        <EnvelopeFramesPanel />
                                     </Show>
 
                                     <div class="field-list" node_ref=tree_container_ref tabindex="0">
@@ -2376,15 +2141,7 @@ pub fn App() -> impl IntoView {
                                         </Show>
                                     </div>
 
-                                    <InspectorDrawer
-                                        patch_state=patch_state
-                                        read_only=read_only
-                                        selected=selected
-                                        expanded=expanded
-                                        dirty_fields=dirty_fields
-                                        toasts=toasts
-                                        next_toast_id=next_toast_id
-                                    />
+                                    <InspectorDrawer />
                                 </div>
                             </div>
                         </div>
@@ -2392,23 +2149,7 @@ pub fn App() -> impl IntoView {
                 </div>
             </div>
 
-            <StatusBar
-                bytes_count=bytes_count
-                field_count=field_count
-                highlight_range_count=highlight_range_count
-                selected=selected
-                dirty_count=dirty_count
-                current_message_id=current_message_id
-                read_only=read_only
-                patch_state=patch_state
-                on_copy_hex=on_copy_hex
-                on_copy_base64=on_copy_base64
-                on_copy_share_url=on_copy_share_url
-                on_download_bin=on_download_bin
-                on_save_expand_defaults=on_save_expand_defaults
-                on_save_reparse=on_save_reparse
-                on_bump_modified=on_bump_modified
-            />
+            <StatusBar actions=status_bar_actions.clone() />
 
             <ToastContainer toasts=toasts />
         </div>

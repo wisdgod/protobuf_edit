@@ -1,5 +1,6 @@
 use crate::fx::{FxHashMap, FxHashSet};
 use crate::messages::{MessageId, MessageMeta};
+use crate::state::{MessageCatalogState, MessageSidebarActions, UiState};
 use super::ThemeSwitcher;
 use leptos::prelude::*;
 
@@ -27,27 +28,30 @@ impl ImportMode {
 }
 
 #[component]
-pub(crate) fn MessageSidebar(
-    messages_list: RwSignal<Vec<MessageMeta>>,
-    current_message_id: RwSignal<Option<MessageId>>,
-    message_name_text: RwSignal<String>,
-    import_name_text: RwSignal<String>,
-    raw_input: RwSignal<String>,
-    frame_name_template_text: RwSignal<String>,
-    theme_is_dark: Memo<bool>,
-    on_select_message: UnsyncCallback<MessageId>,
-    on_message_name_change: UnsyncCallback<leptos::ev::Event>,
-    on_rename_message: UnsyncCallback<(MessageId, String)>,
-    on_rename_class: UnsyncCallback<(MessageId, String)>,
-    on_new_message: UnsyncCallback<()>,
-    on_delete_selected_messages: UnsyncCallback<Vec<MessageId>>,
-    on_view_frames: UnsyncCallback<()>,
-    on_import: UnsyncCallback<()>,
-    on_import_envelope: UnsyncCallback<()>,
-    on_upload_change: UnsyncCallback<leptos::ev::Event>,
-    on_toggle_theme: UnsyncCallback<()>,
-    on_store_frame_name_template: UnsyncCallback<()>,
-) -> impl IntoView {
+pub(crate) fn MessageSidebar(actions: MessageSidebarActions) -> impl IntoView {
+    let messages = expect_context::<MessageCatalogState>();
+    let ui = expect_context::<UiState>();
+    let messages_list = messages.messages_list;
+    let current_message_id = messages.current_message_id;
+    let message_name_text = messages.message_name_text;
+    let import_name_text = messages.import_name_text;
+    let raw_input = messages.raw_input;
+    let frame_name_template_text = messages.frame_name_template_text;
+    let theme_is_dark = ui.theme_is_dark;
+    let MessageSidebarActions {
+        on_select_message,
+        on_message_name_change,
+        on_rename_message,
+        on_rename_class,
+        on_new_message,
+        on_delete_selected_messages,
+        on_view_frames,
+        on_import,
+        on_import_envelope,
+        on_upload_change,
+        on_toggle_theme,
+        on_store_frame_name_template,
+    } = actions;
     let collapsed = RwSignal::new(false);
     let selected_for_delete: RwSignal<FxHashSet<MessageId>> = RwSignal::new(FxHashSet::default());
     let collapsed_classes: RwSignal<FxHashSet<MessageId>> = RwSignal::new(FxHashSet::default());
