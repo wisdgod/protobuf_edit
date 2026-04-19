@@ -92,12 +92,15 @@ pub(crate) fn InspectorDrawer() -> impl IntoView {
                 }
                 WireType::Len => {
                     if let Ok(bytes) = patch.bytes(fid) {
-                        if let Ok(s) = core::str::from_utf8(bytes) {
-                            bytes_view.set(BytesView::Utf8);
-                            bytes_text.set(s.to_string());
-                        } else {
-                            bytes_view.set(BytesView::Hex);
-                            bytes_text.set(hex::encode(bytes));
+                        match core::str::from_utf8(bytes) {
+                            Ok(s) if is_readable_utf8(s) => {
+                                bytes_view.set(BytesView::Utf8);
+                                bytes_text.set(s.to_string());
+                            }
+                            _ => {
+                                bytes_view.set(BytesView::Hex);
+                                bytes_text.set(hex::encode(bytes));
+                            }
                         }
                     }
                 }
@@ -1036,12 +1039,34 @@ pub(crate) fn InspectorDrawer() -> impl IntoView {
                                         return format!("{} byte(s) | preview skipped", bytes.len());
                                     }
 
-                                    let utf8 = match core::str::from_utf8(&bytes) {
-                                        Ok(s) => format!("utf8: \"{}\"", truncate_for_hint(s, 80)),
-                                        Err(_) => "utf8: invalid".to_string(),
-                                    };
-                                    let b64 = base64::engine::general_purpose::STANDARD.encode(&bytes);
-                                    format!("{utf8} | base64: {}", truncate_for_hint(&b64, 80))
+                                    let current = bytes_view.get();
+                                    let mut parts: Vec<String> = Vec::new();
+                                    parts.push(format!("{} byte(s)", bytes.len()));
+
+                                    let utf8_result = core::str::from_utf8(&bytes);
+                                    let readable = utf8_result.is_ok_and(is_readable_utf8);
+
+                                    if current != BytesView::Utf8 {
+                                        match utf8_result {
+                                            Ok(s) if readable => {
+                                                parts.push(format!("utf8: \"{}\"", truncate_for_hint(s, 80)));
+                                            }
+                                            Ok(s) => {
+                                                parts.push(format!("utf8 (unreadable): \"{}\"", truncate_for_hint(s, 40)));
+                                            }
+                                            Err(_) => {
+                                                parts.push("utf8: invalid".to_string());
+                                            }
+                                        }
+                                    }
+                                    if current != BytesView::Hex {
+                                        parts.push(format!("hex: {}", truncate_for_hint(&hex::encode(&bytes), 80)));
+                                    }
+                                    if current != BytesView::Base64 {
+                                        let b64 = base64::engine::general_purpose::STANDARD.encode(&bytes);
+                                        parts.push(format!("base64: {}", truncate_for_hint(&b64, 80)));
+                                    }
+                                    parts.join(" | ")
                                 }}
                             </div>
                         </Show>
@@ -1415,6 +1440,10 @@ fn validate_hex_bytes(text: &str, exact_len: Option<usize>) -> Result<(), UiErro
     }
 
     Ok(())
+}
+
+fn is_readable_utf8(s: &str) -> bool {
+    s.chars().all(|ch| !ch.is_control() || ch == '\n' || ch == '\r' || ch == '\t')
 }
 
 fn truncate_for_hint(text: &str, max_chars: usize) -> String {
