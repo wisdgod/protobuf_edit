@@ -16,10 +16,7 @@
   height: var(--hex-row-height);
   overflow-anchor: none;
   display: grid;
-  grid-template-columns:
-    64px
-    minmax(0, calc(48ch + 32px))
-    minmax(0, calc(16ch + 32px));
+  grid-template-columns: 5ch 48ch 16ch;
   justify-content: start;
   align-items: center;
   padding: 0 var(--spacing-sm);

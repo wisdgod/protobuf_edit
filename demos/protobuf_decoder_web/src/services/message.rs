@@ -1,5 +1,5 @@
 use crate::bytes::ByteView;
-use crate::decode::{decode_base64_url, decode_user_input, encode_base64};
+use crate::decode::{decode_base64_url, decode_user_input};
 use crate::messages::{self, LoadedBytesMode, MessageId};
 use crate::services::WorkspaceService;
 use crate::state::{MessageCatalogState, WorkspaceState};
@@ -405,13 +405,10 @@ impl MessageService {
             let mut bytes = vec![0u8; u8_array.length() as usize];
             u8_array.copy_to(&mut bytes);
 
-            let raw_input = this.catalog.raw_input;
             let import_name_text = this.catalog.import_name_text;
             let current_message_id = this.catalog.current_message_id;
             let message_name_text = this.catalog.message_name_text;
             let toast = this.toast;
-
-            raw_input.set(encode_base64(&bytes));
             let import_name = import_name_text.get_untracked();
             let name: Arc<str> = if import_name.trim().is_empty() {
                 Arc::<str>::from(format!("Upload: {filename}"))
