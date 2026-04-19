@@ -3,15 +3,14 @@ use crate::error::shared_error;
 use crate::envelope::{parse_envelope_frames, EnvelopeView};
 use crate::fx::FxHashSet;
 use crate::messages::MessageId;
-use crate::toast::{show_toast, Toast, ToastKind};
+use crate::state::WorkspaceState;
+use crate::toast::{ToastManager, ToastKind};
 use super::{
     build_selection_path, collect_visible_fields, decode_selection_path, resolve_selection_path,
 };
 use leptos::prelude::*;
 use protobuf_edit::{FieldId, Patch, TreeError};
 use std::rc::Rc;
-
-use super::session::WorkspaceSession;
 
 pub(crate) struct SaveReparseInfo {
     pub bytes: ByteView,
@@ -20,8 +19,8 @@ pub(crate) struct SaveReparseInfo {
     pub elapsed_ms: f64,
 }
 
-pub(crate) fn confirm_discard_edits(session: &WorkspaceSession, action: &str) -> bool {
-    let pending = session.dirty_fields.with_untracked(|state| state.len());
+pub(crate) fn confirm_discard_edits(ws: &WorkspaceState, action: &str) -> bool {
+    let pending = ws.dirty_fields.with_untracked(|state| state.len());
     if pending == 0 {
         return true;
     }
@@ -34,12 +33,11 @@ pub(crate) fn confirm_discard_edits(session: &WorkspaceSession, action: &str) ->
 }
 
 pub(crate) fn load_patch_from_view(
-    session: &WorkspaceSession,
+    ws: &WorkspaceState,
     label: &str,
     bytes: ByteView,
     auto_expand_paths: Vec<String>,
-    toasts: RwSignal<Vec<Toast>>,
-    next_toast_id: RwSignal<u64>,
+    toast: &ToastManager,
 ) {
     let source = unsafe { protobuf_edit::Buf::from_borrowed_slice(bytes.as_slice()) };
     match Patch::from_buf(source) {
@@ -61,17 +59,15 @@ pub(crate) fn load_patch_from_view(
                 expanded_by_default.extend(expanded);
             }
 
-            session.show_root_patch(patch, bytes, None, expanded_by_default);
-            show_toast(
-                toasts,
-                next_toast_id,
+            ws.show_root_patch(patch, bytes, None, expanded_by_default);
+            toast.show(
                 ToastKind::Success,
                 format!("Loaded {label}: {bytes_len} bytes, {field_count} field(s)."),
             );
         }
         Err(err) => {
             let frames = parse_envelope_frames(bytes.as_slice()).ok();
-            session.show_root_raw_bytes(bytes);
+            ws.show_root_raw_bytes(bytes);
             let msg = match frames {
                 Some(frames) if !frames.is_empty() => format!(
                     "Failed to load {label}: {err:?}. Bytes match envelope framing ({} frame(s)). Use \"View Frames\", \"Import Envelope\", or \"Extract Frames\".",
@@ -79,28 +75,27 @@ pub(crate) fn load_patch_from_view(
                 ),
                 _ => format!("Failed to load {label}: {err:?}"),
             };
-            show_toast(toasts, next_toast_id, ToastKind::Error, msg);
+            toast.show(ToastKind::Error, msg);
         }
     }
 }
 
 pub(crate) fn show_envelope_browser(
-    session: &WorkspaceSession,
+    ws: &WorkspaceState,
     source_id: MessageId,
     bytes: Rc<Vec<u8>>,
     frames: Vec<crate::envelope::EnvelopeFrame>,
     meta: Vec<crate::envelope::EnvelopeFrameMeta>,
 ) {
-    session.show_envelope_browser(EnvelopeView { source_id, bytes, frames, meta });
+    ws.show_envelope_browser(EnvelopeView { source_id, bytes, frames, meta });
 }
 
 pub(crate) fn open_envelope_frame(
-    session: &WorkspaceSession,
+    ws: &WorkspaceState,
     idx: usize,
-    toasts: RwSignal<Vec<Toast>>,
-    next_toast_id: RwSignal<u64>,
+    toast: &ToastManager,
 ) {
-    let Some((bytes, frame, cached_err)) = session.envelope_view.with_untracked(|state| {
+    let Some((bytes, frame, cached_err)) = ws.envelope_view.with_untracked(|state| {
         let view = state.as_ref()?;
         let frame = view.frames.get(idx).copied()?;
         let cached_err = view.meta.get(idx).and_then(|meta| meta.protobuf_error.as_ref()).cloned();
@@ -114,17 +109,12 @@ pub(crate) fn open_envelope_frame(
         frame.payload_offset,
         frame.payload_offset.saturating_add(frame.payload_len),
     ) else {
-        show_toast(
-            toasts,
-            next_toast_id,
-            ToastKind::Error,
-            "Envelope frame payload range is out of bounds.",
-        );
+        toast.show(ToastKind::Error, "Envelope frame payload range is out of bounds.");
         return;
     };
 
     if frame.is_compressed() || frame.is_json() || cached_err.is_some() {
-        session.show_envelope_frame_raw_bytes(view, idx);
+        ws.show_envelope_frame_raw_bytes(view, idx);
         return;
     }
 
@@ -132,11 +122,11 @@ pub(crate) fn open_envelope_frame(
     match Patch::from_buf(source) {
         Ok(mut patch) => {
             let _ = patch.enable_read_cache();
-            session.show_envelope_frame_patch(patch, view, idx);
+            ws.show_envelope_frame_patch(patch, view, idx);
         }
         Err(err) => {
             let msg = shared_error(format!("{err:?}"));
-            session.envelope_view.update(|state| {
+            ws.envelope_view.update(|state| {
                 let Some(view) = state.as_mut() else {
                     return;
                 };
@@ -145,10 +135,8 @@ pub(crate) fn open_envelope_frame(
                 };
                 meta.protobuf_error = Some(msg.clone());
             });
-            session.show_envelope_frame_raw_bytes(view, idx);
-            show_toast(
-                toasts,
-                next_toast_id,
+            ws.show_envelope_frame_raw_bytes(view, idx);
+            toast.show(
                 ToastKind::Error,
                 format!("Failed to parse envelope frame as protobuf: {msg}"),
             );
@@ -156,13 +144,9 @@ pub(crate) fn open_envelope_frame(
     }
 }
 
-pub(crate) fn close_envelope_browser(
-    session: &WorkspaceSession,
-    toasts: RwSignal<Vec<Toast>>,
-    next_toast_id: RwSignal<u64>,
-) {
+pub(crate) fn close_envelope_browser(ws: &WorkspaceState, toast: &ToastManager) {
     let Some(bytes) =
-        session.envelope_view.with_untracked(|state| state.as_ref().map(|view| view.bytes.clone()))
+        ws.envelope_view.with_untracked(|state| state.as_ref().map(|view| view.bytes.clone()))
     else {
         return;
     };
@@ -170,16 +154,16 @@ pub(crate) fn close_envelope_browser(
     let Some(view) = ByteView::slice(bytes, 0, len) else {
         return;
     };
-    session.show_root_raw_bytes(view);
-    show_toast(toasts, next_toast_id, ToastKind::Success, "Showing raw envelope bytes.");
+    ws.show_root_raw_bytes(view);
+    toast.show(ToastKind::Success, "Showing raw envelope bytes.");
 }
 
-pub(crate) fn visible_fields(session: &WorkspaceSession) -> Vec<FieldId> {
-    session.patch_state.with_untracked(|state| {
+pub(crate) fn visible_fields(ws: &WorkspaceState) -> Vec<FieldId> {
+    ws.patch_state.with_untracked(|state| {
         let Some(patch) = state.as_ref() else {
             return Vec::new();
         };
-        session.expanded.with_untracked(|expanded| {
+        ws.expanded.with_untracked(|expanded| {
             let mut out = Vec::new();
             collect_visible_fields(patch, patch.root(), expanded, &mut out);
             out
@@ -187,10 +171,10 @@ pub(crate) fn visible_fields(session: &WorkspaceSession) -> Vec<FieldId> {
     })
 }
 
-pub(crate) fn revert_pending_edits(session: &WorkspaceSession) -> Result<(), TreeError> {
-    let bytes_view = session.patch_bytes.get_untracked();
-    let prev_selected = session.selected.get_untracked();
-    let prev_path = session.patch_state.with(|state| {
+pub(crate) fn revert_pending_edits(ws: &WorkspaceState) -> Result<(), TreeError> {
+    let bytes_view = ws.patch_bytes.get_untracked();
+    let prev_selected = ws.selected.get_untracked();
+    let prev_path = ws.patch_state.with(|state| {
         let patch = state.as_ref()?;
         let fid = prev_selected?;
         build_selection_path(patch, fid)
@@ -199,7 +183,7 @@ pub(crate) fn revert_pending_edits(session: &WorkspaceSession) -> Result<(), Tre
     let mut next_selected = None;
     let mut next_expanded = FxHashSet::default();
     let mut result = Ok(());
-    session.patch_state.update(|state| {
+    ws.patch_state.update(|state| {
         let Some(mut patch) = state.take() else {
             result = Err(TreeError::DecodeError);
             return;
@@ -243,20 +227,20 @@ pub(crate) fn revert_pending_edits(session: &WorkspaceSession) -> Result<(), Tre
         *state = Some(patch);
     });
     result?;
-    session.reset_ui_state_keep_selected(next_selected, next_expanded);
+    ws.reset_ui_state_keep_selected(next_selected, next_expanded);
     Ok(())
 }
 
-pub(crate) fn save_and_reparse(session: &WorkspaceSession) -> Result<SaveReparseInfo, TreeError> {
-    let prev_selected = session.selected.get_untracked();
-    let prev_path = session.patch_state.with(|state| {
+pub(crate) fn save_and_reparse(ws: &WorkspaceState) -> Result<SaveReparseInfo, TreeError> {
+    let prev_selected = ws.selected.get_untracked();
+    let prev_path = ws.patch_state.with(|state| {
         let patch = state.as_ref()?;
         let fid = prev_selected?;
         build_selection_path(patch, fid)
     });
 
     let t0 = js_sys::Date::now();
-    let (mut patch, bytes_view) = session.patch_state.with(|state| {
+    let (mut patch, bytes_view) = ws.patch_state.with(|state| {
         let Some(patch) = state.as_ref() else {
             return Err(TreeError::DecodeError);
         };
@@ -281,6 +265,6 @@ pub(crate) fn save_and_reparse(session: &WorkspaceSession) -> Result<SaveReparse
         None => (None, FxHashSet::default()),
     };
 
-    session.show_root_patch(patch, bytes_view.clone(), new_selected, new_expanded);
+    ws.show_root_patch(patch, bytes_view.clone(), new_selected, new_expanded);
     Ok(SaveReparseInfo { bytes: bytes_view, bytes_len, field_count, elapsed_ms })
 }

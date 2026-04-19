@@ -1,5 +1,5 @@
 use crate::state::{UiState, WorkspaceState};
-use crate::toast::{show_toast, ToastKind};
+use crate::toast::ToastKind;
 use leptos::prelude::*;
 use protobuf_edit::{FieldId, MessageId, Patch, TreeError, WireType};
 
@@ -48,8 +48,7 @@ fn FieldRow(field: FieldId, depth: usize) -> AnyView {
     let hovered = workspace.hovered;
     let expanded = workspace.expanded;
     let dirty_fields = workspace.dirty_fields;
-    let toasts = ui.toasts;
-    let next_toast_id = ui.next_toast_id;
+    let toast = ui.toast;
 
     let tag_info = Memo::new(move |_| {
         patch_state.with(|p| {
@@ -150,9 +149,7 @@ fn FieldRow(field: FieldId, depth: usize) -> AnyView {
             Ok(_child) => expanded.update(|s| {
                 s.insert(field);
             }),
-            Err(e) => show_toast(
-                toasts,
-                next_toast_id,
+            Err(e) => toast.show(
                 ToastKind::Error,
                 format!("Failed to parse child message: {e:?}"),
             ),

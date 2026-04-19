@@ -3,7 +3,6 @@ mod drilldown;
 mod field_paths;
 mod frame_name;
 mod highlight;
-mod session;
 mod tree;
 
 pub(crate) use commands::{
@@ -16,5 +15,4 @@ pub(crate) use field_paths::{
 };
 pub(crate) use frame_name::format_frame_name_template;
 pub(crate) use highlight::{compute_highlights, HighlightKind, HighlightRange};
-pub(crate) use session::WorkspaceSession;
 pub(crate) use tree::collect_visible_fields;

@@ -1,6 +1,6 @@
 use crate::error::UiError;
 use crate::state::{UiState, WorkspaceState};
-use crate::toast::{show_toast, Toast, ToastKind};
+use crate::toast::{ToastManager, ToastKind};
 use base64::Engine as _;
 use leptos::prelude::*;
 use protobuf_edit::{Buf, FieldId, Patch, Tag, TreeError, WireType};
@@ -40,8 +40,7 @@ pub(crate) fn InspectorDrawer() -> impl IntoView {
     let selected = workspace.selected;
     let expanded = workspace.expanded;
     let dirty_fields = workspace.dirty_fields;
-    let toasts = ui.toasts;
-    let next_toast_id = ui.next_toast_id;
+    let toast = ui.toast;
     let collapsed = RwSignal::new(false);
 
     let varint_text = RwSignal::new(String::new());
@@ -217,9 +216,7 @@ pub(crate) fn InspectorDrawer() -> impl IntoView {
 
     let on_apply = move |_| {
         if read_only.get() {
-            show_toast(
-                toasts,
-                next_toast_id,
+            toast.show(
                 ToastKind::Error,
                 "Envelope frame view is read-only. Extract the frame to a message to edit.",
             );
@@ -234,7 +231,7 @@ pub(crate) fn InspectorDrawer() -> impl IntoView {
         };
 
         let Some(wt) = selected_wire.get_untracked() else {
-            show_toast(toasts, next_toast_id, ToastKind::Error, "No field selected.");
+            toast.show(ToastKind::Error, "No field selected.");
             return;
         };
 
@@ -242,9 +239,7 @@ pub(crate) fn InspectorDrawer() -> impl IntoView {
             WireType::Varint => {
                 let raw = varint_text.get_untracked();
                 let Ok(value) = parse_u64(&raw) else {
-                    show_toast(
-                        toasts,
-                        next_toast_id,
+                    toast.show(
                         ToastKind::Error,
                         "Invalid varint value. Use decimal or 0x-prefixed hex.",
                     );
@@ -269,16 +264,12 @@ pub(crate) fn InspectorDrawer() -> impl IntoView {
                             s.insert(fid);
                         });
                         varint_base.set(Some(value));
-                        show_toast(
-                            toasts,
-                            next_toast_id,
+                        toast.show(
                             ToastKind::Success,
                             format!("Applied varint edit: {value}."),
                         );
                     }
-                    Err(e) => show_toast(
-                        toasts,
-                        next_toast_id,
+                    Err(e) => toast.show(
                         ToastKind::Error,
                         format!("Failed to apply edit: {e:?}"),
                     ),
@@ -290,7 +281,7 @@ pub(crate) fn InspectorDrawer() -> impl IntoView {
                 let bytes = match decode_bytes_view(&raw, view) {
                     Ok(v) => v,
                     Err(msg) => {
-                        show_toast(toasts, next_toast_id, ToastKind::Error, msg);
+                        toast.show(ToastKind::Error, msg);
                         return;
                     }
                 };
@@ -298,7 +289,7 @@ pub(crate) fn InspectorDrawer() -> impl IntoView {
                 let canonical_text = match encode_bytes_view(&bytes, view) {
                     Ok(s) => s,
                     Err(msg) => {
-                        show_toast(toasts, next_toast_id, ToastKind::Error, msg);
+                        toast.show(ToastKind::Error, msg);
                         return;
                     }
                 };
@@ -314,9 +305,7 @@ pub(crate) fn InspectorDrawer() -> impl IntoView {
 
                 let mut buf = Buf::new();
                 if let Err(e) = buf.extend_from_slice(&bytes) {
-                    show_toast(
-                        toasts,
-                        next_toast_id,
+                    toast.show(
                         ToastKind::Error,
                         format!("Failed to allocate buffer: {e:?}"),
                     );
@@ -350,16 +339,12 @@ pub(crate) fn InspectorDrawer() -> impl IntoView {
                             s.insert(fid);
                         });
                         bytes_text.set(canonical_text);
-                        show_toast(
-                            toasts,
-                            next_toast_id,
+                        toast.show(
                             ToastKind::Success,
                             format!("Applied bytes edit: {bytes_len} byte(s)."),
                         );
                     }
-                    Err(e) => show_toast(
-                        toasts,
-                        next_toast_id,
+                    Err(e) => toast.show(
                         ToastKind::Error,
                         format!("Failed to apply edit: {e:?}"),
                     ),
@@ -368,9 +353,7 @@ pub(crate) fn InspectorDrawer() -> impl IntoView {
             WireType::I32 => {
                 let raw = fixed_text.get_untracked();
                 let Ok(value) = parse_u64(&raw) else {
-                    show_toast(
-                        toasts,
-                        next_toast_id,
+                    toast.show(
                         ToastKind::Error,
                         "Invalid fixed32 value. Use decimal or 0x-prefixed hex.",
                     );
@@ -378,7 +361,7 @@ pub(crate) fn InspectorDrawer() -> impl IntoView {
                 };
 
                 if value > u32::MAX as u64 {
-                    show_toast(toasts, next_toast_id, ToastKind::Error, "Fixed32 out of range.");
+                    toast.show(ToastKind::Error, "Fixed32 out of range.");
                     return;
                 }
                 let bits = value as u32;
@@ -402,16 +385,12 @@ pub(crate) fn InspectorDrawer() -> impl IntoView {
                         });
                         fixed_text.set(format!("0x{bits:08X}"));
                         fixed_base.set(Some(value));
-                        show_toast(
-                            toasts,
-                            next_toast_id,
+                        toast.show(
                             ToastKind::Success,
                             format!("Applied fixed32 edit: 0x{bits:08X}."),
                         );
                     }
-                    Err(e) => show_toast(
-                        toasts,
-                        next_toast_id,
+                    Err(e) => toast.show(
                         ToastKind::Error,
                         format!("Failed to apply edit: {e:?}"),
                     ),
@@ -420,9 +399,7 @@ pub(crate) fn InspectorDrawer() -> impl IntoView {
             WireType::I64 => {
                 let raw = fixed_text.get_untracked();
                 let Ok(value) = parse_u64(&raw) else {
-                    show_toast(
-                        toasts,
-                        next_toast_id,
+                    toast.show(
                         ToastKind::Error,
                         "Invalid fixed64 value. Use decimal or 0x-prefixed hex.",
                     );
@@ -448,16 +425,12 @@ pub(crate) fn InspectorDrawer() -> impl IntoView {
                         });
                         fixed_text.set(format!("0x{value:016X}"));
                         fixed_base.set(Some(value));
-                        show_toast(
-                            toasts,
-                            next_toast_id,
+                        toast.show(
                             ToastKind::Success,
                             format!("Applied fixed64 edit: 0x{value:016X}."),
                         );
                     }
-                    Err(e) => show_toast(
-                        toasts,
-                        next_toast_id,
+                    Err(e) => toast.show(
                         ToastKind::Error,
                         format!("Failed to apply edit: {e:?}"),
                     ),
@@ -468,9 +441,7 @@ pub(crate) fn InspectorDrawer() -> impl IntoView {
 
     let on_delete = move |_| {
         if read_only.get() {
-            show_toast(
-                toasts,
-                next_toast_id,
+            toast.show(
                 ToastKind::Error,
                 "Envelope frame view is read-only. Extract the frame to a message to edit.",
             );
@@ -514,11 +485,9 @@ pub(crate) fn InspectorDrawer() -> impl IntoView {
                     s.insert(fid);
                 });
                 selected.set(None);
-                show_toast(toasts, next_toast_id, ToastKind::Success, "Deleted field.");
+                toast.show(ToastKind::Success, "Deleted field.");
             }
-            Err(e) => show_toast(
-                toasts,
-                next_toast_id,
+            Err(e) => toast.show(
                 ToastKind::Error,
                 format!("Failed to delete field: {e:?}"),
             ),
@@ -527,9 +496,7 @@ pub(crate) fn InspectorDrawer() -> impl IntoView {
 
     let on_clear = move |_| {
         if read_only.get() {
-            show_toast(
-                toasts,
-                next_toast_id,
+            toast.show(
                 ToastKind::Error,
                 "Envelope frame view is read-only. Extract the frame to a message to edit.",
             );
@@ -577,9 +544,7 @@ pub(crate) fn InspectorDrawer() -> impl IntoView {
 
                 if was_inserted {
                     selected.set(None);
-                    show_toast(
-                        toasts,
-                        next_toast_id,
+                    toast.show(
                         ToastKind::Success,
                         "Removed inserted field.",
                     );
@@ -621,11 +586,9 @@ pub(crate) fn InspectorDrawer() -> impl IntoView {
                     }
                 });
 
-                show_toast(toasts, next_toast_id, ToastKind::Success, "Cleared field edit.");
+                toast.show(ToastKind::Success, "Cleared field edit.");
             }
-            Err(e) => show_toast(
-                toasts,
-                next_toast_id,
+            Err(e) => toast.show(
                 ToastKind::Error,
                 format!("Failed to clear edit: {e:?}"),
             ),
@@ -659,9 +622,7 @@ pub(crate) fn InspectorDrawer() -> impl IntoView {
                     s.insert(fid);
                 });
             }
-            Err(e) => show_toast(
-                toasts,
-                next_toast_id,
+            Err(e) => toast.show(
                 ToastKind::Error,
                 format!("Failed to parse as message: {e:?}"),
             ),
@@ -776,9 +737,7 @@ pub(crate) fn InspectorDrawer() -> impl IntoView {
 
     let on_insert = move |_| {
         if read_only.get() {
-            show_toast(
-                toasts,
-                next_toast_id,
+            toast.show(
                 ToastKind::Error,
                 "Envelope frame view is read-only. Extract the frame to a message to edit.",
             );
@@ -789,12 +748,12 @@ pub(crate) fn InspectorDrawer() -> impl IntoView {
         }
 
         let Some((target, target_label)) = insert_target.get_untracked() else {
-            show_toast(toasts, next_toast_id, ToastKind::Error, "No data loaded.");
+            toast.show(ToastKind::Error, "No data loaded.");
             return;
         };
 
         let Ok(Some(tag)) = insert_tag_validation.get_untracked() else {
-            show_toast(toasts, next_toast_id, ToastKind::Error, "Invalid tag.");
+            toast.show(ToastKind::Error, "Invalid tag.");
             return;
         };
 
@@ -804,7 +763,7 @@ pub(crate) fn InspectorDrawer() -> impl IntoView {
         match wt {
             WireType::Varint => {
                 let Ok(Some(value)) = insert_varint_validation.get_untracked() else {
-                    show_toast(toasts, next_toast_id, ToastKind::Error, "Invalid varint.");
+                    toast.show(ToastKind::Error, "Invalid varint.");
                     return;
                 };
                 patch_state.update(|p| {
@@ -820,15 +779,13 @@ pub(crate) fn InspectorDrawer() -> impl IntoView {
             }
             WireType::Len => {
                 let Ok(Some(bytes)) = insert_bytes_validation.get_untracked() else {
-                    show_toast(toasts, next_toast_id, ToastKind::Error, "Invalid bytes payload.");
+                    toast.show(ToastKind::Error, "Invalid bytes payload.");
                     return;
                 };
 
                 let mut buf = Buf::new();
                 if let Err(e) = buf.extend_from_slice(&bytes) {
-                    show_toast(
-                        toasts,
-                        next_toast_id,
+                    toast.show(
                         ToastKind::Error,
                         format!("Failed to allocate buffer: {e:?}"),
                     );
@@ -848,11 +805,11 @@ pub(crate) fn InspectorDrawer() -> impl IntoView {
             }
             WireType::I32 => {
                 let Ok(Some(value)) = insert_fixed_validation.get_untracked() else {
-                    show_toast(toasts, next_toast_id, ToastKind::Error, "Invalid fixed value.");
+                    toast.show(ToastKind::Error, "Invalid fixed value.");
                     return;
                 };
                 if value > u32::MAX as u64 {
-                    show_toast(toasts, next_toast_id, ToastKind::Error, "Fixed32 out of range.");
+                    toast.show(ToastKind::Error, "Fixed32 out of range.");
                     return;
                 }
                 let bits = value as u32;
@@ -869,7 +826,7 @@ pub(crate) fn InspectorDrawer() -> impl IntoView {
             }
             WireType::I64 => {
                 let Ok(Some(value)) = insert_fixed_validation.get_untracked() else {
-                    show_toast(toasts, next_toast_id, ToastKind::Error, "Invalid fixed value.");
+                    toast.show(ToastKind::Error, "Invalid fixed value.");
                     return;
                 };
                 patch_state.update(|p| {
@@ -892,15 +849,13 @@ pub(crate) fn InspectorDrawer() -> impl IntoView {
                 });
                 selected.set(Some(fid));
                 let field_number = tag.field_number().as_inner();
-                show_toast(
-                    toasts,
-                    next_toast_id,
+                toast.show(
                     ToastKind::Success,
                     format!("Inserted field {field_number} ({wt:?}) into {target_label}."),
                 );
             }
             Err(e) => {
-                show_toast(toasts, next_toast_id, ToastKind::Error, format!("Insert failed: {e:?}"))
+                toast.show(ToastKind::Error, format!("Insert failed: {e:?}"))
             }
         }
     };
@@ -941,9 +896,9 @@ pub(crate) fn InspectorDrawer() -> impl IntoView {
     });
 
     let on_bytes_view_change =
-        bytes_view_change_handler(bytes_view, bytes_text, toasts, next_toast_id);
+        bytes_view_change_handler(bytes_view, bytes_text, toast);
     let on_insert_bytes_view_change =
-        bytes_view_change_handler(insert_bytes_view, insert_bytes_text, toasts, next_toast_id);
+        bytes_view_change_handler(insert_bytes_view, insert_bytes_text, toast);
     let on_insert_wire_change = UnsyncCallback::new(move |ev: leptos::ev::Event| {
         let v = event_target_value(&ev);
         let Some(wt) = wire_type_from_value(v.trim()) else {
@@ -1368,8 +1323,7 @@ pub(crate) fn InspectorDrawer() -> impl IntoView {
 fn bytes_view_change_handler(
     bytes_view: RwSignal<BytesView>,
     bytes_text: RwSignal<String>,
-    toasts: RwSignal<Vec<Toast>>,
-    next_toast_id: RwSignal<u64>,
+    toast: ToastManager,
 ) -> UnsyncCallback<leptos::ev::Event> {
     UnsyncCallback::new(move |ev: leptos::ev::Event| {
         let v = event_target_value(&ev);
@@ -1385,14 +1339,14 @@ fn bytes_view_change_handler(
         let bytes = match decode_bytes_view(&raw, old_view) {
             Ok(v) => v,
             Err(msg) => {
-                show_toast(toasts, next_toast_id, ToastKind::Error, msg);
+                toast.show(ToastKind::Error, msg);
                 return;
             }
         };
         let new_text = match encode_bytes_view(&bytes, new_view) {
             Ok(s) => s,
             Err(msg) => {
-                show_toast(toasts, next_toast_id, ToastKind::Error, msg);
+                toast.show(ToastKind::Error, msg);
                 return;
             }
         };
