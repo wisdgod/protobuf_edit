@@ -1,8 +1,10 @@
 use crate::fx::{FxHashMap, FxHashSet};
-use crate::messages::{MessageId, MessageMeta};
-use crate::state::{MessageCatalogState, MessageSidebarActions, UiState};
+use crate::messages::{self, MessageId, MessageMeta};
+use crate::services::{EnvelopeService, MessageService};
+use crate::state::{MessageCatalogState, UiState};
 use super::ThemeSwitcher;
 use leptos::prelude::*;
+use crate::toast::ToastKind;
 use std::sync::Arc;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -29,7 +31,9 @@ impl ImportMode {
 }
 
 #[component]
-pub(crate) fn MessageSidebar(actions: MessageSidebarActions) -> impl IntoView {
+pub(crate) fn MessageSidebar(on_toggle_theme: UnsyncCallback<()>) -> impl IntoView {
+    let msg_svc = expect_context::<MessageService>();
+    let env_svc = expect_context::<EnvelopeService>();
     let messages = expect_context::<MessageCatalogState>();
     let ui = expect_context::<UiState>();
     let messages_list = messages.messages_list;
@@ -39,20 +43,7 @@ pub(crate) fn MessageSidebar(actions: MessageSidebarActions) -> impl IntoView {
     let raw_input = messages.raw_input;
     let frame_name_template_text = messages.frame_name_template_text;
     let theme_is_dark = ui.theme_is_dark;
-    let MessageSidebarActions {
-        on_select_message,
-        on_message_name_change,
-        on_rename_message,
-        on_rename_class,
-        on_new_message,
-        on_delete_selected_messages,
-        on_view_frames,
-        on_import,
-        on_import_envelope,
-        on_upload_change,
-        on_toggle_theme,
-        on_store_frame_name_template,
-    } = actions;
+    let toast = ui.toast;
     let collapsed = RwSignal::new(false);
     let selected_for_delete: RwSignal<FxHashSet<MessageId>> = RwSignal::new(FxHashSet::default());
     let collapsed_classes: RwSignal<FxHashSet<MessageId>> = RwSignal::new(FxHashSet::default());
@@ -65,9 +56,7 @@ pub(crate) fn MessageSidebar(actions: MessageSidebarActions) -> impl IntoView {
         selected_for_delete,
         renaming_id,
         rename_text,
-        on_select_message,
-        on_rename_message,
-        on_rename_class,
+        msg_svc: msg_svc.clone(),
     };
 
     Effect::new(move |_| {
@@ -87,13 +76,16 @@ pub(crate) fn MessageSidebar(actions: MessageSidebarActions) -> impl IntoView {
         });
     });
 
-    let on_delete_selected = UnsyncCallback::new(move |_| {
-        let ids: Vec<MessageId> = selected_for_delete.with(|s| s.iter().copied().collect());
-        if ids.is_empty() {
-            return;
-        }
-        on_delete_selected_messages.run(ids);
-    });
+    let on_delete_selected = {
+        let msg_svc = msg_svc.clone();
+        UnsyncCallback::new(move |_| {
+            let ids: Vec<MessageId> = selected_for_delete.with(|s| s.iter().copied().collect());
+            if ids.is_empty() {
+                return;
+            }
+            msg_svc.delete(ids);
+        })
+    };
 
     let on_select_all_visible = UnsyncCallback::new(move |_| {
         let filter = normalize_filter(&filter_text.get_untracked());
@@ -110,10 +102,45 @@ pub(crate) fn MessageSidebar(actions: MessageSidebarActions) -> impl IntoView {
         selected_for_delete.set(FxHashSet::default());
     });
 
-    let on_import_click = UnsyncCallback::new(move |_| match import_mode.get_untracked() {
-        ImportMode::Bytes => on_import.run(()),
-        ImportMode::Envelope => on_import_envelope.run(()),
-    });
+    let on_import_click = {
+        let msg_svc = msg_svc.clone();
+        let env_svc = env_svc.clone();
+        UnsyncCallback::new(move |_| match import_mode.get_untracked() {
+            ImportMode::Bytes => msg_svc.on_import_click(),
+            ImportMode::Envelope => env_svc.import_envelope(),
+        })
+    };
+
+    let on_new_message = {
+        let msg_svc = msg_svc.clone();
+        move |_| msg_svc.create()
+    };
+
+    let on_view_frames = {
+        let env_svc = env_svc.clone();
+        move |_| env_svc.view_frames()
+    };
+
+    let on_name_change = {
+        let msg_svc = msg_svc.clone();
+        move |ev: leptos::ev::Event| {
+            let value = event_target_value(&ev);
+            msg_svc.on_message_name_change(Arc::<str>::from(value.trim()));
+        }
+    };
+
+    let on_upload = {
+        let msg_svc = msg_svc.clone();
+        move |ev: leptos::ev::Event| msg_svc.upload(ev)
+    };
+
+    let on_store_template = move |_| {
+        if let Err(msg) =
+            messages::store_frame_name_template(&frame_name_template_text.get_untracked())
+        {
+            toast.show(ToastKind::Error, msg);
+        }
+    };
 
     let sidebar_class =
         move || if collapsed.get() { "sidebar sidebar--collapsed" } else { "sidebar" };
@@ -134,7 +161,7 @@ pub(crate) fn MessageSidebar(actions: MessageSidebarActions) -> impl IntoView {
 
             <div class="sidebar-body" class:hidden=move || collapsed.get()>
                 <div class="sidebar-actions">
-                    <button class="btn btn--secondary" on:click=move |_| on_new_message.run(())>
+                    <button class="btn btn--secondary" on:click=on_new_message>
                         "New"
                     </button>
 
@@ -148,7 +175,7 @@ pub(crate) fn MessageSidebar(actions: MessageSidebarActions) -> impl IntoView {
 
                     <button
                         class="btn btn--secondary"
-                        on:click=move |_| on_view_frames.run(())
+                        on:click=on_view_frames
                         disabled=move || !has_current_message()
                     >
                         "Frames"
@@ -186,10 +213,7 @@ pub(crate) fn MessageSidebar(actions: MessageSidebarActions) -> impl IntoView {
                             placeholder="Message name"
                             prop:value=move || message_name_text.get()
                             on:input=move |ev| message_name_text.set(event_target_value(&ev))
-                            on:change=move |ev| {
-                                let value = event_target_value(&ev);
-                                on_message_name_change.run(Arc::<str>::from(value.trim()));
-                            }
+                            on:change=on_name_change
                             disabled=move || !has_current_message()
                         />
                     </div>
@@ -209,7 +233,7 @@ pub(crate) fn MessageSidebar(actions: MessageSidebarActions) -> impl IntoView {
                             placeholder="Frame name template ({source} {idx} {idx1} {len})"
                             prop:value=move || frame_name_template_text.get()
                             on:input=move |ev| frame_name_template_text.set(event_target_value(&ev))
-                            on:change=move |_| on_store_frame_name_template.run(())
+                            on:change=on_store_template
                         />
                         <div class="sidebar-import-row">
                             <select
@@ -237,7 +261,7 @@ pub(crate) fn MessageSidebar(actions: MessageSidebarActions) -> impl IntoView {
                                 <input
                                     class="file-input"
                                     type="file"
-                                    on:change=move |ev| on_upload_change.run(ev)
+                                    on:change=on_upload
                                 />
                             </label>
                         </div>
@@ -330,9 +354,7 @@ struct MessageRowCtx {
     selected_for_delete: RwSignal<FxHashSet<MessageId>>,
     renaming_id: RwSignal<Option<MessageId>>,
     rename_text: RwSignal<String>,
-    on_select_message: UnsyncCallback<MessageId>,
-    on_rename_message: UnsyncCallback<(MessageId, Arc<str>)>,
-    on_rename_class: UnsyncCallback<(MessageId, Arc<str>)>,
+    msg_svc: MessageService,
 }
 
 fn normalize_filter(raw: &str) -> String {
@@ -405,7 +427,8 @@ fn class_select_state(
 fn commit_rename(
     target_id: Option<MessageId>,
     rename_text: RwSignal<String>,
-    on_rename: UnsyncCallback<(MessageId, Arc<str>)>,
+    msg_svc: &MessageService,
+    is_class: bool,
 ) {
     let Some(id) = target_id else {
         return;
@@ -415,7 +438,12 @@ fn commit_rename(
         if name.is_empty() {
             return;
         }
-        on_rename.run((id, Arc::<str>::from(name)));
+        let arc_name = Arc::<str>::from(name);
+        if is_class {
+            msg_svc.rename_class(id, arc_name);
+        } else {
+            msg_svc.rename(id, arc_name);
+        }
     });
 }
 
@@ -423,7 +451,8 @@ fn handle_rename_keydown(
     target_id: Option<MessageId>,
     rename_text: RwSignal<String>,
     renaming_id: RwSignal<Option<MessageId>>,
-    on_rename: UnsyncCallback<(MessageId, Arc<str>)>,
+    msg_svc: MessageService,
+    is_class: bool,
 ) -> impl FnMut(leptos::ev::KeyboardEvent) + 'static {
     move |ev: leptos::ev::KeyboardEvent| {
         let key = ev.key();
@@ -437,7 +466,7 @@ fn handle_rename_keydown(
         }
 
         ev.prevent_default();
-        commit_rename(target_id, rename_text, on_rename);
+        commit_rename(target_id, rename_text, &msg_svc, is_class);
         renaming_id.set(None);
     }
 }
@@ -446,13 +475,14 @@ fn handle_rename_blur(
     target_id: Option<MessageId>,
     rename_text: RwSignal<String>,
     renaming_id: RwSignal<Option<MessageId>>,
-    on_rename: UnsyncCallback<(MessageId, Arc<str>)>,
+    msg_svc: MessageService,
+    is_class: bool,
 ) -> impl FnMut(leptos::ev::FocusEvent) + 'static {
     move |_| {
         if renaming_id.get_untracked() != target_id {
             return;
         }
-        commit_rename(target_id, rename_text, on_rename);
+        commit_rename(target_id, rename_text, &msg_svc, is_class);
         renaming_id.set(None);
     }
 }
@@ -464,14 +494,7 @@ fn class_row_view(
     collapsed_classes: RwSignal<FxHashSet<MessageId>>,
     ctx: &MessageRowCtx,
 ) -> AnyView {
-    let MessageRowCtx {
-        selected_for_delete,
-        renaming_id,
-        rename_text,
-        on_select_message,
-        on_rename_class,
-        ..
-    } = ctx.clone();
+    let MessageRowCtx { selected_for_delete, renaming_id, rename_text, msg_svc, .. } = ctx.clone();
 
     let root_id: Option<MessageId> = meta_by_id.get(&class_id).map(|meta| meta.id);
     let title = meta_by_id
@@ -517,6 +540,8 @@ fn class_row_view(
         });
     };
 
+    let select_svc = msg_svc.clone();
+
     view! {
         <div class="message-class-row">
             <button class="btn btn--secondary message-caret" on:click=on_toggle_collapse>
@@ -534,7 +559,7 @@ fn class_row_view(
                 class="message-class-title"
                 on:click=move |_| {
                     if let Some(id) = default_select_id {
-                        on_select_message.run(id);
+                        select_svc.switch_to(id);
                     }
                 }
             >
@@ -548,13 +573,15 @@ fn class_row_view(
                             Some(class_id),
                             rename_text,
                             renaming_id,
-                            on_rename_class,
+                            msg_svc.clone(),
+                            true,
                         )
                         on:blur=handle_rename_blur(
                             Some(class_id),
                             rename_text,
                             renaming_id,
-                            on_rename_class,
+                            msg_svc.clone(),
+                            true,
                         )
                         autofocus=true
                     />
@@ -585,9 +612,7 @@ fn message_row_view(meta: &MessageMeta, indent: usize, ctx: &MessageRowCtx) -> A
         selected_for_delete,
         renaming_id,
         rename_text,
-        on_select_message,
-        on_rename_message,
-        ..
+        msg_svc,
     } = ctx.clone();
     let id = meta.id;
     let name = meta.name.clone();
@@ -601,8 +626,10 @@ fn message_row_view(meta: &MessageMeta, indent: usize, ctx: &MessageRowCtx) -> A
         if current { "message-row message-row--current" } else { "message-row" }
     };
 
+    let select_svc = msg_svc.clone();
+
     view! {
-        <div class=row_class on:click=move |_| on_select_message.run(id)>
+        <div class=row_class on:click=move |_| select_svc.switch_to(id)>
             <div class="message-indent" style=move || format!("width: {indent_px}px")></div>
             <input
                 class="message-checkbox"
@@ -635,13 +662,15 @@ fn message_row_view(meta: &MessageMeta, indent: usize, ctx: &MessageRowCtx) -> A
                             Some(id),
                             rename_text,
                             renaming_id,
-                            on_rename_message,
+                            msg_svc.clone(),
+                            false,
                         )
                         on:blur=handle_rename_blur(
                             Some(id),
                             rename_text,
                             renaming_id,
-                            on_rename_message,
+                            msg_svc.clone(),
+                            false,
                         )
                         autofocus=true
                     />

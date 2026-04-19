@@ -1,22 +1,25 @@
-use crate::state::{MessageCatalogState, StatusBarActions, WorkspaceState};
+use crate::services::{ExportService, MessageService, WorkspaceService};
+use crate::state::{MessageCatalogState, WorkspaceState};
 use leptos::oco::Oco;
 use leptos::prelude::*;
 
 #[component]
-pub(crate) fn StatusBar(actions: StatusBarActions) -> impl IntoView {
+pub(crate) fn StatusBar() -> impl IntoView {
+    let export_svc = expect_context::<ExportService>();
+    let ws_svc = expect_context::<WorkspaceService>();
+    let msg_svc = expect_context::<MessageService>();
     let workspace = expect_context::<WorkspaceState>();
     let messages = expect_context::<MessageCatalogState>();
-    let StatusBarActions {
-        on_copy_hex,
-        on_copy_base64,
-        on_copy_share_url,
-        on_download_bin,
-        on_save_expand_defaults,
-        on_save_reparse,
-        on_bump_modified,
-    } = actions;
 
     let has_current_message = move || messages.current_message_id.get().is_some();
+
+    let hex_svc = export_svc.clone();
+    let b64_svc = export_svc.clone();
+    let url_svc = export_svc.clone();
+    let dl_svc = export_svc.clone();
+    let expand_svc = ws_svc.clone();
+    let save_ws_svc = ws_svc.clone();
+    let save_msg_svc = msg_svc.clone();
 
     view! {
         <div class="status-bar">
@@ -60,35 +63,35 @@ pub(crate) fn StatusBar(actions: StatusBarActions) -> impl IntoView {
             <div class="status-actions">
                 <button
                     class="btn btn--secondary"
-                    on:click=move |_| on_copy_hex.run(())
+                    on:click=move |_| hex_svc.copy_hex()
                     disabled=move || !has_current_message()
                 >
                     "Copy Hex"
                 </button>
                 <button
                     class="btn btn--secondary"
-                    on:click=move |_| on_copy_base64.run(())
+                    on:click=move |_| b64_svc.copy_base64()
                     disabled=move || !has_current_message()
                 >
                     "Copy Base64"
                 </button>
                 <button
                     class="btn btn--secondary"
-                    on:click=move |_| on_copy_share_url.run(())
+                    on:click=move |_| url_svc.copy_share_url()
                     disabled=move || !has_current_message()
                 >
                     "Copy URL"
                 </button>
                 <button
                     class="btn btn--secondary"
-                    on:click=move |_| on_download_bin.run(())
+                    on:click=move |_| dl_svc.download_bin()
                     disabled=move || !has_current_message()
                 >
                     "Download .bin"
                 </button>
                 <button
                     class="btn btn--secondary"
-                    on:click=move |_| on_save_expand_defaults.run(())
+                    on:click=move |_| expand_svc.save_expand_defaults()
                     disabled=move || {
                         !has_current_message()
                             || workspace.read_only.get()
@@ -101,9 +104,9 @@ pub(crate) fn StatusBar(actions: StatusBarActions) -> impl IntoView {
                     class="btn btn--primary"
                     on:click=move |_| {
                         if workspace.dirty_count.get() != 0 {
-                            on_save_reparse.run(());
+                            let _ = save_ws_svc.save_reparse();
                         } else {
-                            on_bump_modified.run(());
+                            save_msg_svc.bump_modified();
                         }
                     }
                     disabled=move || {

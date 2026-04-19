@@ -9,6 +9,7 @@ mod hex_view;
 mod idb;
 mod messages;
 mod page_cache;
+mod services;
 mod state;
 mod toast;
 mod web;

@@ -7,7 +7,6 @@ use crate::toast::ToastManager;
 use crate::workspace::{compute_highlights, HighlightRange};
 use leptos::prelude::*;
 use protobuf_edit::{FieldId, Patch};
-use std::sync::Arc;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Theme {
@@ -86,9 +85,9 @@ impl WorkspaceState {
         let highlight_range_count = Memo::new(move |_| highlights.get().len());
         let read_only = Memo::new(move |_| envelope_view.with(|s| s.is_some()));
         let bytes_count = Memo::new(move |_| {
-            patch_state.with(|p| p.as_ref().map(|p| p.root_bytes().len())).or_else(|| {
-                raw_bytes.with(|b| b.as_ref().map(|b| b.len()))
-            })
+            patch_state
+                .with(|p| p.as_ref().map(|p| p.root_bytes().len()))
+                .or_else(|| raw_bytes.with(|b| b.as_ref().map(|b| b.len())))
         });
         let field_count = Memo::new(move |_| {
             patch_state.with(|p| {
@@ -217,40 +216,4 @@ pub(crate) struct MessageCatalogState {
 pub(crate) struct UiState {
     pub theme_is_dark: Memo<bool>,
     pub toast: ToastManager,
-}
-
-#[derive(Clone)]
-pub(crate) struct MessageSidebarActions {
-    pub on_select_message: UnsyncCallback<MessageId>,
-    pub on_message_name_change: UnsyncCallback<Arc<str>>,
-    pub on_rename_message: UnsyncCallback<(MessageId, Arc<str>)>,
-    pub on_rename_class: UnsyncCallback<(MessageId, Arc<str>)>,
-    pub on_new_message: UnsyncCallback<()>,
-    pub on_delete_selected_messages: UnsyncCallback<Vec<MessageId>>,
-    pub on_view_frames: UnsyncCallback<()>,
-    pub on_import: UnsyncCallback<()>,
-    pub on_import_envelope: UnsyncCallback<()>,
-    pub on_upload_change: UnsyncCallback<leptos::ev::Event>,
-    pub on_toggle_theme: UnsyncCallback<()>,
-    pub on_store_frame_name_template: UnsyncCallback<()>,
-}
-
-#[derive(Clone)]
-pub(crate) struct EnvelopeActions {
-    pub on_close: UnsyncCallback<()>,
-    pub on_decompress: UnsyncCallback<()>,
-    pub on_open: UnsyncCallback<usize>,
-    pub on_extract: UnsyncCallback<usize>,
-    pub on_extract_all: UnsyncCallback<()>,
-}
-
-#[derive(Clone)]
-pub(crate) struct StatusBarActions {
-    pub on_copy_hex: UnsyncCallback<()>,
-    pub on_copy_base64: UnsyncCallback<()>,
-    pub on_copy_share_url: UnsyncCallback<()>,
-    pub on_download_bin: UnsyncCallback<()>,
-    pub on_save_expand_defaults: UnsyncCallback<()>,
-    pub on_save_reparse: UnsyncCallback<()>,
-    pub on_bump_modified: UnsyncCallback<()>,
 }

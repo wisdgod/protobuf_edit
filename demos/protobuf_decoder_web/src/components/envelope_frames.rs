@@ -1,14 +1,14 @@
-use crate::state::{EnvelopeActions, WorkspaceState};
+use crate::services::EnvelopeService;
+use crate::state::WorkspaceState;
 use leptos::prelude::*;
 use std::sync::Arc;
 
 #[component]
 pub(crate) fn EnvelopeFramesPanel() -> impl IntoView {
     let workspace = expect_context::<WorkspaceState>();
-    let actions = expect_context::<EnvelopeActions>();
+    let env_svc = expect_context::<EnvelopeService>();
     let envelope_view = workspace.envelope_view;
     let selected = workspace.envelope_selected;
-    let EnvelopeActions { on_close, on_decompress, on_open, on_extract, on_extract_all } = actions;
 
     let list_collapsed = RwSignal::new(true);
 
@@ -23,6 +23,27 @@ pub(crate) fn EnvelopeFramesPanel() -> impl IntoView {
             };
             view.frames.get(idx).is_some_and(|f| f.is_compressed())
         })
+    };
+
+    let on_close = {
+        let svc = env_svc.clone();
+        UnsyncCallback::new(move |_| svc.close_frames())
+    };
+    let on_extract_all = {
+        let svc = env_svc.clone();
+        UnsyncCallback::new(move |_| svc.extract_all_frames())
+    };
+    let on_decompress = {
+        let svc = env_svc.clone();
+        UnsyncCallback::new(move |_| svc.decompress_selected_frame())
+    };
+    let on_open = {
+        let svc = env_svc.clone();
+        UnsyncCallback::new(move |idx: usize| svc.open_frame(idx))
+    };
+    let on_extract = {
+        let svc = env_svc.clone();
+        UnsyncCallback::new(move |idx: usize| svc.extract_frame(idx))
     };
 
     view! {

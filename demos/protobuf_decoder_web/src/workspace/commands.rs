@@ -90,11 +90,7 @@ pub(crate) fn show_envelope_browser(
     ws.show_envelope_browser(EnvelopeView { source_id, bytes, frames, meta });
 }
 
-pub(crate) fn open_envelope_frame(
-    ws: &WorkspaceState,
-    idx: usize,
-    toast: &ToastManager,
-) {
+pub(crate) fn open_envelope_frame(ws: &WorkspaceState, idx: usize, toast: &ToastManager) {
     let Some((bytes, frame, cached_err)) = ws.envelope_view.with_untracked(|state| {
         let view = state.as_ref()?;
         let frame = view.frames.get(idx).copied()?;

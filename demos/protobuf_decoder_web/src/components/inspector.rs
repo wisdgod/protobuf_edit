@@ -264,15 +264,9 @@ pub(crate) fn InspectorDrawer() -> impl IntoView {
                             s.insert(fid);
                         });
                         varint_base.set(Some(value));
-                        toast.show(
-                            ToastKind::Success,
-                            format!("Applied varint edit: {value}."),
-                        );
+                        toast.show(ToastKind::Success, format!("Applied varint edit: {value}."));
                     }
-                    Err(e) => toast.show(
-                        ToastKind::Error,
-                        format!("Failed to apply edit: {e:?}"),
-                    ),
+                    Err(e) => toast.show(ToastKind::Error, format!("Failed to apply edit: {e:?}")),
                 }
             }
             WireType::Len => {
@@ -305,10 +299,7 @@ pub(crate) fn InspectorDrawer() -> impl IntoView {
 
                 let mut buf = Buf::new();
                 if let Err(e) = buf.extend_from_slice(&bytes) {
-                    toast.show(
-                        ToastKind::Error,
-                        format!("Failed to allocate buffer: {e:?}"),
-                    );
+                    toast.show(ToastKind::Error, format!("Failed to allocate buffer: {e:?}"));
                     return;
                 }
 
@@ -344,10 +335,7 @@ pub(crate) fn InspectorDrawer() -> impl IntoView {
                             format!("Applied bytes edit: {bytes_len} byte(s)."),
                         );
                     }
-                    Err(e) => toast.show(
-                        ToastKind::Error,
-                        format!("Failed to apply edit: {e:?}"),
-                    ),
+                    Err(e) => toast.show(ToastKind::Error, format!("Failed to apply edit: {e:?}")),
                 }
             }
             WireType::I32 => {
@@ -390,10 +378,7 @@ pub(crate) fn InspectorDrawer() -> impl IntoView {
                             format!("Applied fixed32 edit: 0x{bits:08X}."),
                         );
                     }
-                    Err(e) => toast.show(
-                        ToastKind::Error,
-                        format!("Failed to apply edit: {e:?}"),
-                    ),
+                    Err(e) => toast.show(ToastKind::Error, format!("Failed to apply edit: {e:?}")),
                 }
             }
             WireType::I64 => {
@@ -430,10 +415,7 @@ pub(crate) fn InspectorDrawer() -> impl IntoView {
                             format!("Applied fixed64 edit: 0x{value:016X}."),
                         );
                     }
-                    Err(e) => toast.show(
-                        ToastKind::Error,
-                        format!("Failed to apply edit: {e:?}"),
-                    ),
+                    Err(e) => toast.show(ToastKind::Error, format!("Failed to apply edit: {e:?}")),
                 }
             }
         }
@@ -487,10 +469,7 @@ pub(crate) fn InspectorDrawer() -> impl IntoView {
                 selected.set(None);
                 toast.show(ToastKind::Success, "Deleted field.");
             }
-            Err(e) => toast.show(
-                ToastKind::Error,
-                format!("Failed to delete field: {e:?}"),
-            ),
+            Err(e) => toast.show(ToastKind::Error, format!("Failed to delete field: {e:?}")),
         }
     };
 
@@ -544,10 +523,7 @@ pub(crate) fn InspectorDrawer() -> impl IntoView {
 
                 if was_inserted {
                     selected.set(None);
-                    toast.show(
-                        ToastKind::Success,
-                        "Removed inserted field.",
-                    );
+                    toast.show(ToastKind::Success, "Removed inserted field.");
                     return;
                 }
 
@@ -588,10 +564,7 @@ pub(crate) fn InspectorDrawer() -> impl IntoView {
 
                 toast.show(ToastKind::Success, "Cleared field edit.");
             }
-            Err(e) => toast.show(
-                ToastKind::Error,
-                format!("Failed to clear edit: {e:?}"),
-            ),
+            Err(e) => toast.show(ToastKind::Error, format!("Failed to clear edit: {e:?}")),
         }
     };
 
@@ -622,10 +595,7 @@ pub(crate) fn InspectorDrawer() -> impl IntoView {
                     s.insert(fid);
                 });
             }
-            Err(e) => toast.show(
-                ToastKind::Error,
-                format!("Failed to parse as message: {e:?}"),
-            ),
+            Err(e) => toast.show(ToastKind::Error, format!("Failed to parse as message: {e:?}")),
         }
     };
 
@@ -785,10 +755,7 @@ pub(crate) fn InspectorDrawer() -> impl IntoView {
 
                 let mut buf = Buf::new();
                 if let Err(e) = buf.extend_from_slice(&bytes) {
-                    toast.show(
-                        ToastKind::Error,
-                        format!("Failed to allocate buffer: {e:?}"),
-                    );
+                    toast.show(ToastKind::Error, format!("Failed to allocate buffer: {e:?}"));
                     return;
                 }
 
@@ -854,9 +821,7 @@ pub(crate) fn InspectorDrawer() -> impl IntoView {
                     format!("Inserted field {field_number} ({wt:?}) into {target_label}."),
                 );
             }
-            Err(e) => {
-                toast.show(ToastKind::Error, format!("Insert failed: {e:?}"))
-            }
+            Err(e) => toast.show(ToastKind::Error, format!("Insert failed: {e:?}")),
         }
     };
 
@@ -895,8 +860,7 @@ pub(crate) fn InspectorDrawer() -> impl IntoView {
         collapsed.update(|v| *v = !*v);
     });
 
-    let on_bytes_view_change =
-        bytes_view_change_handler(bytes_view, bytes_text, toast);
+    let on_bytes_view_change = bytes_view_change_handler(bytes_view, bytes_text, toast);
     let on_insert_bytes_view_change =
         bytes_view_change_handler(insert_bytes_view, insert_bytes_text, toast);
     let on_insert_wire_change = UnsyncCallback::new(move |ev: leptos::ev::Event| {
