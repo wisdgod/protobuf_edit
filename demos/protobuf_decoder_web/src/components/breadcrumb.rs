@@ -170,13 +170,14 @@ pub(crate) fn Breadcrumb() -> impl IntoView {
                             .enumerate()
                             .map(|(i, crumb)| {
                                 let is_last = i + 1 == len;
+                                let show_sep = i > 0 && !is_last;
                                 let label = crumb.label;
                                 let field_id = crumb.field_id;
                                 view! {
                                     <span class="breadcrumb-item" on:click=move |_| selected.set(field_id)>
                                         {Oco::from(label)}
                                     </span>
-                                    <Show when=move || !is_last fallback=|| ()>
+                                    <Show when=move || show_sep fallback=|| ()>
                                         <span class="breadcrumb-sep">"."</span>
                                     </Show>
                                 }
