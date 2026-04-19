@@ -5,6 +5,7 @@ mod decode;
 mod envelope;
 mod error;
 mod fx;
+mod hex_copy;
 mod hex_view;
 mod idb;
 mod messages;

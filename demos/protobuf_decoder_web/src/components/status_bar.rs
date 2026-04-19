@@ -1,7 +1,10 @@
+use crate::hex_copy::CopyFormat;
 use crate::services::{ExportService, MessageService, WorkspaceService};
 use crate::state::{MessageCatalogState, WorkspaceState};
+use leptos::html;
 use leptos::oco::Oco;
 use leptos::prelude::*;
+use wasm_bindgen::JsCast;
 
 #[component]
 pub(crate) fn StatusBar() -> impl IntoView {
@@ -13,13 +16,14 @@ pub(crate) fn StatusBar() -> impl IntoView {
 
     let has_current_message = move || messages.current_message_id.get().is_some();
 
-    let hex_svc = export_svc.clone();
-    let b64_svc = export_svc.clone();
-    let url_svc = export_svc.clone();
-    let dl_svc = export_svc.clone();
-    let expand_svc = ws_svc.clone();
+    let copy_open = RwSignal::new(false);
+    let menu_ref = NodeRef::<html::Div>::new();
+
     let save_ws_svc = ws_svc.clone();
     let save_msg_svc = msg_svc.clone();
+    let dropdown_svc = export_svc.clone();
+    let url_svc = export_svc.clone();
+    let dl_svc = export_svc.clone();
 
     view! {
         <div class="status-bar">
@@ -61,26 +65,28 @@ pub(crate) fn StatusBar() -> impl IntoView {
             </div>
 
             <div class="status-actions">
-                <button
-                    class="btn btn--secondary"
-                    on:click=move |_| hex_svc.copy_hex()
-                    disabled=move || !has_current_message()
-                >
-                    "Copy Hex"
-                </button>
-                <button
-                    class="btn btn--secondary"
-                    on:click=move |_| b64_svc.copy_base64()
-                    disabled=move || !has_current_message()
-                >
-                    "Copy Base64"
-                </button>
+                <div class="dropdown" node_ref=menu_ref>
+                    <button
+                        class="btn btn--secondary"
+                        on:click=move |_| copy_open.update(|v| *v = !*v)
+                        disabled=move || !has_current_message()
+                    >
+                        {move || if copy_open.get() { "Copy \u{25B4}" } else { "Copy \u{25BE}" }}
+                    </button>
+                    <Show when=move || copy_open.get() fallback=|| ()>
+                        <CopyDropdown
+                            export_svc=dropdown_svc.clone()
+                            on_close=Callback::new(move |()| copy_open.set(false))
+                            menu_ref=menu_ref
+                        />
+                    </Show>
+                </div>
                 <button
                     class="btn btn--secondary"
                     on:click=move |_| url_svc.copy_share_url()
                     disabled=move || !has_current_message()
                 >
-                    "Copy URL"
+                    "Share URL"
                 </button>
                 <button
                     class="btn btn--secondary"
@@ -91,7 +97,7 @@ pub(crate) fn StatusBar() -> impl IntoView {
                 </button>
                 <button
                     class="btn btn--secondary"
-                    on:click=move |_| expand_svc.save_expand_defaults()
+                    on:click=move |_| ws_svc.save_expand_defaults()
                     disabled=move || {
                         !has_current_message()
                             || workspace.read_only.get()
@@ -127,6 +133,56 @@ pub(crate) fn StatusBar() -> impl IntoView {
                     }}
                 </button>
             </div>
+        </div>
+    }
+}
+
+#[component]
+fn CopyDropdown(
+    export_svc: ExportService,
+    on_close: Callback<()>,
+    menu_ref: NodeRef<html::Div>,
+) -> impl IntoView {
+    let _dismiss = leptos_use::use_event_listener(
+        web_sys::window().expect("window"),
+        leptos::ev::mousedown,
+        move |ev: web_sys::MouseEvent| {
+            let Some(el) = menu_ref.get() else { return };
+            let Some(target) = ev.target() else { return };
+            let target: web_sys::Node = target.unchecked_into();
+            let container: &web_sys::Node = el.as_ref();
+            if !container.contains(Some(&target)) {
+                on_close.run(());
+            }
+        },
+    );
+
+    let _esc = leptos_use::use_event_listener(
+        web_sys::window().expect("window"),
+        leptos::ev::keydown,
+        move |ev: web_sys::KeyboardEvent| {
+            if ev.key() == "Escape" {
+                on_close.run(());
+            }
+        },
+    );
+
+    view! {
+        <div class="dropdown__menu">
+            {CopyFormat::ALL.iter().map(|&fmt| {
+                let svc = export_svc.clone();
+                view! {
+                    <button
+                        class="dropdown__item"
+                        on:click=move |_| {
+                            svc.copy_as(fmt);
+                            on_close.run(());
+                        }
+                    >
+                        {fmt.label()}
+                    </button>
+                }
+            }).collect::<Vec<_>>()}
         </div>
     }
 }

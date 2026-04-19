@@ -37,10 +37,6 @@ pub(crate) fn decode_user_input(input: &str) -> UiResult<Vec<u8>> {
     Err("Failed to decode input as hex or base64.".into())
 }
 
-pub(crate) fn encode_base64(bytes: &[u8]) -> String {
-    base64::engine::general_purpose::STANDARD.encode(bytes)
-}
-
 pub(crate) fn encode_base64_url(bytes: &[u8]) -> String {
     base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(bytes)
 }
