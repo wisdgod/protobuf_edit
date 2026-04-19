@@ -1,9 +1,11 @@
 use crate::state::WorkspaceState;
 use crate::toast::ToastKind;
 use crate::workspace::{format_user_path, parse_user_path, resolve_user_path};
+use leptos::html;
 use leptos::prelude::*;
 use protobuf_edit::FieldId;
 use std::sync::Arc;
+use wasm_bindgen::JsCast;
 
 #[derive(Clone, PartialEq, Eq)]
 struct Crumb {
@@ -19,7 +21,9 @@ pub(crate) fn Breadcrumb() -> impl IntoView {
     let selected = workspace.selected;
     let expanded = workspace.expanded;
 
-    let path_input = RwSignal::new(String::new());
+    let editing = RwSignal::new(false);
+    let edit_text = RwSignal::new(String::new());
+    let input_ref = NodeRef::<html::Input>::new();
 
     let crumbs = Memo::new(move |_| {
         let selected_field = selected.get();
@@ -58,24 +62,39 @@ pub(crate) fn Breadcrumb() -> impl IntoView {
         })
     });
 
-    let user_path = Memo::new(move |_| {
-        let fid = selected.get()?;
+    let current_path = Memo::new(move |_| {
         patch_state.with(|p| {
             let patch = p.as_ref()?;
+            let fid = selected.get()?;
             format_user_path(patch, fid)
         })
+        .unwrap_or_else(|| ".".to_string())
     });
 
-    let on_path_submit = move |ev: leptos::ev::KeyboardEvent| {
-        if ev.key() != "Enter" {
-            return;
-        }
-        ev.prevent_default();
-        let input = path_input.get_untracked();
+    let enter_edit = move |_| {
+        edit_text.set(current_path.get_untracked());
+        editing.set(true);
+        request_animation_frame(move || {
+            if let Some(el) = input_ref.get() {
+                let _ = el.focus();
+                el.select();
+            }
+        });
+    };
+
+    let cancel_edit = move || {
+        editing.set(false);
+        edit_text.set(String::new());
+    };
+
+    let navigate = move || {
+        let input = edit_text.get_untracked();
         let Some(steps) = parse_user_path(&input) else {
             toast.show(ToastKind::Error, "Invalid path format. Use .field.field:occurrence");
             return;
         };
+        editing.set(false);
+
         if steps.is_empty() {
             selected.set(None);
             return;
@@ -94,7 +113,6 @@ pub(crate) fn Breadcrumb() -> impl IntoView {
             Some(Ok(Some((fid, new_expanded)))) => {
                 expanded.update(|s| s.extend(new_expanded));
                 selected.set(Some(fid));
-                path_input.set(String::new());
             }
             Some(Ok(None)) => {
                 toast.show(ToastKind::Error, format!("Path not found: {input}"));
@@ -108,41 +126,82 @@ pub(crate) fn Breadcrumb() -> impl IntoView {
         }
     };
 
+    let on_keydown = move |ev: leptos::ev::KeyboardEvent| {
+        match ev.key().as_str() {
+            "Enter" => {
+                ev.prevent_default();
+                navigate();
+            }
+            "Escape" => {
+                ev.prevent_default();
+                cancel_edit();
+            }
+            _ => {}
+        }
+    };
+
+    let on_blur = move |ev: leptos::ev::FocusEvent| {
+        if let Some(related) = ev.related_target()
+            && let Ok(btn) = related.dyn_into::<web_sys::HtmlButtonElement>()
+            && btn.class_list().contains("breadcrumb-clear")
+        {
+            return;
+        }
+        cancel_edit();
+    };
+
+    let on_clear = move |_| {
+        edit_text.set(String::new());
+        if let Some(el) = input_ref.get() {
+            let _ = el.focus();
+        }
+    };
+
     view! {
         <div class="breadcrumb">
-            <div class="breadcrumb-path">
-                {move || {
-                    let items = crumbs.get();
-                    let len = items.len();
-                    items
-                        .into_iter()
-                        .enumerate()
-                        .map(|(i, crumb)| {
-                            let is_last = i + 1 == len;
-                            let label = crumb.label;
-                            let field_id = crumb.field_id;
-                            view! {
-                                <span class="breadcrumb-item" on:click=move |_| selected.set(field_id)>
-                                    {Oco::from(label)}
-                                </span>
-                                <Show when=move || !is_last fallback=|| ()>
-                                    <span class="breadcrumb-sep">"."</span>
-                                </Show>
-                            }
-                        })
-                        .collect_view()
-                }}
-            </div>
-            <Show when=move || user_path.get().is_some() fallback=|| ()>
-                <span class="breadcrumb-user-path">{move || user_path.get().unwrap_or_default()}</span>
+            <Show
+                when=move || editing.get()
+                fallback=move || {
+                    let crumbs_view = move || {
+                        let items = crumbs.get();
+                        let len = items.len();
+                        items
+                            .into_iter()
+                            .enumerate()
+                            .map(|(i, crumb)| {
+                                let is_last = i + 1 == len;
+                                let label = crumb.label;
+                                let field_id = crumb.field_id;
+                                view! {
+                                    <span class="breadcrumb-item" on:click=move |_| selected.set(field_id)>
+                                        {Oco::from(label)}
+                                    </span>
+                                    <Show when=move || !is_last fallback=|| ()>
+                                        <span class="breadcrumb-sep">"."</span>
+                                    </Show>
+                                }
+                            })
+                            .collect_view()
+                    };
+                    view! {
+                        <div class="breadcrumb-display" on:click=enter_edit>
+                            {crumbs_view}
+                        </div>
+                    }
+                }
+            >
+                <input
+                    node_ref=input_ref
+                    class="input breadcrumb-edit"
+                    prop:value=move || edit_text.get()
+                    on:input=move |ev| edit_text.set(event_target_value(&ev))
+                    on:keydown=on_keydown
+                    on:blur=on_blur
+                />
+                <button class="breadcrumb-clear" on:mousedown=on_clear title="Clear">
+                    "\u{00D7}"
+                </button>
             </Show>
-            <input
-                class="input breadcrumb-input"
-                placeholder=".3.1.2"
-                prop:value=move || path_input.get()
-                on:input=move |ev| path_input.set(event_target_value(&ev))
-                on:keydown=on_path_submit
-            />
         </div>
     }
 }
