@@ -42,12 +42,12 @@ impl<'a> MessageGuard<'a> {
         capacities: Option<Capacities>,
     ) -> Result<Self, TreeError> {
         let lendel = parent.lendel_unchecked_mut(slot);
-        let mut source = mem::replace(&mut lendel.buf, Buf::new());
+        let mut source = mem::take(&mut lendel.buf);
         // `from_bytes_borrowed` stores raw pointers into `source`. If `source`
         // uses inline storage, those pointers become dangling when this struct
         // is moved (the inline bytes live inside the Buf union itself). Force
         // spill to heap so the backing memory address is move-stable.
-        if let Err(_) = source.ensure_heap() {
+        if source.ensure_heap().is_err() {
             parent.lendel_unchecked_mut(slot).buf = source;
             return Err(TreeError::CapacityExceeded);
         }
@@ -74,8 +74,8 @@ impl<'a> MessageGuard<'a> {
         capacities: Option<Capacities>,
     ) -> Result<Self, TreeError> {
         let group = parent.group_unchecked_mut(slot);
-        let mut source = mem::replace(&mut group.buf, Buf::new());
-        if let Err(_) = source.ensure_heap() {
+        let mut source = mem::take(&mut group.buf);
+        if source.ensure_heap().is_err() {
             parent.group_unchecked_mut(slot).buf = source;
             return Err(TreeError::CapacityExceeded);
         }
@@ -117,7 +117,7 @@ impl<'a> MessageGuard<'a> {
     }
 
     fn restore(&mut self) {
-        let source = mem::replace(&mut self.source, Buf::new());
+        let source = mem::take(&mut self.source);
         match self.kind {
             PayloadKind::Len => {
                 // SAFETY: slot validity is guaranteed by construction.
