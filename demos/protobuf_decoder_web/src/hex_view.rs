@@ -410,6 +410,7 @@ fn HexRow(
         idx: usize,
         byte: u8,
         kind: Option<HighlightKind>,
+        range_selected: bool,
         utf8: Utf8Cell,
     }
 
@@ -434,6 +435,7 @@ fn HexRow(
     };
 
     let row_cells: Memo<Vec<CellData>> = Memo::new(move |_| {
+        let sel = hex_selection.get();
         row_highlights.with(|spans| {
             let build_cells = |bytes: &[u8]| {
                 let end = min(row_end, bytes.len());
@@ -447,6 +449,7 @@ fn HexRow(
                         idx,
                         byte,
                         kind: highlight_kind_at(idx, spans),
+                        range_selected: sel.is_some_and(|(a, b)| idx >= a && idx < b),
                         utf8: utf8_cell(bytes, idx),
                     });
                 }
@@ -462,24 +465,29 @@ fn HexRow(
         })
     });
 
-    let class_for = move |kind: Option<HighlightKind>| -> &'static str {
-        match kind {
-            None => "hex-byte",
-            Some(HighlightKind::Ancestor) => "hex-byte hex-byte--ancestor",
-            Some(HighlightKind::Hovered) => "hex-byte hex-byte--hovered",
-            Some(HighlightKind::SelectedTag) => "hex-byte hex-byte--tag",
-            Some(HighlightKind::SelectedLenPrefix) => "hex-byte hex-byte--selected-len-prefix",
-            Some(HighlightKind::SelectedField(WireType::Varint)) => {
+    let class_for = move |kind: Option<HighlightKind>, range_selected: bool| -> &'static str {
+        match (kind, range_selected) {
+            (_, true) => "hex-byte hex-byte--range-selected",
+            (None, false) => "hex-byte",
+            (Some(HighlightKind::Ancestor), false) => "hex-byte hex-byte--ancestor",
+            (Some(HighlightKind::Hovered), false) => "hex-byte hex-byte--hovered",
+            (Some(HighlightKind::SelectedTag), false) => "hex-byte hex-byte--tag",
+            (Some(HighlightKind::SelectedLenPrefix), false) => {
+                "hex-byte hex-byte--selected-len-prefix"
+            }
+            (Some(HighlightKind::SelectedField(WireType::Varint)), false) => {
                 "hex-byte hex-byte--selected-varint"
             }
-            Some(HighlightKind::SelectedField(WireType::I64)) => "hex-byte hex-byte--selected-i64",
-            Some(HighlightKind::SelectedField(WireType::Len)) => "hex-byte hex-byte--selected-len",
-            Some(HighlightKind::SelectedField(WireType::I32)) => "hex-byte hex-byte--selected-i32",
+            (Some(HighlightKind::SelectedField(WireType::I64)), false) => {
+                "hex-byte hex-byte--selected-i64"
+            }
+            (Some(HighlightKind::SelectedField(WireType::Len)), false) => {
+                "hex-byte hex-byte--selected-len"
+            }
+            (Some(HighlightKind::SelectedField(WireType::I32)), false) => {
+                "hex-byte hex-byte--selected-i32"
+            }
         }
-    };
-
-    let is_in_range = move |idx: usize| -> bool {
-        hex_selection.with(|s| s.is_some_and(|(a, b)| idx >= a && idx < b))
     };
 
     view! {
@@ -492,11 +500,10 @@ fn HexRow(
                             .iter()
                             .map(|cell| {
                                 let idx = cell.idx;
-                                let cls = class_for(cell.kind);
+                                let cls = class_for(cell.kind, cell.range_selected);
                                 view! {
                                     <span
                                         class=cls
-                                        class:hex-byte--range-selected=move || is_in_range(idx)
                                         on:mousedown=move |ev: web_sys::MouseEvent| {
                                             if ev.button() == 0 {
                                                 on_byte_mousedown.run((idx, ev.shift_key()));
@@ -522,12 +529,11 @@ fn HexRow(
                                 .iter()
                                 .map(|cell| {
                                     let idx = cell.idx;
-                                    let cls = class_for(cell.kind);
+                                    let cls = class_for(cell.kind, cell.range_selected);
                                     match mode {
                                         HexTextMode::Ascii => view! {
                                             <span
                                                 class=cls
-                                                class:hex-byte--range-selected=move || is_in_range(idx)
                                                 on:mousedown=move |ev: web_sys::MouseEvent| {
                                                     if ev.button() == 0 {
                                                         on_byte_mousedown.run((idx, ev.shift_key()));
@@ -544,7 +550,6 @@ fn HexRow(
                                             Utf8Cell::Static(text) => view! {
                                                 <span
                                                     class=cls
-                                                    class:hex-byte--range-selected=move || is_in_range(idx)
                                                     on:mousedown=move |ev: web_sys::MouseEvent| {
                                                         if ev.button() == 0 {
                                                             on_byte_mousedown.run((idx, ev.shift_key()));
@@ -560,7 +565,6 @@ fn HexRow(
                                             Utf8Cell::Char(ch) => view! {
                                                 <span
                                                     class=cls
-                                                    class:hex-byte--range-selected=move || is_in_range(idx)
                                                     on:mousedown=move |ev: web_sys::MouseEvent| {
                                                         if ev.button() == 0 {
                                                             on_byte_mousedown.run((idx, ev.shift_key()));
@@ -577,7 +581,6 @@ fn HexRow(
                                                 <span
                                                     class=cls
                                                     class:hex-byte--placeholder=true
-                                                    class:hex-byte--range-selected=move || is_in_range(idx)
                                                     on:mousedown=move |ev: web_sys::MouseEvent| {
                                                         if ev.button() == 0 {
                                                             on_byte_mousedown.run((idx, ev.shift_key()));
