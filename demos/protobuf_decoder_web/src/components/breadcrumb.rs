@@ -174,7 +174,10 @@ pub(crate) fn Breadcrumb() -> impl IntoView {
                                 let label = crumb.label;
                                 let field_id = crumb.field_id;
                                 view! {
-                                    <span class="breadcrumb-item" on:click=move |_| selected.set(field_id)>
+                                    <span class="breadcrumb-item" on:click=move |ev: web_sys::MouseEvent| {
+                                        ev.stop_propagation();
+                                        selected.set(field_id);
+                                    }>
                                         {Oco::from(label)}
                                     </span>
                                     <Show when=move || show_sep fallback=|| ()>
