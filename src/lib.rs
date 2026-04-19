@@ -46,7 +46,7 @@ pub mod patch;
 pub use buf::{Buf, BufAllocError};
 pub use document::{
     BorrowedDocument, Bucket, Capacities, Document, Field, FieldMut, FieldRef, Fixed32, Fixed64,
-    Ix, LengthDelimited, Link, RepeatedRefIter, Varint, MAX_FIELDS,
+    Ix, LengthDelimited, Link, MessageGuard, RepeatedRefIter, Varint, MAX_FIELDS,
 };
 pub use error::TreeError;
 pub use patch::{

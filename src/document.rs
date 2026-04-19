@@ -27,6 +27,7 @@ use crate::wire::{FieldNumber, Tag, WireType};
 mod codec;
 mod field_mut;
 mod field_ref;
+mod guard;
 mod helpers;
 mod planned;
 mod repeated;
@@ -34,6 +35,7 @@ mod types;
 
 pub use field_mut::FieldMut;
 pub use field_ref::FieldRef;
+pub use guard::MessageGuard;
 pub use repeated::RepeatedRefIter;
 pub(crate) use types::{RawVarint32, RawVarint64};
 pub use types::{

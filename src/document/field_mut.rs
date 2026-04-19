@@ -6,6 +6,7 @@ use super::{
     BorrowedDocument, Capacities, Field, FieldRef, Ix, Document, RawVarint32, RawVarint64,
     TreeError,
 };
+use super::guard::MessageGuard;
 
 /// Mutable view of one field in a `Document`.
 pub struct FieldMut<'a> {
@@ -79,6 +80,11 @@ impl<'a> FieldMut<'a> {
         Ok(())
     }
 
+    #[inline]
+    pub fn set_uint64(&mut self, value: u64) -> Result<(), TreeError> {
+        self.uint64(|v| *v = value)
+    }
+
     pub fn uint32(&mut self, f: impl FnOnce(&mut u32)) -> Result<(), TreeError> {
         if self.wire_type() != WireType::Varint {
             return Err(TreeError::WireTypeMismatch);
@@ -91,6 +97,11 @@ impl<'a> FieldMut<'a> {
         varint.value = value as u64;
         varint.raw = RawVarint64::from_u64(varint.value);
         Ok(())
+    }
+
+    #[inline]
+    pub fn set_uint32(&mut self, value: u32) -> Result<(), TreeError> {
+        self.uint32(|v| *v = value)
     }
 
     pub fn int32(&mut self, f: impl FnOnce(&mut i32)) -> Result<(), TreeError> {
@@ -107,6 +118,11 @@ impl<'a> FieldMut<'a> {
         Ok(())
     }
 
+    #[inline]
+    pub fn set_int32(&mut self, value: i32) -> Result<(), TreeError> {
+        self.int32(|v| *v = value)
+    }
+
     pub fn int64(&mut self, f: impl FnOnce(&mut i64)) -> Result<(), TreeError> {
         if self.wire_type() != WireType::Varint {
             return Err(TreeError::WireTypeMismatch);
@@ -119,6 +135,11 @@ impl<'a> FieldMut<'a> {
         varint.value = value as u64;
         varint.raw = RawVarint64::from_u64(varint.value);
         Ok(())
+    }
+
+    #[inline]
+    pub fn set_int64(&mut self, value: i64) -> Result<(), TreeError> {
+        self.int64(|v| *v = value)
     }
 
     pub fn sint32(&mut self, f: impl FnOnce(&mut i32)) -> Result<(), TreeError> {
@@ -135,6 +156,11 @@ impl<'a> FieldMut<'a> {
         Ok(())
     }
 
+    #[inline]
+    pub fn set_sint32(&mut self, value: i32) -> Result<(), TreeError> {
+        self.sint32(|v| *v = value)
+    }
+
     pub fn sint64(&mut self, f: impl FnOnce(&mut i64)) -> Result<(), TreeError> {
         if self.wire_type() != WireType::Varint {
             return Err(TreeError::WireTypeMismatch);
@@ -147,6 +173,11 @@ impl<'a> FieldMut<'a> {
         varint.value = varint::zigzag_encode64(value);
         varint.raw = RawVarint64::from_u64(varint.value);
         Ok(())
+    }
+
+    #[inline]
+    pub fn set_sint64(&mut self, value: i64) -> Result<(), TreeError> {
+        self.sint64(|v| *v = value)
     }
 
     pub fn bool(&mut self, f: impl FnOnce(&mut bool)) -> Result<(), TreeError> {
@@ -163,6 +194,11 @@ impl<'a> FieldMut<'a> {
         Ok(())
     }
 
+    #[inline]
+    pub fn set_bool(&mut self, value: bool) -> Result<(), TreeError> {
+        self.bool(|v| *v = value)
+    }
+
     pub fn fixed32(&mut self, f: impl FnOnce(&mut u32)) -> Result<(), TreeError> {
         if self.wire_type() != WireType::I32 {
             return Err(TreeError::WireTypeMismatch);
@@ -171,6 +207,11 @@ impl<'a> FieldMut<'a> {
         // SAFETY: field wire type + slot invariants guarantee fixed32 slot is valid.
         f(&mut unsafe { self.tree.fixed32_unchecked_mut(slot) }.value);
         Ok(())
+    }
+
+    #[inline]
+    pub fn set_fixed32(&mut self, value: u32) -> Result<(), TreeError> {
+        self.fixed32(|v| *v = value)
     }
 
     pub fn sfixed32(&mut self, f: impl FnOnce(&mut i32)) -> Result<(), TreeError> {
@@ -186,6 +227,11 @@ impl<'a> FieldMut<'a> {
         Ok(())
     }
 
+    #[inline]
+    pub fn set_sfixed32(&mut self, value: i32) -> Result<(), TreeError> {
+        self.sfixed32(|v| *v = value)
+    }
+
     pub fn float(&mut self, f: impl FnOnce(&mut f32)) -> Result<(), TreeError> {
         if self.wire_type() != WireType::I32 {
             return Err(TreeError::WireTypeMismatch);
@@ -199,6 +245,11 @@ impl<'a> FieldMut<'a> {
         Ok(())
     }
 
+    #[inline]
+    pub fn set_float(&mut self, value: f32) -> Result<(), TreeError> {
+        self.float(|v| *v = value)
+    }
+
     pub fn fixed64(&mut self, f: impl FnOnce(&mut u64)) -> Result<(), TreeError> {
         if self.wire_type() != WireType::I64 {
             return Err(TreeError::WireTypeMismatch);
@@ -207,6 +258,11 @@ impl<'a> FieldMut<'a> {
         // SAFETY: field wire type + slot invariants guarantee fixed64 slot is valid.
         f(&mut unsafe { self.tree.fixed64_unchecked_mut(slot) }.value);
         Ok(())
+    }
+
+    #[inline]
+    pub fn set_fixed64(&mut self, value: u64) -> Result<(), TreeError> {
+        self.fixed64(|v| *v = value)
     }
 
     pub fn sfixed64(&mut self, f: impl FnOnce(&mut i64)) -> Result<(), TreeError> {
@@ -222,6 +278,11 @@ impl<'a> FieldMut<'a> {
         Ok(())
     }
 
+    #[inline]
+    pub fn set_sfixed64(&mut self, value: i64) -> Result<(), TreeError> {
+        self.sfixed64(|v| *v = value)
+    }
+
     pub fn double(&mut self, f: impl FnOnce(&mut f64)) -> Result<(), TreeError> {
         if self.wire_type() != WireType::I64 {
             return Err(TreeError::WireTypeMismatch);
@@ -235,6 +296,11 @@ impl<'a> FieldMut<'a> {
         Ok(())
     }
 
+    #[inline]
+    pub fn set_double(&mut self, value: f64) -> Result<(), TreeError> {
+        self.double(|v| *v = value)
+    }
+
     pub fn bytes(&mut self, f: impl FnOnce(&mut Buf)) -> Result<(), TreeError> {
         if self.wire_type() != WireType::Len {
             return Err(TreeError::WireTypeMismatch);
@@ -245,6 +311,11 @@ impl<'a> FieldMut<'a> {
         f(&mut lendel.buf);
         lendel.raw = RawVarint32::from_u32(lendel.buf.len());
         Ok(())
+    }
+
+    #[inline]
+    pub fn set_bytes(&mut self, value: Buf) -> Result<(), TreeError> {
+        self.bytes(|v| *v = value)
     }
 
     #[inline]
@@ -344,6 +415,12 @@ impl<'a> FieldMut<'a> {
         Ok(())
     }
 
+    #[cfg(feature = "group")]
+    #[inline]
+    pub fn set_group_bytes(&mut self, value: Buf) -> Result<(), TreeError> {
+        self.group_bytes(|v| *v = value)
+    }
+
     pub(super) fn replace_nested_payload(&mut self, payload: Buf) -> Result<(), TreeError> {
         match self.wire_type() {
             WireType::Len => {
@@ -402,6 +479,42 @@ impl<'a> FieldMut<'a> {
                 let mut nested = BorrowedDocument::from_bytes_opt_capacities(bytes, capacities)?;
                 f(&mut nested)?;
                 self.replace_nested_payload(nested.to_buf()?)
+            }
+            _ => Err(TreeError::WireTypeMismatch),
+        }
+    }
+
+    /// Decode the nested message payload and return a guard for closure-free editing.
+    ///
+    /// Call `MessageGuard::finish()` to re-encode and write back. Dropping
+    /// without `finish()` restores the original bytes.
+    pub fn decode_message(self) -> Result<MessageGuard<'a>, TreeError> {
+        self.decode_message_opt_capacities(None)
+    }
+
+    /// Like `decode_message`, with pre-allocation capacity hints.
+    pub fn decode_message_with_capacities(
+        self,
+        capacities: Capacities,
+    ) -> Result<MessageGuard<'a>, TreeError> {
+        self.decode_message_opt_capacities(Some(capacities))
+    }
+
+    fn decode_message_opt_capacities(
+        self,
+        capacities: Option<Capacities>,
+    ) -> Result<MessageGuard<'a>, TreeError> {
+        match self.wire_type() {
+            WireType::Len => {
+                let slot = self.slot();
+                // SAFETY: field wire type + slot invariants guarantee lendels slot is valid.
+                unsafe { MessageGuard::new(self.tree, slot, capacities) }
+            }
+            #[cfg(feature = "group")]
+            WireType::SGroup => {
+                let slot = self.slot();
+                // SAFETY: group feature + field invariants guarantee groups slot is valid.
+                unsafe { MessageGuard::new_group(self.tree, slot, capacities) }
             }
             _ => Err(TreeError::WireTypeMismatch),
         }

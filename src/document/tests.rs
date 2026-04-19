@@ -658,3 +658,153 @@ fn planned_path_descends_in_order_for_nested_edit() {
     }
     assert_eq!(got.as_slice(), &[101, 103]);
 }
+
+#[test]
+fn capacities_const_chain_builder() {
+    const CAP: Capacities = Capacities::new().fields(10).lendels(5).query(2);
+    assert_eq!(CAP.fields, 10);
+    assert_eq!(CAP.varints, 0);
+    assert_eq!(CAP.fixed32s, 0);
+    assert_eq!(CAP.fixed64s, 0);
+    assert_eq!(CAP.lendels, 5);
+    assert_eq!(CAP.query, 2);
+}
+
+#[test]
+fn set_uint64_and_set_bytes_work() {
+    let mut tree = Document::new();
+    let vi = tree.push_varint(fnn(1), 10).unwrap();
+    let li = tree.push_length_delimited(fnn(2), buf_from_slice(b"old")).unwrap();
+
+    tree.field_mut(vi).unwrap().set_uint64(42).unwrap();
+    tree.field_mut(li).unwrap().set_bytes(buf_from_slice(b"new")).unwrap();
+
+    let tag1 = Document::make_tag(fnn(1), WireType::Varint);
+    let tag2 = Document::make_tag(fnn(2), WireType::Len);
+    assert_eq!(tree.first_ref(tag1).unwrap().as_uint64(), Some(42));
+    assert_eq!(tree.first_ref(tag2).unwrap().as_bytes(), Some(&b"new"[..]));
+
+    let rt = Document::from_bytes(tree.to_buf().unwrap().as_slice()).unwrap();
+    assert_eq!(rt.first_ref(tag1).unwrap().as_uint64(), Some(42));
+    assert_eq!(rt.first_ref(tag2).unwrap().as_bytes(), Some(&b"new"[..]));
+}
+
+#[test]
+fn set_fixed32_and_set_fixed64_work() {
+    let mut tree = Document::new();
+    let f32i = tree.push_fixed32(fnn(1), 0).unwrap();
+    let f64i = tree.push_fixed64(fnn(2), 0).unwrap();
+
+    tree.field_mut(f32i).unwrap().set_fixed32(0xDEAD_BEEF).unwrap();
+    tree.field_mut(f64i).unwrap().set_fixed64(0xCAFE_BABE_1234_5678).unwrap();
+
+    let tag1 = Document::make_tag(fnn(1), WireType::I32);
+    let tag2 = Document::make_tag(fnn(2), WireType::I64);
+    assert_eq!(tree.first_ref(tag1).unwrap().as_fixed32(), Some(0xDEAD_BEEF));
+    assert_eq!(tree.first_ref(tag2).unwrap().as_fixed64(), Some(0xCAFE_BABE_1234_5678));
+}
+
+#[test]
+fn set_on_wrong_wire_type_returns_error() {
+    let mut tree = Document::new();
+    let vi = tree.push_varint(fnn(1), 10).unwrap();
+    assert!(tree.field_mut(vi).unwrap().set_bytes(Buf::new()).is_err());
+    assert!(tree.field_mut(vi).unwrap().set_fixed32(0).is_err());
+}
+
+#[test]
+fn message_guard_finish_writes_back() {
+    let mut inner = Document::new();
+    let _ = inner.push_varint(fnn(2), 10).unwrap();
+
+    let mut root = Document::new();
+    let _ = root.push_length_delimited(fnn(1), inner.to_buf().unwrap()).unwrap();
+
+    let outer = Document::make_tag(fnn(1), WireType::Len);
+    let inner_tag = Document::make_tag(fnn(2), WireType::Varint);
+
+    let fm = root.first_mut(outer).unwrap();
+    let mut guard = fm.decode_message().unwrap();
+    guard.first_mut(inner_tag).unwrap().set_uint64(999).unwrap();
+    guard.finish().unwrap();
+
+    let rt = Document::from_bytes(root.to_buf().unwrap().as_slice()).unwrap();
+    let nested = rt.first_ref(outer).unwrap().as_message().unwrap();
+    assert_eq!(nested.first_ref(inner_tag).unwrap().as_uint64(), Some(999));
+}
+
+#[test]
+fn message_guard_drop_restores_original() {
+    let mut inner = Document::new();
+    let _ = inner.push_varint(fnn(2), 10).unwrap();
+
+    let mut root = Document::new();
+    let _ = root.push_length_delimited(fnn(1), inner.to_buf().unwrap()).unwrap();
+
+    let outer = Document::make_tag(fnn(1), WireType::Len);
+    let inner_tag = Document::make_tag(fnn(2), WireType::Varint);
+
+    {
+        let fm = root.first_mut(outer).unwrap();
+        let mut guard = fm.decode_message().unwrap();
+        guard.first_mut(inner_tag).unwrap().set_uint64(999).unwrap();
+        // drop without finish
+    }
+
+    let rt = Document::from_bytes(root.to_buf().unwrap().as_slice()).unwrap();
+    let nested = rt.first_ref(outer).unwrap().as_message().unwrap();
+    assert_eq!(nested.first_ref(inner_tag).unwrap().as_uint64(), Some(10));
+}
+
+#[test]
+fn message_guard_nested_chain() {
+    let mut leaf = Document::new();
+    let _ = leaf.push_varint(fnn(3), 42).unwrap();
+    let leaf_buf = leaf.to_buf().unwrap();
+
+    let mut mid = Document::new();
+    let _ = mid.push_length_delimited(fnn(2), leaf_buf).unwrap();
+    let mid_buf = mid.to_buf().unwrap();
+
+    let mut root = Document::new();
+    let _ = root.push_length_delimited(fnn(1), mid_buf).unwrap();
+
+    let tag1 = Document::make_tag(fnn(1), WireType::Len);
+    let tag2 = Document::make_tag(fnn(2), WireType::Len);
+    let tag3 = Document::make_tag(fnn(3), WireType::Varint);
+
+    // Navigate two levels deep with guards
+    let mut level1 = root.first_mut(tag1).unwrap().decode_message().unwrap();
+    let mut level2 = level1.first_mut(tag2).unwrap().decode_message().unwrap();
+    level2.first_mut(tag3).unwrap().set_uint64(100).unwrap();
+    level2.finish().unwrap();
+    level1.finish().unwrap();
+
+    // Verify roundtrip
+    let rt = Document::from_bytes(root.to_buf().unwrap().as_slice()).unwrap();
+    let n1 = rt.first_ref(tag1).unwrap().as_message().unwrap();
+    let n2 = n1.first_ref(tag2).unwrap().as_message().unwrap();
+    assert_eq!(n2.first_ref(tag3).unwrap().as_uint64(), Some(100));
+}
+
+#[test]
+fn message_guard_with_capacities() {
+    let mut inner = Document::new();
+    let _ = inner.push_varint(fnn(2), 7).unwrap();
+
+    let mut root = Document::new();
+    let _ = root.push_length_delimited(fnn(1), inner.to_buf().unwrap()).unwrap();
+
+    let outer = Document::make_tag(fnn(1), WireType::Len);
+    let inner_tag = Document::make_tag(fnn(2), WireType::Varint);
+    let cap = Capacities::new().fields(2).varints(1).query(1);
+
+    let fm = root.first_mut(outer).unwrap();
+    let mut guard = fm.decode_message_with_capacities(cap).unwrap();
+    guard.first_mut(inner_tag).unwrap().set_uint64(77).unwrap();
+    guard.finish().unwrap();
+
+    let rt = Document::from_bytes(root.to_buf().unwrap().as_slice()).unwrap();
+    let nested = rt.first_ref(outer).unwrap().as_message().unwrap();
+    assert_eq!(nested.first_ref(inner_tag).unwrap().as_uint64(), Some(77));
+}

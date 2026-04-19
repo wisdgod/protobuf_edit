@@ -32,6 +32,59 @@ pub struct Capacities {
     pub query: usize,
 }
 
+impl Capacities {
+    #[inline]
+    pub const fn new() -> Self {
+        Self {
+            fields: 0,
+            varints: 0,
+            fixed32s: 0,
+            fixed64s: 0,
+            lendels: 0,
+            #[cfg(feature = "group")]
+            groups: 0,
+            query: 0,
+        }
+    }
+
+    #[inline]
+    pub const fn fields(mut self, n: usize) -> Self {
+        self.fields = n;
+        self
+    }
+    #[inline]
+    pub const fn varints(mut self, n: usize) -> Self {
+        self.varints = n;
+        self
+    }
+    #[inline]
+    pub const fn fixed32s(mut self, n: usize) -> Self {
+        self.fixed32s = n;
+        self
+    }
+    #[inline]
+    pub const fn fixed64s(mut self, n: usize) -> Self {
+        self.fixed64s = n;
+        self
+    }
+    #[inline]
+    pub const fn lendels(mut self, n: usize) -> Self {
+        self.lendels = n;
+        self
+    }
+    #[inline]
+    pub const fn query(mut self, n: usize) -> Self {
+        self.query = n;
+        self
+    }
+    #[cfg(feature = "group")]
+    #[inline]
+    pub const fn groups(mut self, n: usize) -> Self {
+        self.groups = n;
+        self
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 /// Head/tail links for one repeated tag chain.
 pub struct Bucket {
