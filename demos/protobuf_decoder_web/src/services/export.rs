@@ -173,7 +173,9 @@ impl ExportService {
                     }
                 };
                 match clipboard_write_text(&url) {
-                    Ok(_) => toast.show(ToastKind::Success, format!("Copy URL requested: {len} bytes.")),
+                    Ok(_) => {
+                        toast.show(ToastKind::Success, format!("Copy URL requested: {len} bytes."))
+                    }
                     Err(msg) => toast.show(ToastKind::Error, msg),
                 }
             });

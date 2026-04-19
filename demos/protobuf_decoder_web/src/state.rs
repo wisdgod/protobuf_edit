@@ -51,6 +51,7 @@ pub(crate) struct WorkspaceState {
     pub expanded: RwSignal<FxHashSet<FieldId>>,
     pub dirty_fields: RwSignal<FxHashSet<FieldId>>,
     pub hex_text_mode: RwSignal<HexTextMode>,
+    pub hex_selection: RwSignal<Option<(usize, usize)>>,
 
     pub highlights: Memo<Vec<HighlightRange>>,
     pub highlight_range_count: Memo<usize>,
@@ -73,6 +74,7 @@ impl WorkspaceState {
         let expanded: RwSignal<FxHashSet<FieldId>> = RwSignal::new(FxHashSet::default());
         let dirty_fields: RwSignal<FxHashSet<FieldId>> = RwSignal::new(FxHashSet::default());
         let hex_text_mode: RwSignal<HexTextMode> = RwSignal::new(HexTextMode::Ascii);
+        let hex_selection: RwSignal<Option<(usize, usize)>> = RwSignal::new(None);
 
         let highlights = Memo::new(move |_| {
             patch_state.with(|p| {
@@ -116,6 +118,7 @@ impl WorkspaceState {
             expanded,
             dirty_fields,
             hex_text_mode,
+            hex_selection,
             highlights,
             highlight_range_count,
             read_only,
@@ -130,6 +133,7 @@ impl WorkspaceState {
         self.hovered.set(None);
         self.expanded.set(FxHashSet::default());
         self.dirty_fields.set(FxHashSet::default());
+        self.hex_selection.set(None);
     }
 
     pub(crate) fn reset_ui_state_keep_selected(
@@ -141,6 +145,7 @@ impl WorkspaceState {
         self.hovered.set(None);
         self.expanded.set(new_expanded);
         self.dirty_fields.set(FxHashSet::default());
+        self.hex_selection.set(None);
     }
 
     pub(crate) fn clear_loaded_data(&self) {

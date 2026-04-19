@@ -150,6 +150,7 @@ pub fn App() -> impl IntoView {
                     "Escape" => {
                         ev.prevent_default();
                         selected.set(None);
+                        ws.hex_selection.set(None);
                     }
                     "ArrowDown" => {
                         ev.prevent_default();

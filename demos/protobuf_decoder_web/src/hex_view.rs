@@ -4,6 +4,9 @@ use protobuf_edit::{FieldId, Patch, WireType};
 use std::cmp::min;
 
 use crate::bytes::ByteView;
+use crate::components::HexContextMenu;
+use crate::hex_copy::CopyFormat;
+use crate::services::ExportService;
 use crate::state::WorkspaceState;
 use crate::workspace::{drilldown_byte, HighlightKind, HighlightRange};
 
@@ -130,16 +133,24 @@ fn utf8_cell(bytes: &[u8], idx: usize) -> Utf8Cell {
 #[component]
 pub fn HexGrid(container_ref: NodeRef<html::Div>) -> impl IntoView {
     let workspace = expect_context::<WorkspaceState>();
+    let export_svc = expect_context::<ExportService>();
     let patch_state = workspace.patch_state;
     let raw_bytes = workspace.raw_bytes;
     let highlights = workspace.highlights;
     let text_mode = workspace.hex_text_mode;
     let selected = workspace.selected;
     let expanded = workspace.expanded;
+    let hex_selection = workspace.hex_selection;
     const ROW_HEIGHT_PX: f64 = 20.0;
     const BYTES_PER_ROW: usize = 16;
 
     let first_row: RwSignal<usize> = RwSignal::new(0);
+
+    // Selection drag state (local to HexGrid, not in WorkspaceState).
+    let selection_anchor: RwSignal<Option<usize>> = RwSignal::new(None);
+    let is_selecting: RwSignal<bool> = RwSignal::new(false);
+    let ctx_menu_visible: RwSignal<bool> = RwSignal::new(false);
+    let ctx_menu_pos: RwSignal<(i32, i32)> = RwSignal::new((0, 0));
 
     let clamp_scroll = move |row: usize, total: usize, el: &web_sys::HtmlElement| -> (usize, i32) {
         if total == 0 {
@@ -204,6 +215,40 @@ pub fn HexGrid(container_ref: NodeRef<html::Div>) -> impl IntoView {
             }
         });
         selected.set(selected_field);
+    });
+
+    let on_byte_mousedown = Callback::new(move |(idx, shift): (usize, bool)| {
+        ctx_menu_visible.set(false);
+        if shift {
+            if let Some(anchor) = selection_anchor.get_untracked() {
+                let start = anchor.min(idx);
+                let end = anchor.max(idx) + 1;
+                hex_selection.set(Some((start, end)));
+            }
+        } else {
+            selection_anchor.set(Some(idx));
+            is_selecting.set(true);
+            hex_selection.set(Some((idx, idx + 1)));
+        }
+    });
+
+    let on_byte_mouseover = Callback::new(move |idx: usize| {
+        if !is_selecting.get_untracked() {
+            return;
+        }
+        let Some(anchor) = selection_anchor.get_untracked() else {
+            return;
+        };
+        let start = anchor.min(idx);
+        let end = anchor.max(idx) + 1;
+        hex_selection.set(Some((start, end)));
+    });
+
+    let on_copy_format = Callback::new(move |fmt: CopyFormat| {
+        let Some((start, end)) = hex_selection.get_untracked() else {
+            return;
+        };
+        export_svc.copy_range_as(start, end, fmt);
     });
 
     Effect::new(move |_| {
@@ -279,6 +324,19 @@ pub fn HexGrid(container_ref: NodeRef<html::Div>) -> impl IntoView {
                     first_row.set(new_first_row);
                 }
             }
+            on:mouseup=move |_| {
+                is_selecting.set(false);
+            }
+            on:mouseleave=move |_| {
+                is_selecting.set(false);
+            }
+            on:contextmenu=move |ev: web_sys::MouseEvent| {
+                if hex_selection.with_untracked(|s| s.is_some()) {
+                    ev.prevent_default();
+                    ctx_menu_pos.set((ev.client_x(), ev.client_y()));
+                    ctx_menu_visible.set(true);
+                }
+            }
         >
             <Show
                 when=move || { total_rows() > 0 }
@@ -303,7 +361,10 @@ pub fn HexGrid(container_ref: NodeRef<html::Div>) -> impl IntoView {
                             raw_bytes=raw_bytes
                             highlights=highlights
                             text_mode=text_mode
+                            hex_selection=hex_selection
                             on_byte_dblclick=on_byte_dblclick
+                            on_byte_mousedown=on_byte_mousedown
+                            on_byte_mouseover=on_byte_mouseover
                         />
                     }
                 />
@@ -315,6 +376,8 @@ pub fn HexGrid(container_ref: NodeRef<html::Div>) -> impl IntoView {
                     }
                 ></div>
             </Show>
+
+            <HexContextMenu visible=ctx_menu_visible position=ctx_menu_pos on_select=on_copy_format />
         </div>
     }
 }
@@ -326,7 +389,10 @@ fn HexRow(
     raw_bytes: RwSignal<Option<ByteView>, LocalStorage>,
     highlights: Memo<Vec<HighlightRange>>,
     text_mode: RwSignal<HexTextMode>,
+    hex_selection: RwSignal<Option<(usize, usize)>>,
     on_byte_dblclick: Callback<usize>,
+    on_byte_mousedown: Callback<(usize, bool)>,
+    on_byte_mouseover: Callback<usize>,
 ) -> impl IntoView {
     const BYTES_PER_ROW: usize = 16;
 
@@ -412,6 +478,10 @@ fn HexRow(
         }
     };
 
+    let is_in_range = move |idx: usize| -> bool {
+        hex_selection.with(|s| s.is_some_and(|(a, b)| idx >= a && idx < b))
+    };
+
     view! {
     <div class="hex-row">
         <span class="hex-offset">{format!("{:05X}", row_start)}</span>
@@ -424,7 +494,17 @@ fn HexRow(
                                 let idx = cell.idx;
                                 let cls = class_for(cell.kind);
                                 view! {
-                                    <span class=cls on:dblclick=move |_| on_byte_dblclick.run(idx)>
+                                    <span
+                                        class=cls
+                                        class:hex-byte--range-selected=move || is_in_range(idx)
+                                        on:mousedown=move |ev: web_sys::MouseEvent| {
+                                            if ev.button() == 0 {
+                                                on_byte_mousedown.run((idx, ev.shift_key()));
+                                            }
+                                        }
+                                        on:mouseover=move |_| on_byte_mouseover.run(idx)
+                                        on:dblclick=move |_| on_byte_dblclick.run(idx)
+                                    >
                                         {hex_cell(cell.byte)}
                                     </span>
                                 }
@@ -447,6 +527,13 @@ fn HexRow(
                                         HexTextMode::Ascii => view! {
                                             <span
                                                 class=cls
+                                                class:hex-byte--range-selected=move || is_in_range(idx)
+                                                on:mousedown=move |ev: web_sys::MouseEvent| {
+                                                    if ev.button() == 0 {
+                                                        on_byte_mousedown.run((idx, ev.shift_key()));
+                                                    }
+                                                }
+                                                on:mouseover=move |_| on_byte_mouseover.run(idx)
                                                 on:dblclick=move |_| on_byte_dblclick.run(idx)
                                             >
                                                 {ascii_cell(cell.byte)}
@@ -457,6 +544,13 @@ fn HexRow(
                                             Utf8Cell::Static(text) => view! {
                                                 <span
                                                     class=cls
+                                                    class:hex-byte--range-selected=move || is_in_range(idx)
+                                                    on:mousedown=move |ev: web_sys::MouseEvent| {
+                                                        if ev.button() == 0 {
+                                                            on_byte_mousedown.run((idx, ev.shift_key()));
+                                                        }
+                                                    }
+                                                    on:mouseover=move |_| on_byte_mouseover.run(idx)
                                                     on:dblclick=move |_| on_byte_dblclick.run(idx)
                                                 >
                                                     {text}
@@ -466,6 +560,13 @@ fn HexRow(
                                             Utf8Cell::Char(ch) => view! {
                                                 <span
                                                     class=cls
+                                                    class:hex-byte--range-selected=move || is_in_range(idx)
+                                                    on:mousedown=move |ev: web_sys::MouseEvent| {
+                                                        if ev.button() == 0 {
+                                                            on_byte_mousedown.run((idx, ev.shift_key()));
+                                                        }
+                                                    }
+                                                    on:mouseover=move |_| on_byte_mouseover.run(idx)
                                                     on:dblclick=move |_| on_byte_dblclick.run(idx)
                                                 >
                                                     {ch.to_string()}
@@ -476,6 +577,13 @@ fn HexRow(
                                                 <span
                                                     class=cls
                                                     class:hex-byte--placeholder=true
+                                                    class:hex-byte--range-selected=move || is_in_range(idx)
+                                                    on:mousedown=move |ev: web_sys::MouseEvent| {
+                                                        if ev.button() == 0 {
+                                                            on_byte_mousedown.run((idx, ev.shift_key()));
+                                                        }
+                                                    }
+                                                    on:mouseover=move |_| on_byte_mouseover.run(idx)
                                                     on:dblclick=move |_| on_byte_dblclick.run(idx)
                                                 ></span>
                                             }

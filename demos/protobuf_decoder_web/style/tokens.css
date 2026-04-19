@@ -35,6 +35,10 @@
   --color-hl-len-sel: rgba(106, 27, 154, 0.24);
   --color-hl-i32-sel: rgba(230, 81, 0, 0.24);
 
+  /* --- Byte-range selection (hex view) --- */
+  --color-hl-range-sel: rgba(33, 150, 243, 0.22);
+  --color-hl-range-sel-outline: rgba(33, 150, 243, 0.55);
+
   /* --- Status / Feedback --- */
   --color-error: #c62828;
   --color-error-bg: rgba(198, 40, 40, 0.08);
@@ -101,6 +105,9 @@
   --color-hl-i64-sel: rgba(66, 165, 245, 0.22);
   --color-hl-len-sel: rgba(171, 71, 188, 0.22);
   --color-hl-i32-sel: rgba(255, 167, 38, 0.22);
+
+  --color-hl-range-sel: rgba(66, 165, 245, 0.28);
+  --color-hl-range-sel-outline: rgba(66, 165, 245, 0.65);
 
   --color-error: #ef5350;
   --color-error-bg: rgba(239, 83, 80, 0.12);
