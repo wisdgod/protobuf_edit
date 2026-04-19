@@ -11,7 +11,8 @@ pub(crate) use commands::{
 };
 pub(crate) use drilldown::drilldown_byte;
 pub(crate) use field_paths::{
-    build_selection_path, decode_selection_path, encode_selection_path, resolve_selection_path,
+    build_selection_path, decode_selection_path, encode_selection_path, format_user_path,
+    parse_user_path, resolve_selection_path, resolve_user_path,
 };
 pub(crate) use frame_name::format_frame_name_template;
 pub(crate) use highlight::{compute_highlights, HighlightKind, HighlightRange};

@@ -96,8 +96,14 @@
   font-size: var(--font-size-sm);
   color: var(--color-text-secondary);
   display: flex;
+  align-items: center;
   gap: var(--spacing-xs);
-  flex-wrap: wrap;
+}
+
+.breadcrumb-path {
+  display: flex;
+  align-items: center;
+  gap: 0;
 }
 
 .breadcrumb-item {
@@ -106,6 +112,20 @@
 
 .breadcrumb-sep {
   color: var(--color-text-tertiary);
+}
+
+.breadcrumb-user-path {
+  color: var(--color-text-tertiary);
+  font-family: var(--font-mono);
+  margin-left: var(--spacing-sm);
+}
+
+.breadcrumb-input {
+  margin-left: auto;
+  width: 120px;
+  padding: 2px var(--spacing-xs);
+  font-size: var(--font-size-xs);
+  font-family: var(--font-mono);
 }
 
 .envelope-frames {
