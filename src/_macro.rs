@@ -1,18 +1,18 @@
 /// See: https://github.com/rust-lang/rust/blob/main/library/core/src/num/niche_types.rs
 /// [`core::num::niche_types`]
 #[allow_internal_unsafe]
-#[allow_internal_unstable(rustc_attrs, structural_match)]
+#[allow_internal_unstable(pattern_types, pattern_type_macro, structural_match)]
 macro_rules! define_valid_range_type {
     ($(
         $(#[$m:meta])*
         $vis:vis struct $name:ident($int:ident as $uint:ident in $low:literal..=$high:literal);
     )+) => {$(
-        #[derive(Clone, Copy, Eq)]
+        #[derive(Clone, Copy)]
         #[repr(transparent)]
-        #[rustc_layout_scalar_valid_range_start($low)]
-        #[rustc_layout_scalar_valid_range_end($high)]
         $(#[$m])*
-        $vis struct $name($int);
+        $vis struct $name(::core::pattern_type!($int is $low..=$high));
+
+        impl ::core::cmp::Eq for $name {}
 
         const _: () = {
             // With the `valid_range` attributes, it's always specified as unsigned
@@ -25,42 +25,32 @@ macro_rules! define_valid_range_type {
         };
 
         impl $name {
-            pub const MIN: $name = unsafe { $name($low as $int) };
-            pub const MAX: $name = unsafe { $name($high as $int) };
+            pub const MIN: $name = unsafe { ::core::mem::transmute($low as $int) };
+            pub const MAX: $name = unsafe { ::core::mem::transmute($high as $int) };
 
             #[inline]
             pub const fn new(val: $int) -> Option<Self> {
                 if (val as $uint) >= ($low as $uint) && (val as $uint) <= ($high as $uint) {
                     // SAFETY: just checked the inclusive range
-                    Some(unsafe { $name(val) })
+                    Some(unsafe { ::core::mem::transmute(val) })
                 } else {
                     None
                 }
             }
 
-            /// Constructs an instance of this type from the underlying integer
-            /// primitive without checking whether its zero.
-            ///
             /// # Safety
-            /// Immediate language UB if `val` is not within the valid range for this
-            /// type, as it violates the validity invariant.
+            /// Immediate language UB if `val` is not within the valid range.
             #[inline]
             pub const unsafe fn new_unchecked(val: $int) -> Self {
-                // SAFETY: Caller promised that `val` is within the valid range.
-                unsafe { $name(val) }
+                unsafe { ::core::mem::transmute(val) }
             }
 
             #[inline]
             pub const fn as_inner(self) -> $int {
-                // SAFETY: This is a transparent wrapper, so unwrapping it is sound
-                // (Not using `.0` due to MCP#807.)
                 unsafe { ::core::mem::transmute(self) }
             }
         }
 
-        // This is required to allow matching a constant.  We don't get it from a derive
-        // because the derived `PartialEq` would do a field projection, which is banned
-        // by <https://github.com/rust-lang/compiler-team/issues/807>.
         impl ::core::marker::StructuralPartialEq for $name {}
 
         impl ::core::cmp::PartialEq for $name {
@@ -85,7 +75,6 @@ macro_rules! define_valid_range_type {
         }
 
         impl ::core::hash::Hash for $name {
-            // Required method
             fn hash<H: ::core::hash::Hasher>(&self, state: &mut H) {
                 ::core::hash::Hash::hash(&self.as_inner(), state);
             }

@@ -20,6 +20,6 @@ group = []
 __std = []
 
 [dependencies]
-hashbrown = { version = "0.16.1", default-features = false, features = ["inline-more"] }
+hashbrown = { version = "0.17.0", default-features = false, features = ["inline-more"] }
 rustc-hash = { version = "2.1.1", default-features = false }
 smallvec = { version = "1.15.1", features = ["union", "const_generics", "const_new", "specialization"] }
