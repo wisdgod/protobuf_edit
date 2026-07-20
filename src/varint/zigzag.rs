@@ -10,14 +10,14 @@ pub const trait Decode<Signed>: Varint {
 
 macro_rules! impl_zigzag {
     ($signed:ty, $unsigned:ty, $shift:expr) => {
-        impl const Encode<$unsigned> for $signed {
+        const impl Encode<$unsigned> for $signed {
             #[inline]
             fn encode(self) -> $unsigned {
                 ((self << 1) ^ (self >> $shift)) as $unsigned
             }
         }
 
-        impl const Decode<$signed> for $unsigned {
+        const impl Decode<$signed> for $unsigned {
             #[inline]
             fn decode(self) -> $signed {
                 ((self >> 1) as $signed) ^ (-((self & 1) as $signed))

@@ -11,7 +11,7 @@ pub const trait Varint: Copy {
 
 macro_rules! impl_varint {
     ($ty:ty) => {
-        impl const Varint for $ty {
+        const impl Varint for $ty {
             const MAX_LEN: u32 = unsafe {
                 <$ty>::MAX.bit_width().unchecked_mul(9).unchecked_shr(6).unchecked_add(1)
             };
