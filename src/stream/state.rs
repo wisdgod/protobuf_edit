@@ -15,7 +15,6 @@ pub(super) enum InflightField {
         emit_self: bool,
         header_len: usize,
         payload_len: u32,
-        payload_len_usize: usize,
         emitted: usize,
         child: Option<usize>,
     },

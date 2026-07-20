@@ -3,7 +3,7 @@ use crate::wire::{Tag, WireType};
 
 use super::{
     slice_span, span_offset_by, value_spans_offset_by, FieldId, FieldNode, FieldSpans, MessageId,
-    MessageNode, MessageSource, Patch, PayloadEdit, Span,
+    MessageNode, MessageSource, Patch, PayloadEdit, Span, ValueSpans,
 };
 
 impl Patch {
@@ -148,10 +148,9 @@ impl Patch {
             return Err(TreeError::DecodeError);
         };
         let msg_bytes = self.message_bytes(node.msg)?;
-        let start = spans.field.start();
-        let value_start =
-            start.checked_add(spans.tag_len as u32).ok_or(TreeError::CapacityExceeded)?;
-        let value = Span::new(value_start, spans.field.end()).ok_or(TreeError::DecodeError)?;
+        let ValueSpans::Varint { value } = spans.value_spans(WireType::Varint)? else {
+            return Err(TreeError::DecodeError);
+        };
         let data = slice_span(msg_bytes, value)?;
         let (v, _used) = crate::varint::decode64(data).ok_or(TreeError::DecodeError)?;
         self.read_cache.set_varint(field_idx, v);
@@ -170,9 +169,9 @@ impl Patch {
             return Err(TreeError::DecodeError);
         };
         let msg_bytes = self.message_bytes(node.msg)?;
-        let end = spans.field.end();
-        let start = end.checked_sub(4).ok_or(TreeError::DecodeError)?;
-        let value = Span::new(start, end).ok_or(TreeError::DecodeError)?;
+        let ValueSpans::I32 { value } = spans.value_spans(WireType::I32)? else {
+            return Err(TreeError::DecodeError);
+        };
         let data = slice_span(msg_bytes, value)?;
         let b: [u8; 4] = data.try_into().map_err(|_| TreeError::DecodeError)?;
         Ok(u32::from_le_bytes(b))
@@ -190,9 +189,9 @@ impl Patch {
             return Err(TreeError::DecodeError);
         };
         let msg_bytes = self.message_bytes(node.msg)?;
-        let end = spans.field.end();
-        let start = end.checked_sub(8).ok_or(TreeError::DecodeError)?;
-        let value = Span::new(start, end).ok_or(TreeError::DecodeError)?;
+        let ValueSpans::I64 { value } = spans.value_spans(WireType::I64)? else {
+            return Err(TreeError::DecodeError);
+        };
         let data = slice_span(msg_bytes, value)?;
         let b: [u8; 8] = data.try_into().map_err(|_| TreeError::DecodeError)?;
         Ok(u64::from_le_bytes(b))

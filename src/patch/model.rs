@@ -37,9 +37,7 @@ impl ReadCache {
         }
         self.varints.clear();
         self.varints.try_reserve(fields_len).map_err(|_| TreeError::CapacityExceeded)?;
-        for _ in 0..fields_len {
-            self.varints.push(Cell::new(None));
-        }
+        self.varints.resize(fields_len, Cell::new(None));
         self.enabled = true;
         Ok(())
     }

@@ -19,6 +19,8 @@ pub struct ChunkStream {
     states: Vec<StreamState>,
     matcher: PathTrieRef,
     emit_partial_matches: bool,
+    /// Reusable work stack for `parse_with_work`; always empty between feeds.
+    work: Vec<usize>,
 }
 
 impl Default for ChunkStream {
@@ -31,7 +33,12 @@ impl Default for ChunkStream {
 impl ChunkStream {
     #[inline]
     pub fn new() -> Self {
-        Self { states: vec![StreamState::root()], matcher: EMPTY_TRIE, emit_partial_matches: false }
+        Self {
+            states: vec![StreamState::root()],
+            matcher: EMPTY_TRIE,
+            emit_partial_matches: false,
+            work: Vec::new(),
+        }
     }
 
     #[inline]
@@ -42,6 +49,7 @@ impl ChunkStream {
             states: vec![StreamState::root()],
             matcher: trie.as_ref(),
             emit_partial_matches: false,
+            work: Vec::new(),
         }
     }
 
@@ -111,17 +119,25 @@ impl ChunkStream {
         handler: &mut H,
     ) -> Result<(), TreeError> {
         // Work-stack lets parent/child states make progress incrementally.
-        let mut work = Vec::<usize>::new();
-        self.schedule_state(&mut work, root_state_idx)?;
+        // Taken out of `self` so it can be borrowed alongside `&mut self`,
+        // then restored to reuse its allocation across feeds.
+        let mut work = core::mem::take(&mut self.work);
+        debug_assert!(work.is_empty());
 
-        while let Some(state_idx) = work.pop() {
-            if state_idx >= self.states.len() {
-                continue;
+        let result = (|| {
+            self.schedule_state(&mut work, root_state_idx)?;
+            while let Some(state_idx) = work.pop() {
+                if state_idx >= self.states.len() {
+                    continue;
+                }
+                self.parse_pending_state(state_idx, &mut work, handler)?;
             }
-            self.parse_pending_state(state_idx, &mut work, handler)?;
-        }
+            Ok(())
+        })();
 
-        Ok(())
+        work.clear();
+        self.work = work;
+        result
     }
 
     fn schedule_state(&self, work: &mut Vec<usize>, state_idx: usize) -> Result<(), TreeError> {
@@ -152,13 +168,14 @@ impl ChunkStream {
                         emit_self,
                         header_len,
                         payload_len,
-                        payload_len_usize,
                         mut emitted,
                         child,
                     } => {
                         if unlikely(header_len > data_len) {
                             return Err(TreeError::DecodeError);
                         }
+                        let payload_len_usize = usize::try_from(payload_len)
+                            .map_err(|_| TreeError::CapacityExceeded)?;
 
                         let available = (data_len - header_len).min(payload_len_usize);
                         let mut appended_to_child = false;
@@ -186,7 +203,7 @@ impl ChunkStream {
                                 && self.emit_partial_matches
                                 && available < payload_len_usize
                             {
-                                self.push_path_tag(state_idx, tag);
+                                self.push_path_tag(state_idx, tag)?;
                                 let cb = {
                                     let state = &self.states[state_idx];
                                     let data =
@@ -212,7 +229,6 @@ impl ChunkStream {
                                         emit_self,
                                         header_len,
                                         payload_len,
-                                        payload_len_usize,
                                         emitted,
                                         child,
                                     });
@@ -224,7 +240,7 @@ impl ChunkStream {
                                 self.drop_child_state(child_idx)?;
                             }
                             if emit_self {
-                                self.push_path_tag(state_idx, tag);
+                                self.push_path_tag(state_idx, tag)?;
                                 let cb = {
                                     let state = &self.states[state_idx];
                                     let data =
@@ -254,7 +270,6 @@ impl ChunkStream {
                             emit_self,
                             header_len,
                             payload_len,
-                            payload_len_usize,
                             emitted,
                             child,
                         });
@@ -309,7 +324,7 @@ impl ChunkStream {
                                     }
 
                                     if emit_self && self.emit_partial_matches {
-                                        self.push_path_tag(state_idx, tag);
+                                        self.push_path_tag(state_idx, tag)?;
                                         let cb = {
                                             let state = &self.states[state_idx];
                                             let data = &state.pending.as_slice()
@@ -385,7 +400,7 @@ impl ChunkStream {
                                 }
 
                                 if emit_self {
-                                    self.push_path_tag(state_idx, tag);
+                                    self.push_path_tag(state_idx, tag)?;
                                     let cb = {
                                         let state = &self.states[state_idx];
                                         let data =
@@ -422,7 +437,7 @@ impl ChunkStream {
                         }
 
                         if emit_self {
-                            self.push_path_tag(state_idx, tag);
+                            self.push_path_tag(state_idx, tag)?;
                             let cb = {
                                 let state = &self.states[state_idx];
                                 let data = &state.pending.as_slice()[state.read_head + consumed..];
@@ -463,7 +478,7 @@ impl ChunkStream {
                     };
 
                     if emit_self {
-                        self.push_path_tag(state_idx, tag);
+                        self.push_path_tag(state_idx, tag)?;
                         let cb = {
                             let state = &self.states[state_idx];
                             handler.on_varint(state.path.as_slice(), value)
@@ -487,7 +502,7 @@ impl ChunkStream {
                     value.copy_from_slice(&data[tag_len..end]);
 
                     if emit_self {
-                        self.push_path_tag(state_idx, tag);
+                        self.push_path_tag(state_idx, tag)?;
                         let cb = {
                             let state = &self.states[state_idx];
                             handler.on_i32(state.path.as_slice(), value)
@@ -508,7 +523,7 @@ impl ChunkStream {
                     value.copy_from_slice(&data[tag_len..end]);
 
                     if emit_self {
-                        self.push_path_tag(state_idx, tag);
+                        self.push_path_tag(state_idx, tag)?;
                         let cb = {
                             let state = &self.states[state_idx];
                             handler.on_i64(state.path.as_slice(), value)
@@ -527,8 +542,6 @@ impl ChunkStream {
                     };
                     let header_len =
                         tag_len.checked_add(len_len).ok_or(TreeError::CapacityExceeded)?;
-                    let payload_len_usize =
-                        usize::try_from(payload_len).map_err(|_| TreeError::CapacityExceeded)?;
 
                     let child = if let Some(node) = child_node {
                         Some(self.push_child_state(state_idx, tag, node)?)
@@ -541,7 +554,6 @@ impl ChunkStream {
                         emit_self,
                         header_len,
                         payload_len,
-                        payload_len_usize,
                         emitted: 0,
                         child,
                     });
@@ -697,8 +709,11 @@ impl ChunkStream {
     }
 
     #[inline]
-    fn push_path_tag(&mut self, state_idx: usize, tag: Tag) {
-        self.states[state_idx].path.push(tag);
+    fn push_path_tag(&mut self, state_idx: usize, tag: Tag) -> Result<(), TreeError> {
+        let path = &mut self.states[state_idx].path;
+        path.try_reserve(1).map_err(|_| TreeError::CapacityExceeded)?;
+        path.push(tag);
+        Ok(())
     }
 
     #[inline]
