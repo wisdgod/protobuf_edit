@@ -7,33 +7,28 @@ generated protobuf types, but still need to:
 
 - inspect a message at the wire level,
 - edit selected fields,
+- extract fields from a byte stream as it arrives,
 - keep byte-level fidelity where possible.
+
+`no_std` + `alloc`. Requires a nightly toolchain.
 
 ## Design principles
 
-- Performance-oriented: keep hot paths simple and allocation-light.
+- Performance-oriented: keep hot paths simple, allocation-light, and copy-free where possible.
 - Practical correctness: prefer explicit, testable invariants over cleverness.
-- Byte fidelity: preserve original bytes for unchanged fields when possible.
-- Two models on purpose: choose between `Document` and `Patch` based on workload.
+- Byte fidelity: preserve original bytes (including non-canonical varints) for unchanged fields.
+- Multiple models on purpose: choose between `Document`, `Patch`, and the stream walkers based on workload.
 
-## Editing models
+## Choosing a model
 
-`protobuf_edit` intentionally exposes two different models:
+| Model | Best for | Cost profile |
+|---|---|---|
+| `Document` | deep structured transformations, building messages from scratch | eager decode into typed pools |
+| `Patch` | "edit a few fields and forward the message" | span scan only; unchanged bytes copied verbatim on `save()` |
+| `Scanner` | extracting a few fields from one complete buffer | zero-copy, zero-alloc, single pass |
+| `ChunkStream` | the same extraction over data that arrives in pieces | buffers only boundary-straddling state |
 
-- `Document`: an arena-backed structured editor.
-  - Decodes a message into typed storage slots.
-  - Maintains raw varint/tag/len-prefix caches and updates them eagerly on edits.
-  - Best for deep, structured transformations.
-- `Patch`: a span-based patcher.
-  - Scans the message and records byte spans into the original source buffer.
-  - Tracks payload edits lazily and materializes them on `save()`, copying unchanged spans verbatim.
-  - Supports inserting and deleting fields; `save_and_reparse()` refreshes spans after changes.
-  - Best for “edit a few fields and forward the message” workflows.
-
-Short aliases are also provided:
-
-- `ArenaTree` = `Document`
-- `SpanTree` = `Patch`
+Short aliases: `ArenaTree` = `Document`, `SpanTree` = `Patch`.
 
 ## API layout
 
@@ -41,57 +36,186 @@ Public modules are grouped by concern:
 
 - `protobuf_edit::buf`: shared byte storage (`Buf`, `BufAllocError`)
 - `protobuf_edit::error`: shared crate error (`TreeError`)
-- `protobuf_edit::document`: arena-backed structured editing API
-- `protobuf_edit::patch`: span-based editing API
-- `protobuf_edit::wire`: tag primitives (`Tag`, `FieldNumber`, `WireType`)
+- `protobuf_edit::document`: arena-backed structured editing
+- `protobuf_edit::patch`: span-based editing
+- `protobuf_edit::stream`: trie-matched wire walkers (`Scanner`, `ChunkStream`)
+- `protobuf_edit::wire`: tag primitives (`Tag`, `FieldNumber`, `WireType`, `tag!`)
 - `protobuf_edit::varint`: varint and zigzag codecs
-- `protobuf_edit::stream`: incremental wire parser
 
-Common entry types are still re-exported at the crate root for convenience.
+Common entry types are re-exported at the crate root.
 
-## Quick start
+## `Document`: structured editing
 
-### Build / edit with `Document`
+`Document` eagerly decodes a message into typed storage pools (varint / fixed32 / fixed64 /
+length-delimited), keeps fields in insertion order, and links repeated fields per tag.
+Raw wire bytes (tag, varint, length prefix) are cached alongside decoded values, so
+re-encoding an untouched field reproduces its original bytes exactly.
+
+Construction:
+
+- `Document::new()` / `Document::with_capacities(caps)` — build from scratch
+- `Document::from_bytes(data)` — decode with heuristic pre-reservation
+- `Document::from_bytes_precise(data)` — two-pass decode with exact capacities
+- `BorrowedDocument::from_bytes(data)` — zero-copy: payloads borrow from `data`;
+  `into_owned()` upgrades to an independent `Document`
+
+Building and encoding:
 
 ```rust
-use protobuf_edit::{buf::Buf, document::Document, wire::FieldNumber};
+use protobuf_edit::{Buf, Document, tag, wire::WireType};
 
 let mut doc = Document::new();
-let f1 = FieldNumber::new(1).unwrap();
-doc.push_varint(f1, 150).unwrap();
+doc.push_varint_u32(1, 150)?;
+doc.push_length_delimited_u32(2, Buf::from_static(b"hello"))?;
 
-let bytes: Buf = doc.to_buf().unwrap();
-assert!(!bytes.is_empty());
+let bytes: Buf = doc.to_buf()?; // or encode_into(&mut buf) / encoded_len()
 ```
 
-### Patch bytes with `Patch`
+Reading with `FieldRef`:
 
 ```rust
-use protobuf_edit::{patch::Patch, wire::{FieldNumber, Tag, WireType}};
+let doc = Document::from_bytes(bytes.as_slice())?;
 
-let mut patch = Patch::from_bytes(&[0x08, 0x96, 0x01]).unwrap(); // field 1 = 150
-let root = patch.root();
-let tag = Tag::from_parts(FieldNumber::new(1).unwrap(), WireType::Varint);
+// Iterate everything in insertion order:
+for field in doc.field_refs() {
+    let _ = (field.tag(), field.wire_type());
+}
 
-let field_id = patch.fields_by_tag(root, tag).unwrap().next().unwrap();
-let before = patch.varint(field_id).unwrap();
-patch.set_varint(field_id, before + 1).unwrap();
-
-let tag2 = Tag::from_parts(FieldNumber::new(2).unwrap(), WireType::Varint);
-let _new_field = patch.insert_varint(root, tag2, 7).unwrap();
-patch.delete_field(field_id).unwrap();
-
-let out = patch.save().unwrap();
-assert_ne!(out.as_slice(), &[0x08, 0x96, 0x01]);
-
-let reparsed = patch.save_and_reparse().unwrap();
-assert!(!reparsed.root_bytes().is_empty());
+// Look up by tag; interpret the wire value as a protobuf scalar type:
+let t = tag!(1, WireType::Varint);
+let v: u64 = doc.first_ref(t).unwrap().as_uint64().unwrap();
 ```
 
-## Features
+`FieldRef` offers the full scalar matrix (`as_uint32/64`, `as_int32/64`, `as_sint32/64`,
+`as_bool`, `as_fixed*`/`as_sfixed*`, `as_float`/`as_double`, `as_bytes`), packed-repeated
+iterators (`packed_uint32(...)` etc.), and nested access via `as_message()`.
 
-- `group`: enables protobuf group wire types (`StartGroup`/`EndGroup`) support.
-- `nightly` (default): enables nightly-only optimizations and internal features.
+Editing with `FieldMut`:
+
+```rust
+let mut doc = Document::from_bytes(bytes.as_slice())?;
+
+let mut f = doc.first_mut(tag!(1, WireType::Varint)).unwrap();
+f.set_uint64(151)?;                 // or f.uint64(|v| *v += 1)?
+f.mark_removed();                   // tombstone; skipped by encoding
+
+// Nested messages, closure style:
+doc.first_mut(tag!(2, WireType::Len)).unwrap()
+    .message(|nested| nested.push_varint_u32(3, 7).map(|_| ()))?;
+
+// Or RAII style — MessageGuard derefs to Document, finish() re-encodes:
+let mut guard = doc.first_mut(tag!(2, WireType::Len)).unwrap().decode_message()?;
+guard.push_varint_u32(4, 8)?;
+guard.finish()?;
+```
+
+Repeated fields: `repeated_refs(tag)` iterates live occurrences; `repeated_visit_mut(tag, f)`
+edits them in place. `visit_planned_refs` / `edit_planned_mut` walk a multi-level
+`(tag, capacities)` path plan across nested messages in one call.
+
+## `Patch`: span-based editing
+
+`Patch` scans a message once and records byte spans into the source buffer. Reads decode
+on demand straight from those spans; edits are stored as overlays. `save()` writes output
+by copying unchanged spans verbatim and materializing only the overlays, so untouched
+bytes survive byte-for-byte.
+
+- `Patch::from_bytes(data)` clones the input; `Patch::from_buf(buf)` takes ownership;
+  `BorrowedPatch::from_bytes(data)` borrows it (zero-copy)
+- Navigation: `root()`, `message_fields(msg)`, `fields_by_tag(msg, tag)`,
+  `parse_child_message(field)` lazily parses a nested message
+- Reads: `varint(field)`, `i32_bits` / `i64_bits`, `bytes`; `enable_read_cache()` memoizes
+  repeated varint reads
+- Spans: `field_spans(field)` (tag / len-prefix / payload sub-spans),
+  `field_root_spans` and `message_span_to_root` map into absolute root coordinates —
+  useful for hex-view UIs
+- Edits: `set_varint` / `set_i32_bits` / `set_i64_bits` / `set_bytes`,
+  `insert_*(msg, tag, ...)`, `delete_field`, `clear_field_edit`
+- Output: `save()` → `Buf`, `save_and_reparse()` refreshes spans after heavy editing
+- Transactions: `txn_begin()` / `txn_commit()` / `txn_rollback()`, or the RAII
+  `Txn::begin(&mut patch)` guard (rolls back on drop)
+
+```rust
+use protobuf_edit::{Patch, tag, wire::WireType};
+
+let mut patch = Patch::from_bytes(&[0x08, 0x96, 0x01])?; // field 1 = 150
+let root = patch.root();
+let t = tag!(1, WireType::Varint);
+
+let field = patch.fields_by_tag(root, t)?.next().unwrap();
+let before = patch.varint(field)?;
+patch.set_varint(field, before + 1)?;
+patch.insert_varint(root, tag!(2, WireType::Varint), 7)?;
+
+let out = patch.save()?;
+```
+
+## `stream`: trie-matched wire walkers
+
+Compile the paths you care about into a `const` trie, then walk bytes and receive
+callbacks only for matched paths. Nesting is tracked as a frame stack over one logical
+byte stream; nothing is decoded for subtrees that cannot match.
+
+```rust
+use protobuf_edit::stream::{Scanner, ChunkStream, WireHandler};
+use protobuf_edit::{const_trie, tag, wire::{Tag, WireType}};
+
+const PATH: [Tag; 2] = [tag!(3, WireType::Len), tag!(1, WireType::Varint)];
+let trie = const_trie!(3, 2, [&PATH]); // MAX_NODES, MAX_EDGES, paths
+
+struct Sum(u64);
+impl WireHandler for Sum {
+    fn on_varint(&mut self, _path: &[Tag], v: u64) -> Result<(), protobuf_edit::TreeError> {
+        self.0 += v;
+        Ok(())
+    }
+}
+
+// One complete buffer: zero-copy, zero-alloc.
+let mut sum = Sum(0);
+Scanner::with_trie(trie).scan(message_bytes, &mut sum)?;
+
+// Chunked input: only boundary-straddling state is buffered.
+let mut stream = ChunkStream::with_trie(trie);
+for chunk in chunks {
+    stream.feed(chunk, &mut sum)?;
+}
+stream.finish()?; // errors if a field is left unfinished
+```
+
+`WireHandler` has default no-op implementations for `on_varint`, `on_i32`, `on_i64`,
+`on_length_delimited`, and (with the `group` feature) `on_group`; implement only what you
+need. Each callback receives the full tag path of the matched field.
+
+`ChunkStream::set_emit_partial_matches(true)` additionally reports matched
+length-delimited/group payloads as they accumulate (`is_last == false`), which lets huge
+payloads flow through without ever being buffered whole.
+
+## `wire`, `varint`, `buf`
+
+- `wire`: `Tag` (non-zero `(field_number << 3) | wire_type`), `FieldNumber` (niche-packed
+  `1..=2^29-1`), `WireType`, `encode_tag` / `encode_tag_value` / `decode_tag`, and the
+  compile-time-checked `tag!(field_number, wire_type)` macro.
+- `varint`: `encode32/64`, `decode32/64` (branchless single-byte fast path, overlong-encoding
+  rejection), `encoded_len32/64`, and `zigzag_encode32/64` / `zigzag_decode32/64` for `sint*`.
+- `buf::Buf`: the crate-wide byte container — 16 bytes on the stack with three backing modes:
+  inline (≤ 12 bytes), owned heap, or borrowed external memory. `Buf::from_vec` /
+  `Buf::into_vec` move allocations without copying; `Buf::from_static` wraps constants.
+  Fallible (`try_*`) variants exist for every growth path.
+
+All fallible APIs return `TreeError` (`CapacityExceeded` / `DecodeError` / `InvalidTag` /
+`WireTypeMismatch`).
+
+## Cargo features
+
+- `nightly` (default): nightly-only optimizations in dependencies (`hashbrown`, `rustc-hash`).
+  The crate itself always requires nightly rustc.
+- `group`: wire support for `SGROUP`/`EGROUP` fields across all models.
+
+## Limits
+
+- Message size ≤ `i32::MAX` bytes; `Document` holds at most 65 535 fields per message.
+- Nesting depth in the stream walkers is capped at 100.
 
 ## License
 
