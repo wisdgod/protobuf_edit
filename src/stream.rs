@@ -1,13 +1,16 @@
-//! Incremental protobuf wire parser with trie-based path matching.
+//! Protobuf wire walkers with trie-based path matching.
 //!
 //! Design:
 //! - compile interested paths once with `const_trie!`
-//! - feed byte chunks incrementally
-//! - emit callbacks only for matched paths
+//! - `Scanner` walks one complete buffer, zero-copy
+//! - `ChunkStream` accepts byte chunks incrementally
+//! - both emit callbacks only for matched paths
 //!
 //! Typical flow:
 //! ```text
 //! let trie = const_trie!(..., ..., [&PATH_A, &PATH_B]);
+//! Scanner::with_trie(trie).scan(whole_message, &mut handler)?;
+//! // or, when data arrives in pieces:
 //! let mut stream = ChunkStream::with_trie(trie);
 //! stream.feed(chunk_a, &mut handler)?;
 //! stream.feed(chunk_b, &mut handler)?;
@@ -15,11 +18,8 @@
 //! ```
 
 mod decode;
-#[cfg(feature = "group")]
-mod group;
 mod handler;
 mod parser;
-mod state;
 mod trie;
 mod walk;
 

@@ -80,7 +80,13 @@ pub(super) struct Walker {
 
 impl Walker {
     pub(super) fn new(matcher: PathTrieRef) -> Self {
-        Self { matcher, emit_partial: false, frames: Vec::new(), path: Vec::new(), tail: Buf::new() }
+        Self {
+            matcher,
+            emit_partial: false,
+            frames: Vec::new(),
+            path: Vec::new(),
+            tail: Buf::new(),
+        }
     }
 
     pub(super) fn set_matcher(&mut self, matcher: PathTrieRef) {
@@ -94,6 +100,11 @@ impl Walker {
     /// Whether no field is currently open or partially buffered.
     pub(super) fn is_clean(&self) -> bool {
         self.frames.is_empty() && self.tail.is_empty()
+    }
+
+    /// Bytes of the boundary-straddling header fragment currently buffered.
+    pub(super) fn tail_len(&self) -> u32 {
+        self.tail.len()
     }
 
     pub(super) fn reset(&mut self) {
@@ -428,7 +439,12 @@ impl Walker {
                         Some(rem) if rem > 0 => {
                             let total =
                                 rec.len().checked_add(rem).ok_or(TreeError::CapacityExceeded)?;
-                            handler.on_length_delimited(field_path, rec.as_slice(), total, false)?;
+                            handler.on_length_delimited(
+                                field_path,
+                                rec.as_slice(),
+                                total,
+                                false,
+                            )?;
                         }
                         // Fully buffered payload waiting on an inner frame:
                         // the complete emission follows at pop.
