@@ -21,10 +21,12 @@ mod handler;
 mod parser;
 mod state;
 mod trie;
+mod walk;
 
 pub use handler::WireHandler;
 pub use parser::ChunkStream;
 pub use trie::CompiledPathTrie;
+pub use walk::Scanner;
 
 #[macro_export]
 #[allow_internal_unstable(panic_internals)]

@@ -1,4 +1,4 @@
-use super::{ChunkStream, WireHandler};
+use super::{ChunkStream, Scanner, WireHandler};
 use crate::wire::WireType;
 use crate::{wire, Buf, Document, Tag, TreeError};
 
@@ -17,7 +17,7 @@ fn buf_from_slice(data: &[u8]) -> Buf {
     buf
 }
 
-#[derive(Default)]
+#[derive(Debug, Default, PartialEq)]
 struct Collect {
     varints: alloc::vec::Vec<(alloc::vec::Vec<Tag>, u64)>,
     i32s: alloc::vec::Vec<(alloc::vec::Vec<Tag>, [u8; 4])>,
@@ -470,6 +470,128 @@ fn chunk_stream_matches_nested_path_inside_group() {
     assert_eq!(collect.varints.len(), 1);
     assert_eq!(collect.varints[0].0.as_slice(), P);
     assert_eq!(collect.varints[0].1, 7);
+}
+
+#[test]
+fn scanner_matches_chunk_stream_output() {
+    let leaf = make_leaf_message(&[b"n"]);
+    let level_79 = make_wrapper_message(79, &[leaf]);
+    let level_28 = make_wrapper_message(28, &[level_79]);
+
+    let mut root = Document::new();
+    let _ = root.push_varint(fnn(10), 99).unwrap();
+    let _ = root.push_fixed32(fnn(11), 0xAABB_CCDD).unwrap();
+    let _ = root.push_fixed64(fnn(12), 0x1122_3344_5566_7788).unwrap();
+    let _ = root.push_length_delimited(fnn(3), level_28).unwrap();
+    let src = root.to_buf().unwrap();
+
+    const P_VARINT: [Tag; 1] = [ctag(10, WireType::Varint)];
+    const P_I32: [Tag; 1] = [ctag(11, WireType::I32)];
+    const P_I64: [Tag; 1] = [ctag(12, WireType::I64)];
+    const P_OUTER: [Tag; 1] = [ctag(3, WireType::Len)];
+    const P_NESTED: [Tag; 4] = [
+        ctag(3, WireType::Len),
+        ctag(28, WireType::Len),
+        ctag(79, WireType::Len),
+        ctag(1, WireType::Len),
+    ];
+    let trie = crate::const_trie!(9, 10, [&P_VARINT, &P_I32, &P_I64, &P_OUTER, &P_NESTED]);
+
+    let mut reference = Collect::default();
+    let mut parser = ChunkStream::with_trie(trie);
+    parser.feed(src.as_slice(), &mut reference).unwrap();
+    parser.finish().unwrap();
+
+    let mut scanned = Collect::default();
+    Scanner::with_trie(trie).scan(src.as_slice(), &mut scanned).unwrap();
+
+    assert_eq!(scanned, reference);
+    assert_eq!(scanned.varints.len(), 1);
+    assert_eq!(scanned.lens.len(), 2);
+}
+
+#[test]
+fn scanner_errors_on_truncated_input() {
+    let tag = wire::Tag::from_parts(fnn(1), WireType::Varint).get();
+    let mut data = Buf::new();
+    let _ = crate::varint::encode32(&mut data, tag).unwrap();
+    data.push(0x80).unwrap();
+
+    let err = Scanner::new().scan(data.as_slice(), &mut Collect::default()).unwrap_err();
+    assert!(matches!(err, TreeError::DecodeError));
+
+    let mut root = Document::new();
+    let _ = root.push_length_delimited(fnn(1), buf_from_slice(b"abc")).unwrap();
+    let src = root.to_buf().unwrap();
+    let truncated = &src.as_slice()[..src.len() as usize - 1];
+
+    let err = Scanner::new().scan(truncated, &mut Collect::default()).unwrap_err();
+    assert!(matches!(err, TreeError::DecodeError));
+}
+
+#[test]
+fn scanner_without_trie_validates_structure() {
+    let mut root = Document::new();
+    let _ = root.push_varint(fnn(1), 300).unwrap();
+    let _ = root.push_length_delimited(fnn(2), buf_from_slice(b"xy")).unwrap();
+    let src = root.to_buf().unwrap();
+
+    let mut collect = Collect::default();
+    Scanner::new().scan(src.as_slice(), &mut collect).unwrap();
+    assert_eq!(collect, Collect::default());
+}
+
+#[test]
+fn scanner_depth_limit_100() {
+    const D100: [Tag; 100] = [ctag(1, WireType::Len); 100];
+    const D102: [Tag; 102] = [ctag(1, WireType::Len); 102];
+    let trie_ok = crate::const_trie!(101, 100, [&D100]);
+    let trie_deep = crate::const_trie!(103, 102, [&D102]);
+
+    let mut ok_root = Document::new();
+    let _ = ok_root.push_length_delimited(fnn(1), make_deep_nested_message(98)).unwrap();
+    let ok_src = ok_root.to_buf().unwrap();
+
+    let mut collect = Collect::default();
+    Scanner::with_trie(trie_ok).scan(ok_src.as_slice(), &mut collect).unwrap();
+    assert!(collect.lens.iter().any(|(path, _, _, _)| path.len() == 100));
+
+    let mut bad_root = Document::new();
+    let _ = bad_root.push_length_delimited(fnn(1), make_deep_nested_message(100)).unwrap();
+    let bad_src = bad_root.to_buf().unwrap();
+
+    let err = Scanner::with_trie(trie_deep)
+        .scan(bad_src.as_slice(), &mut Collect::default())
+        .unwrap_err();
+    assert!(matches!(err, TreeError::DecodeError));
+}
+
+#[cfg(feature = "group")]
+#[test]
+fn scanner_matches_chunk_stream_on_groups() {
+    let mut msg = Buf::new();
+    wire::encode_tag(&mut msg, fnn(1), WireType::SGroup).unwrap();
+    wire::encode_tag(&mut msg, fnn(2), WireType::Varint).unwrap();
+    crate::varint::encode64(&mut msg, 7).unwrap();
+    wire::encode_tag(&mut msg, fnn(1), WireType::EGroup).unwrap();
+
+    const P_GROUP: [Tag; 1] = [ctag(1, WireType::SGroup)];
+    const P_INNER: [Tag; 2] = [ctag(1, WireType::SGroup), ctag(2, WireType::Varint)];
+    let trie = crate::const_trie!(3, 2, [&P_GROUP, &P_INNER]);
+
+    let mut reference = Collect::default();
+    let mut parser = ChunkStream::with_trie(trie);
+    parser.feed(msg.as_slice(), &mut reference).unwrap();
+    parser.finish().unwrap();
+
+    let mut scanned = Collect::default();
+    Scanner::with_trie(trie).scan(msg.as_slice(), &mut scanned).unwrap();
+
+    assert_eq!(scanned, reference);
+    assert_eq!(scanned.groups.len(), 1);
+    assert!(scanned.groups[0].2);
+    assert_eq!(scanned.varints.len(), 1);
+    assert_eq!(scanned.varints[0].0.as_slice(), P_INNER);
 }
 
 #[test]
