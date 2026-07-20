@@ -6,7 +6,6 @@ use crate::wire::FieldNumber;
 use crate::wire::Tag;
 use crate::Buf;
 
-pub(super) const NO_TRIE_NODE: u16 = u16::MAX;
 pub(super) const MAX_DECODE_DEPTH: usize = 100;
 
 pub(super) enum InflightField {

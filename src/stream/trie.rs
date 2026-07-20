@@ -1,71 +1,75 @@
 use crate::error::TreeError;
 use crate::wire::Tag;
 
+const TERMINAL_BIT: u16 = 1 << 15;
+const COUNT_MASK: u16 = TERMINAL_BIT - 1;
+
+/// Per-node lookup metadata: edge range start plus terminal/edge-count bits.
+#[derive(Clone, Copy)]
+pub(super) struct NodeEntry {
+    edge_start: u16,
+    /// bit15 = terminal (a complete path ends here), low 15 bits = outgoing edge count.
+    meta: u16,
+}
+
+impl NodeEntry {
+    const EMPTY: Self = Self { edge_start: 0, meta: 0 };
+}
+
+/// Borrowed view over a compiled trie; all queries are O(out-degree).
 #[derive(Clone, Copy)]
 pub(super) struct PathTrieRef {
-    edge_from: &'static [u16],
+    nodes: &'static [NodeEntry],
+    edge_tag: &'static [u32],
     edge_to: &'static [u16],
-    edge_tag: &'static [Option<Tag>],
-    edge_count: u16,
+}
+
+/// Result of following one tag edge.
+#[derive(Clone, Copy)]
+pub(super) struct TrieStep {
+    pub(super) node: u16,
+    pub(super) terminal: bool,
+    pub(super) has_children: bool,
 }
 
 impl PathTrieRef {
+    /// Follows the `tag` edge out of `node`.
+    ///
+    /// Returns `None` when `node` is out of range (including the
+    /// `NO_TRIE_NODE` sentinel) or has no edge labeled `tag`.
     #[inline]
-    pub(super) fn next(self, node: u16, tag: Tag) -> Option<u16> {
-        let mut i = 0usize;
-        let edge_count = self.edge_count as usize;
-        while i < edge_count {
-            if self.edge_from[i] == node
-                && let Some(edge_tag) = self.edge_tag[i]
-                && edge_tag.get() == tag.get()
-            {
-                return Some(self.edge_to[i]);
+    pub(super) fn step(self, node: u16, tag: Tag) -> Option<TrieStep> {
+        let entry = *self.nodes.get(node as usize)?;
+        let start = entry.edge_start as usize;
+        let end = start + (entry.meta & COUNT_MASK) as usize;
+        let raw = tag.get();
+
+        let mut i = start;
+        while i < end {
+            if self.edge_tag[i] == raw {
+                let to = self.edge_to[i];
+                let target = self.nodes[to as usize];
+                return Some(TrieStep {
+                    node: to,
+                    terminal: target.meta & TERMINAL_BIT != 0,
+                    has_children: target.meta & COUNT_MASK != 0,
+                });
             }
             i += 1;
         }
         None
     }
-
-    #[inline]
-    pub(super) fn is_terminal(self, node: u16) -> bool {
-        let mut i = 0usize;
-        let edge_count = self.edge_count as usize;
-        while i < edge_count {
-            if self.edge_from[i] == node && self.edge_tag[i].is_none() {
-                return true;
-            }
-            i += 1;
-        }
-        false
-    }
-
-    #[inline]
-    pub(super) fn has_children(self, node: u16) -> bool {
-        let mut i = 0usize;
-        let edge_count = self.edge_count as usize;
-        while i < edge_count {
-            if self.edge_from[i] == node && self.edge_tag[i].is_some() {
-                return true;
-            }
-            i += 1;
-        }
-        false
-    }
 }
 
-const EMPTY_EDGE_U16: [u16; 0] = [];
-const EMPTY_EDGE_TAG: [Option<Tag>; 0] = [];
-pub(super) const EMPTY_TRIE: PathTrieRef = PathTrieRef {
-    edge_from: &EMPTY_EDGE_U16,
-    edge_to: &EMPTY_EDGE_U16,
-    edge_tag: &EMPTY_EDGE_TAG,
-    edge_count: 0,
-};
+pub(super) const EMPTY_TRIE: PathTrieRef = PathTrieRef { nodes: &[], edge_tag: &[], edge_to: &[] };
 
+/// Compile-time path trie storage.
+///
+/// `MAX_EDGES` counts only real tag transitions; terminal markers are free.
 pub struct CompiledPathTrie<const MAX_NODES: usize, const MAX_EDGES: usize> {
-    edge_from: [u16; MAX_EDGES],
+    nodes: [NodeEntry; MAX_NODES],
+    edge_tag: [u32; MAX_EDGES],
     edge_to: [u16; MAX_EDGES],
-    edge_tag: [Option<Tag>; MAX_EDGES],
     node_count: u16,
     edge_count: u16,
 }
@@ -78,17 +82,19 @@ impl<const MAX_NODES: usize, const MAX_EDGES: usize> CompiledPathTrie<MAX_NODES,
         if MAX_NODES > (u16::MAX as usize) {
             return Err(TreeError::CapacityExceeded);
         }
-        if MAX_EDGES > (u16::MAX as usize) {
+        if MAX_EDGES > (COUNT_MASK as usize) {
             return Err(TreeError::CapacityExceeded);
         }
 
         let mut out = Self {
-            edge_from: [0; MAX_EDGES],
+            nodes: [NodeEntry::EMPTY; MAX_NODES],
+            edge_tag: [0; MAX_EDGES],
             edge_to: [0; MAX_EDGES],
-            edge_tag: [None; MAX_EDGES],
             node_count: 1,
             edge_count: 0,
         };
+        // Insertion-order edge sources; consumed by the sort pass below.
+        let mut edge_from = [0u16; MAX_EDGES];
 
         let mut path_idx = 0usize;
         while path_idx < paths.len() {
@@ -100,9 +106,20 @@ impl<const MAX_NODES: usize, const MAX_EDGES: usize> CompiledPathTrie<MAX_NODES,
             let mut node = 0u16;
             let mut hop_idx = 0usize;
             while hop_idx < path.len() {
-                let tag = path[hop_idx];
-                if let Some(next) = out.find_child(node, tag) {
-                    node = next;
+                let tag = path[hop_idx].get();
+
+                let mut found = u16::MAX;
+                let mut i = 0usize;
+                while i < out.edge_count as usize {
+                    if edge_from[i] == node && out.edge_tag[i] == tag {
+                        found = out.edge_to[i];
+                        break;
+                    }
+                    i += 1;
+                }
+
+                if found != u16::MAX {
+                    node = found;
                 } else {
                     if (out.node_count as usize) >= MAX_NODES {
                         return Err(TreeError::CapacityExceeded);
@@ -115,9 +132,9 @@ impl<const MAX_NODES: usize, const MAX_EDGES: usize> CompiledPathTrie<MAX_NODES,
                     out.node_count += 1;
 
                     let e = out.edge_count as usize;
-                    out.edge_from[e] = node;
+                    edge_from[e] = node;
+                    out.edge_tag[e] = tag;
                     out.edge_to[e] = next;
-                    out.edge_tag[e] = Some(tag);
                     out.edge_count += 1;
 
                     node = next;
@@ -125,19 +142,44 @@ impl<const MAX_NODES: usize, const MAX_EDGES: usize> CompiledPathTrie<MAX_NODES,
                 hop_idx += 1;
             }
 
-            if !out.has_terminal_suffix(node) {
-                if (out.edge_count as usize) >= MAX_EDGES {
-                    return Err(TreeError::CapacityExceeded);
-                }
-
-                // None-tag self-edge marks "this node is a complete path".
-                let e = out.edge_count as usize;
-                out.edge_from[e] = node;
-                out.edge_to[e] = node;
-                out.edge_tag[e] = None;
-                out.edge_count += 1;
-            }
+            out.nodes[node as usize].meta |= TERMINAL_BIT;
             path_idx += 1;
+        }
+
+        // Insertion sort of the parallel edge arrays keyed by source node, so
+        // each node owns one contiguous edge range.
+        let edge_count = out.edge_count as usize;
+        let mut i = 1usize;
+        while i < edge_count {
+            let key_from = edge_from[i];
+            let key_tag = out.edge_tag[i];
+            let key_to = out.edge_to[i];
+            let mut j = i;
+            while j > 0 && edge_from[j - 1] > key_from {
+                edge_from[j] = edge_from[j - 1];
+                out.edge_tag[j] = out.edge_tag[j - 1];
+                out.edge_to[j] = out.edge_to[j - 1];
+                j -= 1;
+            }
+            edge_from[j] = key_from;
+            out.edge_tag[j] = key_tag;
+            out.edge_to[j] = key_to;
+            i += 1;
+        }
+
+        // Per-node edge ranges from the sorted array.
+        let mut i = 0usize;
+        while i < edge_count {
+            let from = edge_from[i] as usize;
+            let mut end = i + 1;
+            while end < edge_count && edge_from[end] as usize == from {
+                end += 1;
+            }
+            let count = (end - i) as u16;
+            debug_assert!(count <= COUNT_MASK);
+            out.nodes[from].edge_start = i as u16;
+            out.nodes[from].meta |= count;
+            i = end;
         }
 
         Ok(out)
@@ -145,38 +187,6 @@ impl<const MAX_NODES: usize, const MAX_EDGES: usize> CompiledPathTrie<MAX_NODES,
 
     #[inline]
     pub(super) const fn as_ref(&'static self) -> PathTrieRef {
-        PathTrieRef {
-            edge_from: &self.edge_from,
-            edge_to: &self.edge_to,
-            edge_tag: &self.edge_tag,
-            edge_count: self.edge_count,
-        }
-    }
-
-    const fn find_child(&self, node: u16, tag: Tag) -> Option<u16> {
-        let mut i = 0usize;
-        let edge_count = self.edge_count as usize;
-        while i < edge_count {
-            if self.edge_from[i] == node
-                && let Some(edge_tag) = self.edge_tag[i]
-                && edge_tag.get() == tag.get()
-            {
-                return Some(self.edge_to[i]);
-            }
-            i += 1;
-        }
-        None
-    }
-
-    const fn has_terminal_suffix(&self, node: u16) -> bool {
-        let mut i = 0usize;
-        let edge_count = self.edge_count as usize;
-        while i < edge_count {
-            if self.edge_from[i] == node && self.edge_tag[i].is_none() {
-                return true;
-            }
-            i += 1;
-        }
-        false
+        PathTrieRef { nodes: &self.nodes, edge_tag: &self.edge_tag, edge_to: &self.edge_to }
     }
 }

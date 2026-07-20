@@ -11,7 +11,7 @@ use super::group::scan_group_progress_stateful;
 use super::handler::WireHandler;
 #[cfg(feature = "group")]
 use super::state::GroupProgress;
-use super::state::{InflightField, StreamState, MAX_DECODE_DEPTH, NO_TRIE_NODE};
+use super::state::{InflightField, StreamState, MAX_DECODE_DEPTH};
 use super::trie::{CompiledPathTrie, PathTrieRef, EMPTY_TRIE};
 
 /// Stateful incremental parser over byte chunks.
@@ -464,10 +464,9 @@ impl ChunkStream {
             };
 
             let trie_node = self.states[state_idx].trie_node;
-            let next_node =
-                if trie_node == NO_TRIE_NODE { None } else { self.matcher.next(trie_node, tag) };
-            let emit_self = next_node.is_some_and(|node| self.matcher.is_terminal(node));
-            let child_node = next_node.filter(|&node| self.matcher.has_children(node));
+            let step = self.matcher.step(trie_node, tag);
+            let emit_self = step.is_some_and(|s| s.terminal);
+            let child_node = step.and_then(|s| s.has_children.then_some(s.node));
 
             match tag.wire_type() {
                 WireType::Varint => {
