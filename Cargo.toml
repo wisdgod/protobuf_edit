@@ -14,12 +14,14 @@ categories = ["parser-implementations", "encoding", "development-tools::debuggin
 
 [features]
 default = ["nightly"]
-nightly = ["hashbrown/nightly", "rustc-hash/nightly", "smallvec/may_dangle"]
+nightly = [
+  "hashbrown/nightly",
+  "rustc-hash/nightly",
+]
 group = []
 # for tests
 __std = []
 
 [dependencies]
 hashbrown = { version = "0.17.0", default-features = false, features = ["inline-more"] }
-rustc-hash = { version = "2.1.1", default-features = false }
-smallvec = { version = "1.15.1", features = ["union", "const_generics", "const_new", "specialization"] }
+rustc-hash = { version = "2.1.3", default-features = false }
