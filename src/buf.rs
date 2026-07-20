@@ -598,11 +598,7 @@ impl Buf {
     /// remains valid across moves of the `Buf` value itself. No-op when already
     /// on the heap (owned or borrowed).
     pub fn ensure_heap(&mut self) -> Result<(), BufAllocError> {
-        if self.is_inline() && !self.is_empty() {
-            self.try_realloc(INLINE_CAP + 1)
-        } else {
-            Ok(())
-        }
+        if self.is_inline() && !self.is_empty() { self.try_realloc(INLINE_CAP + 1) } else { Ok(()) }
     }
 
     pub fn into_vec(self) -> alloc::vec::Vec<u8> {
