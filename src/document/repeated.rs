@@ -59,8 +59,12 @@ impl Document {
     ) -> Result<(), TreeError> {
         let mut cursor = self.bucket(tag).and_then(|bucket| bucket.head);
         while let Some(ix) = cursor {
-            cursor = self.fields[ix.as_inner() as usize].next;
-            let field = self.field_mut(ix).expect("linked-list ix is guaranteed to be valid");
+            // SAFETY: `ix` comes from the linked-list we maintain, so it is
+            // always in-bounds; the compiler cannot see that and would keep a
+            // bounds check (and panic path) otherwise.
+            cursor = unsafe { self.field_unchecked(ix) }.next;
+            // SAFETY: same linked-list invariant as above.
+            let field = unsafe { FieldMut::new_unchecked(self, ix) };
             f(field)?;
         }
         Ok(())
