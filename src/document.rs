@@ -400,7 +400,12 @@ impl Document {
 
     pub(super) fn push_field_with_ix(&mut self, tag: Tag, slot: Ix, field_ix: Ix) {
         let expect_len = field_ix.as_inner() as usize;
-        assert!(!unlikely(self.fields.len() != expect_len), "field index pre-check violated: {} != {}", self.fields.len(), expect_len);
+        assert!(
+            !unlikely(self.fields.len() != expect_len),
+            "field index pre-check violated: {} != {}",
+            self.fields.len(),
+            expect_len
+        );
 
         let mut field = Field {
             tag,

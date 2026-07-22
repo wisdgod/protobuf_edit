@@ -126,11 +126,7 @@ impl Patch {
                     debug_assert_eq!(popped, Some(field), "txn undo insert order mismatch");
 
                     let should_remove = if let Some(bucket) = msg_node.query.get_mut(&tag) {
-                        debug_assert_eq!(
-                            bucket.tail,
-                            Some(field),
-                            "txn undo query tail mismatch"
-                        );
+                        debug_assert_eq!(bucket.tail, Some(field), "txn undo query tail mismatch");
                         debug_assert!(bucket.len > 0, "txn undo query len underflow");
 
                         if let Some(prev) = prev_by_tag {

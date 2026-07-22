@@ -802,7 +802,9 @@ const fn growth_target(required: u32) -> Result<u32, BufAllocError> {
 #[inline]
 unsafe fn alloc_non_null(layout: Layout) -> NonNull<u8> {
     let raw = alloc(layout);
-    if let Some(ptr) = NonNull::new(raw) { ptr } else {
+    if let Some(ptr) = NonNull::new(raw) {
+        ptr
+    } else {
         intrinsics::cold_path();
         handle_alloc_error(layout);
     }

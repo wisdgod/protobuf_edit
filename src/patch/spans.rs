@@ -120,8 +120,9 @@ impl StoredSpans {
         match wire {
             WireType::Varint => {
                 let start = self.field.start();
-                let value_start =
-                    start.checked_add(u32::from(self.tag_len)).ok_or(TreeError::CapacityExceeded)?;
+                let value_start = start
+                    .checked_add(u32::from(self.tag_len))
+                    .ok_or(TreeError::CapacityExceeded)?;
                 let value =
                     Span::new(value_start, self.field.end()).ok_or(TreeError::DecodeError)?;
                 Ok(ValueSpans::Varint { value })
@@ -140,8 +141,9 @@ impl StoredSpans {
             }
             WireType::Len => {
                 let start = self.field.start();
-                let len_start =
-                    start.checked_add(u32::from(self.tag_len)).ok_or(TreeError::CapacityExceeded)?;
+                let len_start = start
+                    .checked_add(u32::from(self.tag_len))
+                    .ok_or(TreeError::CapacityExceeded)?;
                 let len_end = len_start
                     .checked_add(u32::from(self.aux_len))
                     .ok_or(TreeError::CapacityExceeded)?;

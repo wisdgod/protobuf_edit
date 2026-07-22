@@ -121,7 +121,9 @@ impl Patch {
                 8
             }
             WireType::Len => {
-                let (orig_len_bytes, orig_payload_len) = node.spans.map_or((None, 0), |spans| (Some(u32::from(spans.aux_len)), spans.payload_len));
+                let (orig_len_bytes, orig_payload_len) = node
+                    .spans
+                    .map_or((None, 0), |spans| (Some(u32::from(spans.aux_len)), spans.payload_len));
 
                 let payload_len = if let Some(child) = node.child {
                     self.save_message_info(child, plan)?.len
@@ -369,8 +371,10 @@ impl Patch {
 #[inline]
 fn stored_len_prefix_span(spans: StoredSpans) -> Result<Span, TreeError> {
     let start = spans.field.start();
-    let len_start = start.checked_add(u32::from(spans.tag_len)).ok_or(TreeError::CapacityExceeded)?;
-    let len_end = len_start.checked_add(u32::from(spans.aux_len)).ok_or(TreeError::CapacityExceeded)?;
+    let len_start =
+        start.checked_add(u32::from(spans.tag_len)).ok_or(TreeError::CapacityExceeded)?;
+    let len_end =
+        len_start.checked_add(u32::from(spans.aux_len)).ok_or(TreeError::CapacityExceeded)?;
     Span::new(len_start, len_end).ok_or(TreeError::DecodeError)
 }
 
