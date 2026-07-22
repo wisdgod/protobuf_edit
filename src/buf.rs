@@ -33,6 +33,11 @@ pub enum BufAllocError {
     CapacityOverflow,
 }
 
+/// Compact 16-byte buffer storing payloads inline (up to `INLINE_CAP` bytes),
+/// in an owned heap allocation, or as a borrowed read-only view.
+///
+/// Capacity is hard-capped at `i32::MAX` bytes; fallible APIs report
+/// [`BufAllocError::CapacityOverflow`] beyond that.
 pub union Buf {
     inline: InlineData,
     heap: HeapData,
@@ -119,12 +124,17 @@ const _: () = {
 };
 
 impl Buf {
+    /// Creates an empty buffer using inline storage.
     #[inline]
     #[must_use]
     pub const fn new() -> Self {
         Self { inline: InlineData { buf: MaybeUninit::uninit(), tag: 0 } }
     }
 
+    /// Creates an empty owned buffer with room for at least `capacity` bytes.
+    ///
+    /// # Errors
+    /// Returns `CapacityOverflow` if `capacity` exceeds the hard cap.
     #[inline]
     pub fn with_capacity(capacity: u32) -> Result<Self, BufAllocError> {
         let mut b = Self::new();
@@ -173,7 +183,10 @@ impl Buf {
         }
     }
 
-    /// Build a borrowed `Buf` from raw pointer/length.
+    /// Builds a borrowed `Buf` from raw pointer/length.
+    ///
+    /// # Panics
+    /// Panics if `len` exceeds the hard cap.
     ///
     /// # Safety
     /// - `ptr` must point to at least `len` readable bytes.
@@ -194,7 +207,10 @@ impl Buf {
         }
     }
 
-    /// Build a borrowed `Buf` from a byte slice.
+    /// Builds a borrowed `Buf` from a byte slice.
+    ///
+    /// # Panics
+    /// Panics if the slice length exceeds the hard cap.
     ///
     /// # Safety
     /// - The input slice must outlive all uses of the returned `Buf`.
@@ -210,6 +226,10 @@ impl Buf {
         unsafe { Self::from_borrowed_parts(ptr, len) }
     }
 
+    /// Builds a borrowed `Buf` over `'static` bytes.
+    ///
+    /// # Panics
+    /// Panics if the slice length exceeds the hard cap.
     #[inline]
     #[must_use]
     pub const fn from_static(bytes: &'static [u8]) -> Self {
@@ -221,6 +241,7 @@ impl Buf {
         unsafe { self.inline.tag }
     }
 
+    /// Whether the payload lives in the inline representation.
     #[inline]
     #[must_use]
     pub const fn is_inline(&self) -> bool {
@@ -229,18 +250,21 @@ impl Buf {
         !tag_is_borrowed(tag) && payload <= INLINE_CAP
     }
 
+    /// Whether the payload is a borrowed read-only view of external memory.
     #[inline]
     #[must_use]
     pub const fn is_borrowed(&self) -> bool {
         tag_is_borrowed(self.raw_tag())
     }
 
+    /// Whether the payload lives outside the inline representation.
     #[inline]
     #[must_use]
     pub const fn spilled(&self) -> bool {
         !self.is_inline()
     }
 
+    /// Payload length in bytes.
     #[inline]
     #[must_use]
     pub const fn len(&self) -> u32 {
@@ -253,12 +277,15 @@ impl Buf {
         }
     }
 
+    /// Whether the payload is zero bytes long.
     #[inline]
     #[must_use]
     pub const fn is_empty(&self) -> bool {
         self.len() == 0
     }
 
+    /// Writable capacity in bytes: `INLINE_CAP` when inline, the allocation
+    /// size when owned on the heap, and `len()` when borrowed.
     #[inline]
     #[must_use]
     pub const fn capacity(&self) -> u32 {
@@ -311,6 +338,7 @@ impl Buf {
         }
     }
 
+    /// Payload bytes as a shared slice.
     #[inline]
     #[must_use]
     pub const fn as_slice(&self) -> &[u8] {
@@ -320,6 +348,8 @@ impl Buf {
         }
     }
 
+    /// Payload bytes as a mutable slice; copies borrowed data into owned
+    /// storage first.
     #[inline]
     pub fn as_mut_slice(&mut self) -> &mut [u8] {
         self.make_owned();
@@ -329,18 +359,14 @@ impl Buf {
         }
     }
 
-    #[inline]
+    /// Copies a borrowed payload into owned storage; no-op when already owned.
+    ///
+    /// Small payloads move into the inline representation, larger ones into a
+    /// fresh heap allocation.
     pub fn make_owned(&mut self) {
-        if let Err(e) = self.try_make_owned() {
-            intrinsics::cold_path();
-            panic!("Buf::make_owned failed: {e:?}");
-        }
-    }
-
-    pub fn try_make_owned(&mut self) -> Result<(), BufAllocError> {
         let t = self.triple();
         if !t.borrowed {
-            return Ok(());
+            return;
         }
         debug_assert!(!t.inline, "inline storage should never be marked borrowed");
 
@@ -358,10 +384,15 @@ impl Buf {
                     len as usize,
                 );
                 self.inline = inline_data;
-                return Ok(());
+                return;
             }
 
-            let new_cap = growth_target(len)?;
+            let new_cap = match growth_target(len) {
+                Ok(cap) => cap,
+                // SAFETY: `triple` guarantees `len <= MAX_CAP`, the only
+                // failure condition of `growth_target`.
+                Err(_) => intrinsics::unreachable(),
+            };
             let layout = layout_u8(new_cap);
             let new_ptr = alloc_non_null(layout);
             ptr::copy_nonoverlapping(t.ptr, new_ptr.as_ptr(), len as usize);
@@ -372,16 +403,18 @@ impl Buf {
                 _padding: 0,
                 tag: make_tag(new_cap, false),
             };
-            Ok(())
         }
     }
 
+    /// Read-only pointer to the payload bytes.
     #[inline]
     #[must_use]
     pub const fn as_ptr(&self) -> *const u8 {
         self.triple().ptr
     }
 
+    /// Mutable pointer to the payload bytes; copies borrowed data into owned
+    /// storage first.
     #[inline]
     pub fn as_ptr_mut(&mut self) -> *mut u8 {
         self.make_owned();
@@ -401,15 +434,20 @@ impl Buf {
         t.set_len(new_len);
     }
 
+    /// Resets the payload length to zero without touching capacity.
     #[inline]
     pub const fn clear(&mut self) {
         unsafe { self.set_len(0) }
     }
 
+    /// Appends one byte.
+    ///
+    /// # Errors
+    /// Returns `CapacityOverflow` if growth would exceed the hard cap.
     #[inline]
     pub fn push(&mut self, b: u8) -> Result<(), BufAllocError> {
         if self.len() == self.capacity() {
-            self.reserve_one_unchecked()?;
+            self.grow_for_push()?;
         }
         unsafe {
             let mut t = self.triple_mut();
@@ -421,13 +459,15 @@ impl Buf {
     }
 
     #[cold]
-    fn reserve_one_unchecked(&mut self) -> Result<(), BufAllocError> {
+    fn grow_for_push(&mut self) -> Result<(), BufAllocError> {
         debug_assert_eq!(self.len(), self.capacity());
         let required = self.len().checked_add(1).ok_or(BufAllocError::CapacityOverflow)?;
         let new_cap = growth_target(required)?;
-        self.try_realloc(new_cap)
+        self.realloc_exact(new_cap);
+        Ok(())
     }
 
+    /// Removes and returns the last byte; `None` when empty.
     #[inline]
     pub const fn pop(&mut self) -> Option<u8> {
         let mut t = self.triple_mut();
@@ -443,6 +483,10 @@ impl Buf {
         }
     }
 
+    /// Appends all bytes from `src`.
+    ///
+    /// # Errors
+    /// Returns `CapacityOverflow` if growth would exceed the hard cap.
     #[inline]
     pub fn extend_from_slice(&mut self, src: &[u8]) -> Result<(), BufAllocError> {
         let add = u32::try_from(src.len()).map_err(|_| BufAllocError::CapacityOverflow)?;
@@ -456,6 +500,7 @@ impl Buf {
         Ok(())
     }
 
+    /// Shortens the payload to `len` bytes; no-op when already shorter.
     #[inline]
     pub const fn truncate(&mut self, len: u32) {
         if len >= self.len() {
@@ -464,6 +509,12 @@ impl Buf {
         unsafe { self.set_len(len) }
     }
 
+    /// Reserves capacity for at least `additional` more bytes, growing
+    /// geometrically.
+    ///
+    /// # Panics
+    /// Panics if growth would exceed the hard cap; use `try_reserve` to handle
+    /// that case.
     #[inline]
     pub fn reserve(&mut self, additional: u32) {
         if let Err(e) = self.try_reserve(additional) {
@@ -472,6 +523,11 @@ impl Buf {
         }
     }
 
+    /// Reserves capacity for at least `additional` more bytes, growing
+    /// geometrically.
+    ///
+    /// # Errors
+    /// Returns `CapacityOverflow` if growth would exceed the hard cap.
     pub fn try_reserve(&mut self, additional: u32) -> Result<(), BufAllocError> {
         let t = self.triple();
 
@@ -481,10 +537,15 @@ impl Buf {
 
         let required = t.len.checked_add(additional).ok_or(BufAllocError::CapacityOverflow)?;
         let new_cap = growth_target(required)?;
-
-        self.try_realloc(new_cap)
+        self.realloc_exact(new_cap);
+        Ok(())
     }
 
+    /// Reserves capacity for exactly `additional` more bytes.
+    ///
+    /// # Panics
+    /// Panics if growth would exceed the hard cap; use `try_reserve_exact` to
+    /// handle that case.
     #[inline]
     pub fn reserve_exact(&mut self, additional: u32) {
         if let Err(e) = self.try_reserve_exact(additional) {
@@ -493,6 +554,10 @@ impl Buf {
         }
     }
 
+    /// Reserves capacity for exactly `additional` more bytes.
+    ///
+    /// # Errors
+    /// Returns `CapacityOverflow` if growth would exceed the hard cap.
     pub fn try_reserve_exact(&mut self, additional: u32) -> Result<(), BufAllocError> {
         let t = self.triple();
 
@@ -506,35 +571,31 @@ impl Buf {
             return Err(BufAllocError::CapacityOverflow);
         }
 
-        self.try_realloc(new_cap)
+        self.realloc_exact(new_cap);
+        Ok(())
     }
 
-    #[inline]
-    pub fn realloc_to(&mut self, new_cap: u32) {
-        if let Err(e) = self.try_realloc(new_cap) {
-            intrinsics::cold_path();
-            panic!("Buf::realloc_to failed: {e:?}");
-        }
-    }
-
-    #[inline]
-    pub fn try_realloc(&mut self, new_cap: u32) -> Result<(), BufAllocError> {
+    /// Moves the payload into owned storage of exactly `new_cap` bytes:
+    /// inline when `new_cap <= INLINE_CAP`, otherwise a heap allocation.
+    /// Borrowed payloads are copied and become owned.
+    ///
+    /// # Panics
+    /// Panics unless `len <= new_cap <= MAX_CAP`. The lower bound is
+    /// load-bearing for memory safety (the body copies `len` bytes into the
+    /// new storage); every caller validates the range before calling.
+    fn realloc_exact(&mut self, new_cap: u32) {
         let t = self.triple();
         let len = t.len;
         let cap = t.cap;
         let inline = t.inline;
         let borrowed = t.borrowed;
 
-        assert!(new_cap >= len, "new_cap < len");
-
-        if new_cap > MAX_CAP {
-            return Err(BufAllocError::CapacityOverflow);
-        }
+        assert!(len <= new_cap && new_cap <= MAX_CAP, "realloc_exact capacity out of range");
 
         unsafe {
             if inline {
                 if new_cap <= INLINE_CAP {
-                    return Ok(());
+                    return;
                 }
 
                 let layout = layout_u8(new_cap);
@@ -551,7 +612,7 @@ impl Buf {
                     _padding: 0,
                     tag: make_tag(new_cap, false),
                 };
-                return Ok(());
+                return;
             }
 
             if new_cap <= INLINE_CAP {
@@ -570,11 +631,11 @@ impl Buf {
                 if !old_borrowed {
                     dealloc(old_ptr, layout_u8(old_cap));
                 }
-                return Ok(());
+                return;
             }
 
             if new_cap == cap {
-                return Ok(());
+                return;
             }
 
             if borrowed {
@@ -583,7 +644,7 @@ impl Buf {
                 ptr::copy_nonoverlapping(self.heap.ptr.as_ptr(), new_ptr.as_ptr(), len as usize);
                 self.heap.ptr = new_ptr;
                 self.heap.tag = make_tag(new_cap, false);
-                return Ok(());
+                return;
             }
 
             let old_cap = tag_payload(self.heap.tag);
@@ -591,30 +652,31 @@ impl Buf {
             let new_ptr = realloc_non_null(self.heap.ptr.as_ptr(), old_layout, new_cap);
             self.heap.ptr = new_ptr;
             self.heap.tag = make_tag(new_cap, false);
-
-            Ok(())
         }
     }
 
+    /// Reduces capacity to match the current length; no-op for inline storage
+    /// or when capacity is already tight.
     pub fn shrink_to_fit(&mut self) {
         let t = self.triple();
-        if t.inline {
-            return;
-        }
-        if t.cap > t.len {
-            self.realloc_to(t.len);
+        if !t.inline && t.cap > t.len {
+            self.realloc_exact(t.len);
         }
     }
 
-    /// Ensure the backing storage is heap-allocated.
+    /// Forces the backing storage onto the heap.
     ///
     /// After this call, the data pointer returned by `as_ptr()` / `as_slice()`
-    /// remains valid across moves of the `Buf` value itself. No-op when already
-    /// on the heap (owned or borrowed).
-    pub fn ensure_heap(&mut self) -> Result<(), BufAllocError> {
-        if self.is_inline() && !self.is_empty() { self.try_realloc(INLINE_CAP + 1) } else { Ok(()) }
+    /// remains valid across moves of the `Buf` value itself. No-op when the
+    /// payload is empty or already on the heap (owned or borrowed).
+    pub fn ensure_heap(&mut self) {
+        if self.is_inline() && !self.is_empty() {
+            self.realloc_exact(INLINE_CAP + 1);
+        }
     }
 
+    /// Converts into a `Vec<u8>`, transferring the heap allocation when owned
+    /// and copying the bytes otherwise (inline or borrowed).
     #[must_use]
     pub fn into_vec(self) -> alloc::vec::Vec<u8> {
         let t = self.triple();

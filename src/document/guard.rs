@@ -47,10 +47,7 @@ impl<'a> MessageGuard<'a> {
         // uses inline storage, those pointers become dangling when this struct
         // is moved (the inline bytes live inside the Buf union itself). Force
         // spill to heap so the backing memory address is move-stable.
-        if source.ensure_heap().is_err() {
-            parent.lendel_unchecked_mut(slot).buf = source;
-            return Err(TreeError::CapacityExceeded);
-        }
+        source.ensure_heap();
 
         match Document::from_bytes_borrowed(source.as_slice(), capacities) {
             Ok(doc) => {
@@ -75,10 +72,7 @@ impl<'a> MessageGuard<'a> {
     ) -> Result<Self, TreeError> {
         let group = parent.group_unchecked_mut(slot);
         let mut source = mem::take(&mut group.buf);
-        if source.ensure_heap().is_err() {
-            parent.group_unchecked_mut(slot).buf = source;
-            return Err(TreeError::CapacityExceeded);
-        }
+        source.ensure_heap();
 
         match Document::from_bytes_borrowed(source.as_slice(), capacities) {
             Ok(doc) => {
