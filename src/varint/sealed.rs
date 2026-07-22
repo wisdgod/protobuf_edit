@@ -70,7 +70,7 @@ macro_rules! impl_varint {
             fn encode(buf: &mut Buffer, mut value: $ty) -> u32 {
                 let len = Self::encoded_len(value);
                 unsafe {
-                    let ptr = buf.as_mut_ptr() as *mut u8;
+                    let ptr = buf.as_mut_ptr().cast::<u8>();
                     let limit = (len - 1) as usize;
                     let mut i = 0;
                     while i < limit {
@@ -103,8 +103,8 @@ impl Varint for bool {
     }
     #[inline]
     fn encode(buf: &mut Buffer, value: Self) -> u32 {
-        let ptr = buf.as_mut_ptr() as *mut u8;
-        unsafe { ptr.write(value as u8) };
+        let ptr = buf.as_mut_ptr().cast::<u8>();
+        unsafe { ptr.write(u8::from(value)) };
         1
     }
 }

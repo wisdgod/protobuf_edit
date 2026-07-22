@@ -20,10 +20,10 @@ pub(crate) fn StatusBar() -> impl IntoView {
     let menu_ref = NodeRef::<html::Div>::new();
 
     let save_ws_svc = ws_svc.clone();
-    let save_msg_svc = msg_svc.clone();
+    let save_msg_svc = msg_svc;
     let dropdown_svc = export_svc.clone();
     let url_svc = export_svc.clone();
-    let dl_svc = export_svc.clone();
+    let dl_svc = export_svc;
 
     view! {
         <div class="status-bar">
@@ -43,9 +43,10 @@ pub(crate) fn StatusBar() -> impl IntoView {
 
             <div class="status-center">
                 <div>
-                    {move || match workspace.selected.get() {
-                        None => Oco::Borrowed("No selection"),
-                        Some(fid) => Oco::from(format!("FieldId={fid:?} selected")),
+                    {move || {
+                        workspace.selected.get().map_or(Oco::Borrowed("No selection"), |fid| {
+                            Oco::from(format!("FieldId={fid:?} selected"))
+                        })
                     }}
                 </div>
 
@@ -101,7 +102,7 @@ pub(crate) fn StatusBar() -> impl IntoView {
                     disabled=move || {
                         !has_current_message()
                             || workspace.read_only.get()
-                            || workspace.patch_state.with(|p| p.is_none())
+                            || workspace.patch_state.with(std::option::Option::is_none)
                     }
                 >
                     "Save Expand"
@@ -120,7 +121,7 @@ pub(crate) fn StatusBar() -> impl IntoView {
                             !has_current_message()
                         } else {
                             workspace.read_only.get()
-                                || workspace.patch_state.with(|p| p.is_none())
+                                || workspace.patch_state.with(std::option::Option::is_none)
                         }
                     }
                 >

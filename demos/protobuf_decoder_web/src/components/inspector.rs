@@ -62,7 +62,7 @@ pub(crate) fn InspectorDrawer() -> impl IntoView {
         let fid = selected.get()?;
         patch_state.with(|p| {
             let patch = p.as_ref()?;
-            patch.field_tag(fid).ok().map(|tag| tag.wire_type())
+            patch.field_tag(fid).ok().map(protobuf_edit::Tag::wire_type)
         })
     });
 
@@ -107,7 +107,7 @@ pub(crate) fn InspectorDrawer() -> impl IntoView {
                 WireType::I32 => {
                     if let Ok(bits) = patch.i32_bits(fid) {
                         fixed_text.set(format!("0x{bits:08X}"));
-                        fixed_base.set(Some(bits as u64));
+                        fixed_base.set(Some(u64::from(bits)));
                     }
                 }
                 WireType::I64 => {
@@ -139,7 +139,7 @@ pub(crate) fn InspectorDrawer() -> impl IntoView {
         }
         let raw = varint_text.get();
         let v = parse_u64(&raw)
-            .map_err(|_| UiError::from("Invalid varint. Use decimal or 0x-prefixed hex."))?;
+            .map_err(|()| UiError::from("Invalid varint. Use decimal or 0x-prefixed hex."))?;
         Ok(Some(v))
     });
 
@@ -163,8 +163,8 @@ pub(crate) fn InspectorDrawer() -> impl IntoView {
 
         let raw = fixed_text.get();
         let v = parse_u64(&raw)
-            .map_err(|_| UiError::from("Invalid fixed value. Use decimal or 0x-prefixed hex."))?;
-        if wt == WireType::I32 && v > u32::MAX as u64 {
+            .map_err(|()| UiError::from("Invalid fixed value. Use decimal or 0x-prefixed hex."))?;
+        if wt == WireType::I32 && v > u64::from(u32::MAX) {
             return Err("Invalid fixed32: value out of range for u32.".into());
         }
         Ok(Some(v))
@@ -199,10 +199,7 @@ pub(crate) fn InspectorDrawer() -> impl IntoView {
                     let Some(patch) = p.as_ref() else {
                         return false;
                     };
-                    match patch.bytes(fid) {
-                        Ok(base) => bytes.as_slice() != base,
-                        Err(_) => true,
-                    }
+                    patch.bytes(fid) != Ok(bytes.as_slice())
                 })
             }
             WireType::I32 | WireType::I64 => {
@@ -351,7 +348,7 @@ pub(crate) fn InspectorDrawer() -> impl IntoView {
                     return;
                 };
 
-                if value > u32::MAX as u64 {
+                if value > u64::from(u32::MAX) {
                     toast.show(ToastKind::Error, "Fixed32 out of range.");
                     return;
                 }
@@ -553,7 +550,7 @@ pub(crate) fn InspectorDrawer() -> impl IntoView {
                         WireType::I32 => {
                             if let Ok(bits) = patch.i32_bits(fid) {
                                 fixed_text.set(format!("0x{bits:08X}"));
-                                fixed_base.set(Some(bits as u64));
+                                fixed_base.set(Some(u64::from(bits)));
                             }
                         }
                         WireType::I64 => {
@@ -623,7 +620,7 @@ pub(crate) fn InspectorDrawer() -> impl IntoView {
     });
 
     let insert_tag_validation: Memo<Result<Option<Tag>, UiError>> = Memo::new(move |_| {
-        if patch_state.with(|p| p.is_none()) {
+        if patch_state.with(std::option::Option::is_none) {
             return Ok(None);
         }
 
@@ -633,7 +630,7 @@ pub(crate) fn InspectorDrawer() -> impl IntoView {
         }
 
         let n64 = parse_u64(&raw)
-            .map_err(|_| UiError::from("Invalid field number. Use decimal or 0x-prefixed hex."))?;
+            .map_err(|()| UiError::from("Invalid field number. Use decimal or 0x-prefixed hex."))?;
         let n: u32 = n64.try_into().map_err(|_| UiError::from("Field number out of range."))?;
 
         let wt = insert_wire.get();
@@ -643,7 +640,7 @@ pub(crate) fn InspectorDrawer() -> impl IntoView {
     });
 
     let insert_varint_validation: Memo<Result<Option<u64>, UiError>> = Memo::new(move |_| {
-        if patch_state.with(|p| p.is_none()) {
+        if patch_state.with(std::option::Option::is_none) {
             return Ok(None);
         }
         if insert_wire.get() != WireType::Varint {
@@ -654,12 +651,12 @@ pub(crate) fn InspectorDrawer() -> impl IntoView {
             return Ok(None);
         }
         let v = parse_u64(&raw)
-            .map_err(|_| UiError::from("Invalid varint. Use decimal or 0x-prefixed hex."))?;
+            .map_err(|()| UiError::from("Invalid varint. Use decimal or 0x-prefixed hex."))?;
         Ok(Some(v))
     });
 
     let insert_bytes_validation: Memo<Result<Option<Vec<u8>>, UiError>> = Memo::new(move |_| {
-        if patch_state.with(|p| p.is_none()) {
+        if patch_state.with(std::option::Option::is_none) {
             return Ok(None);
         }
         if insert_wire.get() != WireType::Len {
@@ -669,7 +666,7 @@ pub(crate) fn InspectorDrawer() -> impl IntoView {
     });
 
     let insert_fixed_validation: Memo<Result<Option<u64>, UiError>> = Memo::new(move |_| {
-        if patch_state.with(|p| p.is_none()) {
+        if patch_state.with(std::option::Option::is_none) {
             return Ok(None);
         }
 
@@ -683,9 +680,9 @@ pub(crate) fn InspectorDrawer() -> impl IntoView {
             return Ok(None);
         }
         let v = parse_u64(&raw)
-            .map_err(|_| UiError::from("Invalid fixed value. Use decimal or 0x-prefixed hex."))?;
+            .map_err(|()| UiError::from("Invalid fixed value. Use decimal or 0x-prefixed hex."))?;
 
-        if wt == WireType::I32 && v > u32::MAX as u64 {
+        if wt == WireType::I32 && v > u64::from(u32::MAX) {
             return Err("Invalid fixed32: value out of range for u32.".into());
         }
         Ok(Some(v))
@@ -695,7 +692,7 @@ pub(crate) fn InspectorDrawer() -> impl IntoView {
         if read_only.get() {
             return false;
         }
-        if patch_state.with(|p| p.is_none()) {
+        if patch_state.with(std::option::Option::is_none) {
             return false;
         }
         let Ok(Some(_tag)) = insert_tag_validation.get() else {
@@ -778,7 +775,7 @@ pub(crate) fn InspectorDrawer() -> impl IntoView {
                     toast.show(ToastKind::Error, "Invalid fixed value.");
                     return;
                 };
-                if value > u32::MAX as u64 {
+                if value > u64::from(u32::MAX) {
                     toast.show(ToastKind::Error, "Fixed32 out of range.");
                     return;
                 }
@@ -859,7 +856,7 @@ pub(crate) fn InspectorDrawer() -> impl IntoView {
         "Inspector".to_string()
     });
 
-    let on_toggle_collapsed = UnsyncCallback::new(move |_| {
+    let on_toggle_collapsed = UnsyncCallback::new(move |()| {
         collapsed.update(|v| *v = !*v);
     });
 
@@ -952,25 +949,19 @@ pub(crate) fn InspectorDrawer() -> impl IntoView {
                         <div>
                             {format!(
                                 "Span (local): {}",
-                                local_span
-                                    .map(|s| format!("{}..{}", s.start(), s.end()))
-                                    .unwrap_or_else(|| "—".to_string())
+                                local_span.map_or_else(|| "—".to_string(), |s| format!("{}..{}", s.start(), s.end()))
                             )}
                         </div>
                         <div>
                             {format!(
                                 "Span (root): {}",
-                                root_span
-                                    .map(|s| format!("{}..{}", s.start(), s.end()))
-                                    .unwrap_or_else(|| "—".to_string())
+                                root_span.map_or_else(|| "—".to_string(), |s| format!("{}..{}", s.start(), s.end()))
                             )}
                         </div>
                         <div>
                             {format!(
                                 "Payload: {}",
-                                payload_len
-                                    .map(|n| format!("{n} byte(s)"))
-                                    .unwrap_or_else(|| "—".to_string())
+                                payload_len.map_or_else(|| "—".to_string(), |n| format!("{n} byte(s)"))
                             )}
                         </div>
                     </div>
@@ -1139,9 +1130,7 @@ pub(crate) fn InspectorDrawer() -> impl IntoView {
                 <div>
                     {move || {
                         insert_target
-                            .get()
-                            .map(|(msg, label)| format!("Target: {label} ({msg:?})"))
-                            .unwrap_or_else(|| "Target: —".to_string())
+                            .get().map_or_else(|| "Target: —".to_string(), |(msg, label)| format!("Target: {label} ({msg:?})"))
                     }}
                 </div>
                 <div>"Inserted fields have no spans until Save & Reparse."</div>
@@ -1346,11 +1335,10 @@ fn bytes_view_change_handler(
 
 fn parse_u64(text: &str) -> Result<u64, ()> {
     let t = text.trim();
-    if let Some(hex) = t.strip_prefix("0x").or_else(|| t.strip_prefix("0X")) {
-        u64::from_str_radix(hex, 16).map_err(|_| ())
-    } else {
-        t.parse::<u64>().map_err(|_| ())
-    }
+    t.strip_prefix("0x").or_else(|| t.strip_prefix("0X")).map_or_else(
+        || t.parse::<u64>().map_err(|_| ()),
+        |hex| u64::from_str_radix(hex, 16).map_err(|_| ()),
+    )
 }
 
 fn decode_hex_bytes(text: &str) -> Result<Vec<u8>, ()> {
@@ -1388,7 +1376,7 @@ fn decode_bytes_view(text: &str, view: BytesView) -> Result<Vec<u8>, UiError> {
     match view {
         BytesView::Hex => {
             validate_hex_bytes(text, None)?;
-            decode_hex_bytes(text).map_err(|_| "Invalid hex bytes.".into())
+            decode_hex_bytes(text).map_err(|()| "Invalid hex bytes.".into())
         }
         BytesView::Utf8 => Ok(text.as_bytes().to_vec()),
         BytesView::Base64 => decode_base64_bytes(text),
@@ -1399,7 +1387,7 @@ fn encode_bytes_view(bytes: &[u8], view: BytesView) -> Result<String, &'static s
     match view {
         BytesView::Hex => Ok(hex::encode(bytes)),
         BytesView::Utf8 => core::str::from_utf8(bytes)
-            .map(|s| s.to_string())
+            .map(std::string::ToString::to_string)
             .map_err(|_| "Bytes are not valid UTF-8."),
         BytesView::Base64 => Ok(base64::engine::general_purpose::STANDARD.encode(bytes)),
     }
@@ -1461,11 +1449,11 @@ fn truncate_for_hint(text: &str, max_chars: usize) -> String {
     out
 }
 
-fn encoded_len_varint(v: u64) -> usize {
+const fn encoded_len_varint(v: u64) -> usize {
     protobuf_edit::varint::encoded_len64(v) as usize
 }
 
-fn wire_type_value(wt: WireType) -> &'static str {
+const fn wire_type_value(wt: WireType) -> &'static str {
     match wt {
         WireType::Varint => "varint",
         WireType::Len => "len",

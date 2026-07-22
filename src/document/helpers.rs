@@ -23,7 +23,7 @@ pub(super) const fn checked_push_plan(
 }
 
 #[inline]
-pub(super) fn ensure_decode_len(len: usize) -> Result<(), TreeError> {
+pub(super) const fn ensure_decode_len(len: usize) -> Result<(), TreeError> {
     if unlikely(len > const { i32::MAX as usize }) {
         return Err(TreeError::DecodeError);
     }

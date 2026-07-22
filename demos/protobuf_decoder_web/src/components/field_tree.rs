@@ -83,22 +83,16 @@ fn FieldRow(field: FieldId, depth: usize) -> AnyView {
                 return "—".to_string();
             };
             match tag_info.get() {
-                Some((_n, WireType::Varint)) => match patch.varint(field) {
-                    Ok(v) => format!("{v}"),
-                    Err(_) => "varint(?)".to_string(),
-                },
-                Some((_n, WireType::Len)) => match patch.bytes(field) {
-                    Ok(bytes) => format_len_summary(bytes),
-                    Err(_) => "len(?)".to_string(),
-                },
-                Some((_n, WireType::I32)) => match fixed32_bits(patch, field) {
-                    Ok(bits) => format!("0x{bits:08X}"),
-                    Err(_) => "i32(?)".to_string(),
-                },
-                Some((_n, WireType::I64)) => match fixed64_bits(patch, field) {
-                    Ok(bits) => format!("0x{bits:016X}"),
-                    Err(_) => "i64(?)".to_string(),
-                },
+                Some((_n, WireType::Varint)) => {
+                    patch.varint(field).map_or_else(|_| "varint(?)".to_string(), |v| format!("{v}"))
+                }
+                Some((_n, WireType::Len)) => {
+                    patch.bytes(field).map_or_else(|_| "len(?)".to_string(), format_len_summary)
+                }
+                Some((_n, WireType::I32)) => fixed32_bits(patch, field)
+                    .map_or_else(|_| "i32(?)".to_string(), |bits| format!("0x{bits:08X}")),
+                Some((_n, WireType::I64)) => fixed64_bits(patch, field)
+                    .map_or_else(|_| "i64(?)".to_string(), |bits| format!("0x{bits:016X}")),
                 None => "—".to_string(),
             }
         })
@@ -167,7 +161,7 @@ fn FieldRow(field: FieldId, depth: usize) -> AnyView {
                     <span class="expand-icon">
                         {move || {
                             if !is_expandable.get() {
-                                return "".to_string();
+                                return String::new();
                             }
                             if is_expanded() { "▾".to_string() } else { "▸".to_string() }
                         }}

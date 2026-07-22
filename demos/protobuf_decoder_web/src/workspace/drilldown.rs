@@ -12,10 +12,7 @@ pub(crate) fn drilldown_byte(patch: &mut Patch, idx: usize) -> (Option<FieldId>,
             break;
         }
 
-        let fields = match patch.message_fields(msg) {
-            Ok(v) => v,
-            Err(_) => break,
-        };
+        let Ok(fields) = patch.message_fields(msg) else { break };
 
         let mut best: Option<(FieldId, protobuf_edit::Span)> = None;
         for &fid in fields {

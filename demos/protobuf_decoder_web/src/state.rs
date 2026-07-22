@@ -85,11 +85,11 @@ impl WorkspaceState {
             })
         });
         let highlight_range_count = Memo::new(move |_| highlights.get().len());
-        let read_only = Memo::new(move |_| envelope_view.with(|s| s.is_some()));
+        let read_only = Memo::new(move |_| envelope_view.with(Option::is_some));
         let bytes_count = Memo::new(move |_| {
             patch_state
                 .with(|p| p.as_ref().map(|p| p.root_bytes().len()))
-                .or_else(|| raw_bytes.with(|b| b.as_ref().map(|b| b.len())))
+                .or_else(|| raw_bytes.with(|b| b.as_ref().map(ByteView::len)))
         });
         let field_count = Memo::new(move |_| {
             patch_state.with(|p| {
@@ -105,7 +105,7 @@ impl WorkspaceState {
                 Some(live)
             })
         });
-        let dirty_count = Memo::new(move |_| dirty_fields.with(|s| s.len()));
+        let dirty_count = Memo::new(move |_| dirty_fields.with(std::collections::HashSet::len));
 
         Self {
             patch_state,

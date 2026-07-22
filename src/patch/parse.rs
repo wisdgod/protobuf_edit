@@ -83,7 +83,7 @@ impl Patch {
 
         let child = self.parse_message_node(child_source, Some(field))?;
         let idx = field.as_inner() as usize;
-        let Patch { txn, fields, .. } = self;
+        let Self { txn, fields, .. } = self;
         let node = fields.get_mut(idx).ok_or(TreeError::DecodeError)?;
         let prev_child = node.child.replace(child);
         if let Some(state) = txn.as_mut() {

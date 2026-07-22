@@ -96,8 +96,8 @@ impl Patch {
 
     fn save_field_len(&self, node: &FieldNode, plan: &mut SavePlan) -> Result<u32, TreeError> {
         let tag_len = match node.spans {
-            Some(spans) => spans.tag_len as u32,
-            None if !node.raw_tag.is_empty() => node.raw_tag.len() as u32,
+            Some(spans) => u32::from(spans.tag_len),
+            None if !node.raw_tag.is_empty() => u32::from(node.raw_tag.len()),
             None => crate::varint::encoded_len32(node.tag.get()),
         };
 
@@ -106,7 +106,7 @@ impl Patch {
                 let Some(PayloadEdit::Varint(edit)) = node.edit.as_ref() else {
                     return Err(TreeError::DecodeError);
                 };
-                edit.raw.len() as u32
+                u32::from(edit.raw.len())
             }
             WireType::I32 => {
                 let Some(PayloadEdit::I32(_bits)) = node.edit.as_ref() else {
@@ -121,18 +121,14 @@ impl Patch {
                 8
             }
             WireType::Len => {
-                let (orig_len_bytes, orig_payload_len) = match node.spans {
-                    Some(spans) => (Some(spans.aux_len as u32), spans.payload_len),
-                    None => (None, 0),
-                };
+                let (orig_len_bytes, orig_payload_len) = node.spans.map_or((None, 0), |spans| (Some(u32::from(spans.aux_len)), spans.payload_len));
 
                 let payload_len = if let Some(child) = node.child {
                     self.save_message_info(child, plan)?.len
                 } else {
                     match node.edit.as_ref() {
                         Some(PayloadEdit::Bytes(buf)) => buf.len(),
-                        None => return Err(TreeError::DecodeError),
-                        Some(_) => return Err(TreeError::DecodeError),
+                        None | Some(_) => return Err(TreeError::DecodeError),
                     }
                 };
 
@@ -246,11 +242,11 @@ impl Patch {
                 out.extend_from_slice(tag_bytes)?;
             }
             None => {
-                if !node.raw_tag.is_empty() {
+                if node.raw_tag.is_empty() {
+                    crate::wire::encode_tag_value(out, node.tag)?;
+                } else {
                     let (bytes, len) = node.raw_tag.to_array();
                     out.extend_from_slice(&bytes[..len])?;
-                } else {
-                    crate::wire::encode_tag_value(out, node.tag)?;
                 }
             }
         }
@@ -305,8 +301,7 @@ impl Patch {
         } else {
             match node.edit.as_ref() {
                 Some(PayloadEdit::Bytes(buf)) => buf.len(),
-                None => return Err(TreeError::DecodeError),
-                Some(_) => return Err(TreeError::DecodeError),
+                None | Some(_) => return Err(TreeError::DecodeError),
             }
         };
 
@@ -374,8 +369,8 @@ impl Patch {
 #[inline]
 fn stored_len_prefix_span(spans: StoredSpans) -> Result<Span, TreeError> {
     let start = spans.field.start();
-    let len_start = start.checked_add(spans.tag_len as u32).ok_or(TreeError::CapacityExceeded)?;
-    let len_end = len_start.checked_add(spans.aux_len as u32).ok_or(TreeError::CapacityExceeded)?;
+    let len_start = start.checked_add(u32::from(spans.tag_len)).ok_or(TreeError::CapacityExceeded)?;
+    let len_end = len_start.checked_add(u32::from(spans.aux_len)).ok_or(TreeError::CapacityExceeded)?;
     Span::new(len_start, len_end).ok_or(TreeError::DecodeError)
 }
 

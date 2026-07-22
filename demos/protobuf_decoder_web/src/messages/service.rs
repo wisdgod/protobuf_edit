@@ -58,9 +58,8 @@ pub(crate) async fn load_message_bytes(id: MessageId) -> UiResult<LoadedBytes> {
         });
     }
 
-    let bytes = match idb::get_message_bytes(id).await? {
-        Some(bytes) => bytes,
-        None => return Err(format!("Message {id} is missing bytes.").into()),
+    let Some(bytes) = idb::get_message_bytes(id).await? else {
+        return Err(format!("Message {id} is missing bytes.").into());
     };
 
     let bytes = Rc::new(bytes);
@@ -276,21 +275,17 @@ async fn load_envelope_frame_ref(
         .into());
     }
 
-    let bytes = if let Some(bytes) =
-        page_cache::cached_message_bytes(meta.source_id, current_source_rev)
-    {
-        bytes
-    } else {
-        let bytes = match idb::get_message_bytes(meta.source_id).await? {
-            Some(bytes) => bytes,
-            None => {
+    let bytes =
+        if let Some(bytes) = page_cache::cached_message_bytes(meta.source_id, current_source_rev) {
+            bytes
+        } else {
+            let Some(bytes) = idb::get_message_bytes(meta.source_id).await? else {
                 return Err(format!("Source message {} is missing bytes.", meta.source_id).into());
-            }
+            };
+            let bytes = Rc::new(bytes);
+            page_cache::store_message_bytes(meta.source_id, current_source_rev, bytes.clone());
+            bytes
         };
-        let bytes = Rc::new(bytes);
-        page_cache::store_message_bytes(meta.source_id, current_source_rev, bytes.clone());
-        bytes
-    };
 
     let payload_end = meta.payload_offset.saturating_add(meta.payload_len);
     let Some(payload) = ByteView::slice(bytes.clone(), meta.payload_offset, payload_end) else {

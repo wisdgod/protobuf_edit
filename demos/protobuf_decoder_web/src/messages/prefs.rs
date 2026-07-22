@@ -72,8 +72,7 @@ fn sanitize_filename(input: &str) -> String {
     let mut out = String::new();
     for ch in input.chars() {
         let mapped = match ch {
-            'a'..='z' | 'A'..='Z' | '0'..='9' => Some(ch),
-            '-' | '_' => Some(ch),
+            'a'..='z' | 'A'..='Z' | '0'..='9' | '-' | '_' => Some(ch),
             ' ' => Some('-'),
             _ => None,
         };

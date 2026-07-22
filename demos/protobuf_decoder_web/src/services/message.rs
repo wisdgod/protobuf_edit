@@ -23,7 +23,7 @@ pub(crate) struct MessageService {
 }
 
 impl MessageService {
-    pub(crate) fn new(
+    pub(crate) const fn new(
         ws: WorkspaceState,
         catalog: MessageCatalogState,
         toast: ToastManager,
@@ -130,7 +130,7 @@ impl MessageService {
             .with_untracked(|list| list.iter().find(|m| m.id == id).map(|m| m.class_id))
             .unwrap_or(id);
         let ws_svc = this.ws_svc.clone();
-        let ws = this.ws.clone();
+        let ws = this.ws;
         spawn_local(async move {
             match messages::load_message_bytes(id).await {
                 Ok(loaded) => {
@@ -373,8 +373,8 @@ impl MessageService {
 
     /// Handle a file upload `<input>` change event: read the file as an
     /// `ArrayBuffer`, create a new message, and load it.
-    pub(crate) fn upload(&self, ev: leptos::ev::Event) {
-        let input: web_sys::HtmlInputElement = event_target(&ev);
+    pub(crate) fn upload(&self, ev: &leptos::ev::Event) {
+        let input: web_sys::HtmlInputElement = event_target(ev);
         let Some(files) = input.files() else {
             return;
         };
@@ -383,23 +383,17 @@ impl MessageService {
         };
         let filename = file.name();
 
-        let reader = match web_sys::FileReader::new() {
-            Ok(r) => r,
-            Err(_) => {
-                self.toast.show(ToastKind::Error, "Failed to create FileReader.");
-                return;
-            }
+        let Ok(reader) = web_sys::FileReader::new() else {
+            self.toast.show(ToastKind::Error, "Failed to create FileReader.");
+            return;
         };
         let reader_for_cb = reader.clone();
         let this = self.clone();
 
         let onload = Closure::<dyn FnMut(web_sys::ProgressEvent)>::new(move |_| {
-            let result = match reader_for_cb.result() {
-                Ok(v) => v,
-                Err(_) => {
-                    this.toast.show(ToastKind::Error, "Failed to read file contents.");
-                    return;
-                }
+            let Ok(result) = reader_for_cb.result() else {
+                this.toast.show(ToastKind::Error, "Failed to read file contents.");
+                return;
             };
             let u8_array = js_sys::Uint8Array::new(&result);
             let mut bytes = vec![0u8; u8_array.length() as usize];

@@ -42,8 +42,7 @@ pub(crate) fn Breadcrumb() -> impl IntoView {
                             chain_fields.push(parent_field);
                             msg = patch.field_parent_message(parent_field).ok();
                         }
-                        Ok(None) => break,
-                        Err(_) => break,
+                        Ok(None) | Err(_) => break,
                     }
                 }
             }
@@ -52,10 +51,10 @@ pub(crate) fn Breadcrumb() -> impl IntoView {
             let mut out = Vec::with_capacity(chain_fields.len().saturating_add(1));
             out.push(Crumb { label: Arc::<str>::from("."), field_id: None });
             for fid in chain_fields {
-                let label = match patch.field_tag(fid) {
-                    Ok(tag) => Arc::<str>::from(tag.field_number().as_inner().to_string()),
-                    Err(_) => Arc::<str>::from("?"),
-                };
+                let label = patch.field_tag(fid).map_or_else(
+                    |_| Arc::<str>::from("?"),
+                    |tag| Arc::<str>::from(tag.field_number().as_inner().to_string()),
+                );
                 out.push(Crumb { label, field_id: Some(fid) });
             }
             out
@@ -63,12 +62,13 @@ pub(crate) fn Breadcrumb() -> impl IntoView {
     });
 
     let current_path = Memo::new(move |_| {
-        patch_state.with(|p| {
-            let patch = p.as_ref()?;
-            let fid = selected.get()?;
-            format_user_path(patch, fid)
-        })
-        .unwrap_or_else(|| ".".to_string())
+        patch_state
+            .with(|p| {
+                let patch = p.as_ref()?;
+                let fid = selected.get()?;
+                format_user_path(patch, fid)
+            })
+            .unwrap_or_else(|| ".".to_string())
     });
 
     let enter_edit = move |_| {
@@ -126,18 +126,16 @@ pub(crate) fn Breadcrumb() -> impl IntoView {
         }
     };
 
-    let on_keydown = move |ev: leptos::ev::KeyboardEvent| {
-        match ev.key().as_str() {
-            "Enter" => {
-                ev.prevent_default();
-                navigate();
-            }
-            "Escape" => {
-                ev.prevent_default();
-                cancel_edit();
-            }
-            _ => {}
+    let on_keydown = move |ev: leptos::ev::KeyboardEvent| match ev.key().as_str() {
+        "Enter" => {
+            ev.prevent_default();
+            navigate();
         }
+        "Escape" => {
+            ev.prevent_default();
+            cancel_edit();
+        }
+        _ => {}
     };
 
     let on_blur = move |ev: leptos::ev::FocusEvent| {

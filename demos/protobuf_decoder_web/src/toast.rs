@@ -42,7 +42,7 @@ impl ToastManager {
         );
     }
 
-    pub fn toasts_signal(&self) -> RwSignal<Vec<Toast>> {
+    pub const fn toasts_signal(&self) -> RwSignal<Vec<Toast>> {
         self.toasts
     }
 }

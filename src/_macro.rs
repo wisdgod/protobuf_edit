@@ -1,4 +1,4 @@
-/// See: https://github.com/rust-lang/rust/blob/main/library/core/src/num/niche_types.rs
+/// See: <https://github.com/rust-lang/rust/blob/main/library/core/src/num/niche_types.rs>
 /// [`core::num::niche_types`]
 #[allow_internal_unsafe]
 #[allow_internal_unstable(pattern_types, pattern_type_macro, structural_match)]
@@ -32,6 +32,7 @@ macro_rules! define_valid_range_type {
             pub const fn new(val: $int) -> Option<Self> {
                 if (val as $uint) >= ($low as $uint) && (val as $uint) <= ($high as $uint) {
                     // SAFETY: just checked the inclusive range
+                    #[allow(clippy::missing_transmute_annotations)]
                     Some(unsafe { ::core::mem::transmute(val) })
                 } else {
                     None

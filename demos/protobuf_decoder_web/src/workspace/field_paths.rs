@@ -57,8 +57,7 @@ pub(crate) fn build_selection_path(patch: &Patch, selected: FieldId) -> Option<V
                 chain_fields.push(parent_field);
                 msg = patch.field_parent_message(parent_field).ok();
             }
-            Ok(None) => break,
-            Err(_) => break,
+            Ok(None) | Err(_) => break,
         }
     }
     chain_fields.reverse();
@@ -160,7 +159,7 @@ pub(crate) fn resolve_selection_path(
     Ok(current.map(|fid| (fid, expanded)))
 }
 
-/// Parse a user path like ".3:0.1.2" into (field_number, occurrence) pairs.
+/// Parse a user path like ".3:0.1.2" into (`field_number`, occurrence) pairs.
 /// Leading dot required. `:n` suffix optional (defaults to 0).
 pub(crate) fn parse_user_path(input: &str) -> Option<Vec<(u32, u32)>> {
     let input = input.trim();
@@ -241,8 +240,7 @@ pub(crate) fn resolve_user_path(
     let mut current: Option<FieldId> = None;
 
     for (i, &(field_number, occurrence)) in path.iter().enumerate() {
-        let Some(field) =
-            find_field_by_number_occurrence(patch, msg, field_number, occurrence)?
+        let Some(field) = find_field_by_number_occurrence(patch, msg, field_number, occurrence)?
         else {
             return Ok(current.map(|fid| (fid, expanded)));
         };
@@ -287,10 +285,7 @@ fn try_decode_and_parse(patch: &mut Patch, field: FieldId) -> Result<bool, TreeE
         Err(_) => return Ok(false),
     };
 
-    let decoded = match crate::decode::decode_user_input(&text) {
-        Ok(v) => v,
-        Err(_) => return Ok(false),
-    };
+    let Ok(decoded) = crate::decode::decode_user_input(&text) else { return Ok(false) };
 
     if decoded == bytes {
         return Ok(false);

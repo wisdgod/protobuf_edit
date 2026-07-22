@@ -12,7 +12,7 @@ impl Patch {
         }
 
         let idx = field.as_inner() as usize;
-        let Patch { txn, fields, .. } = self;
+        let Self { txn, fields, .. } = self;
         let node = fields.get_mut(idx).ok_or(TreeError::DecodeError)?;
 
         let prev_edit = node.edit.take();
@@ -44,7 +44,7 @@ impl Patch {
 
     pub fn delete_field(&mut self, field: FieldId) -> Result<(), TreeError> {
         let idx = field.as_inner() as usize;
-        let Patch { txn, fields, .. } = self;
+        let Self { txn, fields, .. } = self;
         let node = fields.get_mut(idx).ok_or(TreeError::DecodeError)?;
 
         let prev_deleted = core::mem::replace(&mut node.deleted, true);
@@ -112,7 +112,7 @@ impl Patch {
 
     pub fn set_varint(&mut self, field: FieldId, value: u64) -> Result<(), TreeError> {
         let idx = field.as_inner() as usize;
-        let Patch { txn, fields, .. } = self;
+        let Self { txn, fields, .. } = self;
         let node = fields.get_mut(idx).ok_or(TreeError::DecodeError)?;
         if node.tag.wire_type() != WireType::Varint {
             return Err(TreeError::WireTypeMismatch);
@@ -126,7 +126,7 @@ impl Patch {
 
     pub fn set_i32_bits(&mut self, field: FieldId, bits: u32) -> Result<(), TreeError> {
         let idx = field.as_inner() as usize;
-        let Patch { txn, fields, .. } = self;
+        let Self { txn, fields, .. } = self;
         let node = fields.get_mut(idx).ok_or(TreeError::DecodeError)?;
         if node.tag.wire_type() != WireType::I32 {
             return Err(TreeError::WireTypeMismatch);
@@ -140,7 +140,7 @@ impl Patch {
 
     pub fn set_i64_bits(&mut self, field: FieldId, bits: u64) -> Result<(), TreeError> {
         let idx = field.as_inner() as usize;
-        let Patch { txn, fields, .. } = self;
+        let Self { txn, fields, .. } = self;
         let node = fields.get_mut(idx).ok_or(TreeError::DecodeError)?;
         if node.tag.wire_type() != WireType::I64 {
             return Err(TreeError::WireTypeMismatch);
@@ -154,7 +154,7 @@ impl Patch {
 
     pub fn set_bytes(&mut self, field: FieldId, payload: Buf) -> Result<(), TreeError> {
         let idx = field.as_inner() as usize;
-        let Patch { txn, fields, .. } = self;
+        let Self { txn, fields, .. } = self;
         let node = fields.get_mut(idx).ok_or(TreeError::DecodeError)?;
         match node.tag.wire_type() {
             WireType::Len => {}

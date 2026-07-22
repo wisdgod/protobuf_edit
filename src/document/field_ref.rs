@@ -19,7 +19,7 @@ pub struct FieldRefIter<'a> {
 
 impl<'a> FieldRefIter<'a> {
     #[inline]
-    fn new(tree: &'a Document) -> Self {
+    const fn new(tree: &'a Document) -> Self {
         debug_assert!(tree.fields.len() <= super::MAX_FIELDS);
         let end = tree.fields.len() as u16;
         Self { tree, next: 0, end }
@@ -68,7 +68,7 @@ impl<'a> PackedVarint32Iter<'a> {
     }
 }
 
-impl<'a> Iterator for PackedVarint32Iter<'a> {
+impl Iterator for PackedVarint32Iter<'_> {
     type Item = Result<u32, TreeError>;
 
     fn next(&mut self) -> Option<Self::Item> {
@@ -79,15 +79,12 @@ impl<'a> Iterator for PackedVarint32Iter<'a> {
             self.done = true;
             return None;
         }
-        match varint::decode32(self.data) {
-            Some((v, n)) => {
-                self.data = &self.data[n as usize..];
-                Some(Ok(v))
-            }
-            None => {
-                self.done = true;
-                Some(Err(TreeError::DecodeError))
-            }
+        if let Some((v, n)) = varint::decode32(self.data) {
+            self.data = &self.data[n as usize..];
+            Some(Ok(v))
+        } else {
+            self.done = true;
+            Some(Err(TreeError::DecodeError))
         }
     }
 
@@ -113,7 +110,7 @@ impl<'a> PackedVarint64Iter<'a> {
     }
 }
 
-impl<'a> Iterator for PackedVarint64Iter<'a> {
+impl Iterator for PackedVarint64Iter<'_> {
     type Item = Result<u64, TreeError>;
 
     fn next(&mut self) -> Option<Self::Item> {
@@ -124,15 +121,12 @@ impl<'a> Iterator for PackedVarint64Iter<'a> {
             self.done = true;
             return None;
         }
-        match varint::decode64(self.data) {
-            Some((v, n)) => {
-                self.data = &self.data[n as usize..];
-                Some(Ok(v))
-            }
-            None => {
-                self.done = true;
-                Some(Err(TreeError::DecodeError))
-            }
+        if let Some((v, n)) = varint::decode64(self.data) {
+            self.data = &self.data[n as usize..];
+            Some(Ok(v))
+        } else {
+            self.done = true;
+            Some(Err(TreeError::DecodeError))
         }
     }
 
@@ -159,7 +153,7 @@ impl<'a> PackedFixed32Iter<'a> {
     }
 }
 
-impl<'a> Iterator for PackedFixed32Iter<'a> {
+impl Iterator for PackedFixed32Iter<'_> {
     type Item = u32;
 
     fn next(&mut self) -> Option<Self::Item> {
@@ -178,7 +172,7 @@ impl<'a> Iterator for PackedFixed32Iter<'a> {
     }
 }
 
-impl<'a> DoubleEndedIterator for PackedFixed32Iter<'a> {
+impl DoubleEndedIterator for PackedFixed32Iter<'_> {
     fn next_back(&mut self) -> Option<Self::Item> {
         if self.pos == self.end {
             return None;
@@ -190,7 +184,7 @@ impl<'a> DoubleEndedIterator for PackedFixed32Iter<'a> {
     }
 }
 
-impl<'a> ExactSizeIterator for PackedFixed32Iter<'a> {
+impl ExactSizeIterator for PackedFixed32Iter<'_> {
     fn len(&self) -> usize {
         (self.end - self.pos) / 4
     }
@@ -211,7 +205,7 @@ impl<'a> PackedFixed64Iter<'a> {
     }
 }
 
-impl<'a> Iterator for PackedFixed64Iter<'a> {
+impl Iterator for PackedFixed64Iter<'_> {
     type Item = u64;
 
     fn next(&mut self) -> Option<Self::Item> {
@@ -230,7 +224,7 @@ impl<'a> Iterator for PackedFixed64Iter<'a> {
     }
 }
 
-impl<'a> DoubleEndedIterator for PackedFixed64Iter<'a> {
+impl DoubleEndedIterator for PackedFixed64Iter<'_> {
     fn next_back(&mut self) -> Option<Self::Item> {
         if self.pos == self.end {
             return None;
@@ -242,7 +236,7 @@ impl<'a> DoubleEndedIterator for PackedFixed64Iter<'a> {
     }
 }
 
-impl<'a> ExactSizeIterator for PackedFixed64Iter<'a> {
+impl ExactSizeIterator for PackedFixed64Iter<'_> {
     fn len(&self) -> usize {
         (self.end - self.pos) / 8
     }
@@ -257,6 +251,7 @@ impl<'a> FieldRef<'a> {
     }
 
     #[inline]
+    #[must_use]
     pub const fn ix(self) -> Ix {
         self.ix
     }
@@ -273,26 +268,31 @@ impl<'a> FieldRef<'a> {
     }
 
     #[inline]
+    #[must_use]
     pub fn tag(self) -> Tag {
         self.field().tag
     }
 
     #[inline]
+    #[must_use]
     pub fn field_number(self) -> FieldNumber {
         self.tag().field_number()
     }
 
     #[inline]
+    #[must_use]
     pub fn wire_type(self) -> WireType {
         self.tag().wire_type()
     }
 
     #[inline]
+    #[must_use]
     pub fn removed(self) -> bool {
         self.field().removed
     }
 
     #[inline]
+    #[must_use]
     pub fn as_uint64(self) -> Option<u64> {
         if self.wire_type() != WireType::Varint {
             return None;
@@ -303,16 +303,19 @@ impl<'a> FieldRef<'a> {
     }
 
     #[inline]
+    #[must_use]
     pub fn as_uint32(self) -> Option<u32> {
         self.as_uint64().map(|v| v as u32)
     }
 
     #[inline]
+    #[must_use]
     pub fn as_int64(self) -> Option<i64> {
         self.as_uint64().map(|v| v as i64)
     }
 
     #[inline]
+    #[must_use]
     pub fn as_int32(self) -> Option<i32> {
         self.as_uint32().map(|v| v as i32)
     }
@@ -328,11 +331,13 @@ impl<'a> FieldRef<'a> {
     }
 
     #[inline]
+    #[must_use]
     pub fn as_bool(self) -> Option<bool> {
         self.as_uint64().map(|v| v != 0)
     }
 
     #[inline]
+    #[must_use]
     pub fn as_fixed32(self) -> Option<u32> {
         if self.wire_type() != WireType::I32 {
             return None;
@@ -343,6 +348,7 @@ impl<'a> FieldRef<'a> {
     }
 
     #[inline]
+    #[must_use]
     pub fn as_fixed64(self) -> Option<u64> {
         if self.wire_type() != WireType::I64 {
             return None;
@@ -363,16 +369,19 @@ impl<'a> FieldRef<'a> {
     }
 
     #[inline]
+    #[must_use]
     pub fn as_sfixed32(self) -> Option<i32> {
         self.as_fixed32().map(|v| v as i32)
     }
 
     #[inline]
+    #[must_use]
     pub fn as_sfixed64(self) -> Option<i64> {
         self.as_fixed64().map(|v| v as i64)
     }
 
     #[inline]
+    #[must_use]
     pub fn as_bytes(self) -> Option<&'a [u8]> {
         if self.wire_type() != WireType::Len {
             return None;
@@ -535,12 +544,14 @@ impl<'a> FieldRef<'a> {
 
 impl Document {
     #[inline]
-    pub fn field_refs(&self) -> FieldRefIter<'_> {
+    #[must_use]
+    pub const fn field_refs(&self) -> FieldRefIter<'_> {
         FieldRefIter::new(self)
     }
 
     #[inline]
-    pub fn field_ref(&self, ix: Ix) -> Option<FieldRef<'_>> {
+    #[must_use]
+    pub const fn field_ref(&self, ix: Ix) -> Option<FieldRef<'_>> {
         let idx = ix.as_inner() as usize;
         if idx >= self.fields.len() {
             return None;
@@ -550,11 +561,13 @@ impl Document {
     }
 
     #[inline]
+    #[must_use]
     pub fn first_ref(&self, tag: Tag) -> Option<FieldRef<'_>> {
         self.field_ref(self.first_live_ix(tag)?)
     }
 
     #[inline]
+    #[must_use]
     pub fn first_ref_by_parts(
         &self,
         field_number: u32,
@@ -565,11 +578,13 @@ impl Document {
     }
 
     #[inline]
+    #[must_use]
     pub fn last_ref(&self, tag: Tag) -> Option<FieldRef<'_>> {
         self.field_ref(self.last_live_ix(tag)?)
     }
 
     #[inline]
+    #[must_use]
     pub fn last_ref_by_parts(
         &self,
         field_number: u32,

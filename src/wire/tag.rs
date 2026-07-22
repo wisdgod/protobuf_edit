@@ -25,6 +25,7 @@ pub enum WireType {
 
 impl WireType {
     #[inline]
+    #[must_use]
     pub const fn from_low3(value: u32) -> Option<Self> {
         match value {
             0 => Some(Self::Varint),
@@ -47,6 +48,7 @@ pub struct Tag(NonZeroU32);
 
 impl Tag {
     #[inline]
+    #[must_use]
     pub const fn new(raw: u32) -> Option<Self> {
         let Some(nz) = NonZeroU32::new(raw) else {
             return None;
@@ -61,16 +63,19 @@ impl Tag {
     }
 
     #[inline]
+    #[must_use]
     pub const fn get(self) -> u32 {
         self.0.get()
     }
 
     #[inline]
+    #[must_use]
     pub const fn as_nonzero(self) -> NonZeroU32 {
         self.0
     }
 
     #[inline]
+    #[must_use]
     pub const fn from_parts(field_number: FieldNumber, wire_type: WireType) -> Self {
         let raw = (field_number.as_inner() << 3) | (wire_type as u32);
         // SAFETY: FieldNumber is non-zero and wire_type fits low 3 bits.
@@ -78,6 +83,7 @@ impl Tag {
     }
 
     #[inline]
+    #[must_use]
     pub const fn try_from_parts(field_number: u32, wire_type: WireType) -> Option<Self> {
         let Some(field_number) = FieldNumber::new(field_number) else {
             return None;
@@ -86,6 +92,7 @@ impl Tag {
     }
 
     #[inline]
+    #[must_use]
     pub const fn split(self) -> (FieldNumber, WireType) {
         let raw = self.get();
         let Some(wire_type) = WireType::from_low3(raw & 0x07) else {
@@ -97,11 +104,13 @@ impl Tag {
     }
 
     #[inline]
+    #[must_use]
     pub const fn field_number(self) -> FieldNumber {
         self.split().0
     }
 
     #[inline]
+    #[must_use]
     pub const fn wire_type(self) -> WireType {
         self.split().1
     }
@@ -110,7 +119,7 @@ impl Tag {
 impl From<(FieldNumber, WireType)> for Tag {
     #[inline]
     fn from(value: (FieldNumber, WireType)) -> Self {
-        Tag::from_parts(value.0, value.1)
+        Self::from_parts(value.0, value.1)
     }
 }
 
@@ -133,7 +142,7 @@ impl TryFrom<u32> for Tag {
 
     #[inline]
     fn try_from(value: u32) -> Result<Self, Self::Error> {
-        Tag::new(value).ok_or(())
+        Self::new(value).ok_or(())
     }
 }
 
@@ -142,6 +151,6 @@ impl TryFrom<(u32, WireType)> for Tag {
 
     #[inline]
     fn try_from(value: (u32, WireType)) -> Result<Self, Self::Error> {
-        Tag::try_from_parts(value.0, value.1).ok_or(())
+        Self::try_from_parts(value.0, value.1).ok_or(())
     }
 }

@@ -35,12 +35,14 @@ impl<'a> Iterator for RepeatedRefIter<'a> {
 
 impl Document {
     #[inline]
+    #[must_use]
     pub fn repeated_refs(&self, tag: Tag) -> RepeatedRefIter<'_> {
         let next = self.bucket(tag).and_then(|bucket| bucket.head);
         RepeatedRefIter::new(self, next)
     }
 
     #[inline]
+    #[must_use]
     pub fn repeated_refs_by_parts(
         &self,
         field_number: u32,

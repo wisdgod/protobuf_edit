@@ -20,17 +20,20 @@ impl Patch {
     }
 
     #[inline]
+    #[must_use]
     pub const fn read_cache_enabled(&self) -> bool {
         self.read_cache.enabled
     }
 
     #[inline]
+    #[must_use]
     pub const fn root(&self) -> MessageId {
         self.root
     }
 
     #[inline]
-    pub fn root_bytes(&self) -> &[u8] {
+    #[must_use]
+    pub const fn root_bytes(&self) -> &[u8] {
         self.source.as_slice()
     }
 

@@ -32,12 +32,12 @@ pub(crate) struct EnvelopeView {
 
 impl EnvelopeFrame {
     #[inline]
-    pub(crate) fn is_compressed(self) -> bool {
+    pub(crate) const fn is_compressed(self) -> bool {
         (self.flags & 0x01) != 0
     }
 
     #[inline]
-    pub(crate) fn is_json(self) -> bool {
+    pub(crate) const fn is_json(self) -> bool {
         (self.flags & 0x02) != 0
     }
 }

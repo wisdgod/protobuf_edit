@@ -190,8 +190,8 @@ async fn await_request(request: IdbRequest) -> Result<JsValue, JsValue> {
     let request_success = request.clone();
     let request_error = request.clone();
     let promise = js_sys::Promise::new(&mut move |resolve, reject| {
-        let resolve = resolve.clone();
-        let reject = reject.clone();
+        let resolve = resolve;
+        let reject = reject;
 
         let request_success = request_success.clone();
         let success = Closure::once(move |_event: web_sys::Event| {

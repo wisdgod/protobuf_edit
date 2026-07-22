@@ -23,7 +23,6 @@ pub(crate) fn start_theme_transition(duration_ms: i32) -> UiResult<()> {
 
     let _ = el.class_list().add_1("theme-transition");
 
-    let el = el.clone();
     let cb = Closure::once(move || {
         let _ = el.class_list().remove_1("theme-transition");
     });

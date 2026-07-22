@@ -40,11 +40,13 @@ pub const fn encoded_len<N: [const] sealed::Varint>(value: N) -> u32 {
 }
 
 #[inline(always)]
+#[must_use]
 pub const fn encoded_len32(value: u32) -> u32 {
     encoded_len(value)
 }
 
 #[inline(always)]
+#[must_use]
 pub const fn encoded_len64(value: u64) -> u32 {
     encoded_len(value)
 }
@@ -52,16 +54,19 @@ pub const fn encoded_len64(value: u64) -> u32 {
 /// Decode a varint from the start of `data`.
 /// Returns `(value, bytes_consumed)`, or `None` if data is truncated/invalid.
 #[inline]
+#[must_use]
 pub fn decode<N: sealed::Varint>(data: &[u8]) -> Option<(N, u32)> {
     <N as sealed::Varint>::decode(data)
 }
 
 #[inline(always)]
+#[must_use]
 pub fn decode32(data: &[u8]) -> Option<(u32, u32)> {
     decode(data)
 }
 
 #[inline(always)]
+#[must_use]
 pub fn decode64(data: &[u8]) -> Option<(u64, u32)> {
     decode(data)
 }
@@ -72,7 +77,7 @@ pub fn decode64(data: &[u8]) -> Option<(u64, u32)> {
 pub fn encode<N: sealed::Varint>(buf: &mut Buf, value: N) -> Result<u32, BufAllocError> {
     let mut buffer = [MaybeUninit::uninit(); 10];
     let len = <N as sealed::Varint>::encode(&mut buffer, value);
-    let data = unsafe { core::slice::from_raw_parts(buffer.as_ptr() as *const u8, len as _) };
+    let data = unsafe { core::slice::from_raw_parts(buffer.as_ptr().cast::<u8>(), len as _) };
     buf.extend_from_slice(data)?;
     Ok(len)
 }
@@ -102,21 +107,25 @@ pub const fn zigzag_decode<S: [const] zigzag::Encode<U>, U: [const] zigzag::Deco
 }
 
 #[inline(always)]
+#[must_use]
 pub const fn zigzag_encode32(value: i32) -> u32 {
     zigzag_encode(value)
 }
 
 #[inline(always)]
+#[must_use]
 pub const fn zigzag_encode64(value: i64) -> u64 {
     zigzag_encode(value)
 }
 
 #[inline(always)]
+#[must_use]
 pub const fn zigzag_decode32(value: u32) -> i32 {
     zigzag_decode(value)
 }
 
 #[inline(always)]
+#[must_use]
 pub const fn zigzag_decode64(value: u64) -> i64 {
     zigzag_decode(value)
 }

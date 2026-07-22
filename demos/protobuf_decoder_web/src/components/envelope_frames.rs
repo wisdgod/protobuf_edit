@@ -27,22 +27,22 @@ pub(crate) fn EnvelopeFramesPanel() -> impl IntoView {
 
     let on_close = {
         let svc = env_svc.clone();
-        UnsyncCallback::new(move |_| svc.close_frames())
+        UnsyncCallback::new(move |()| svc.close_frames())
     };
     let on_extract_all = {
         let svc = env_svc.clone();
-        UnsyncCallback::new(move |_| svc.extract_all_frames())
+        UnsyncCallback::new(move |()| svc.extract_all_frames())
     };
     let on_decompress = {
         let svc = env_svc.clone();
-        UnsyncCallback::new(move |_| svc.decompress_selected_frame())
+        UnsyncCallback::new(move |()| svc.decompress_selected_frame())
     };
     let on_open = {
         let svc = env_svc.clone();
         UnsyncCallback::new(move |idx: usize| svc.open_frame(idx))
     };
     let on_extract = {
-        let svc = env_svc.clone();
+        let svc = env_svc;
         UnsyncCallback::new(move |idx: usize| svc.extract_frame(idx))
     };
 
@@ -193,7 +193,7 @@ fn frame_row_view(
     view! {
         <div class=row_class prop:title=title on:click=move |_| on_open.run(idx)>
             <div class="frame-meta">
-                <span>{Oco::from(meta_line.clone())}</span>
+                <span>{Oco::from(meta_line)}</span>
                 <span class="frame-suffix">{suffix}</span>
             </div>
             <div class="frame-actions">

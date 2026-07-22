@@ -20,7 +20,7 @@ pub(crate) struct SaveReparseInfo {
 }
 
 pub(crate) fn confirm_discard_edits(ws: &WorkspaceState, action: &str) -> bool {
-    let pending = ws.dirty_fields.with_untracked(|state| state.len());
+    let pending = ws.dirty_fields.with_untracked(FxHashSet::len);
     if pending == 0 {
         return true;
     }
@@ -45,7 +45,7 @@ pub(crate) fn load_patch_from_view(
             let _ = patch.enable_read_cache();
             let bytes_len = bytes.len();
             let field_count =
-                patch.message_fields(patch.root()).map(|fields| fields.len()).unwrap_or(0);
+                patch.message_fields(patch.root()).map_or(0, <[protobuf_edit::FieldId]>::len);
 
             let mut expanded_by_default: FxHashSet<FieldId> = FxHashSet::default();
             for raw in auto_expand_paths {
@@ -249,17 +249,16 @@ pub(crate) fn save_and_reparse(ws: &WorkspaceState) -> Result<SaveReparseInfo, T
     let elapsed_ms = (js_sys::Date::now() - t0).max(0.0);
 
     let _ = patch.enable_read_cache();
-    let field_count = patch.message_fields(patch.root()).map(|fields| fields.len()).unwrap_or(0);
+    let field_count = patch.message_fields(patch.root()).map_or(0, <[protobuf_edit::FieldId]>::len);
     let bytes_len = patch.root_bytes().len();
 
-    let (new_selected, new_expanded) = match prev_path {
-        Some(path) => match resolve_selection_path(&mut patch, &path, false) {
+    let (new_selected, new_expanded) = prev_path.map_or_else(
+        || (None, FxHashSet::default()),
+        |path| match resolve_selection_path(&mut patch, &path, false) {
             Ok(Some((fid, expanded))) => (Some(fid), expanded),
-            Ok(None) => (None, FxHashSet::default()),
-            Err(_) => (None, FxHashSet::default()),
+            Ok(None) | Err(_) => (None, FxHashSet::default()),
         },
-        None => (None, FxHashSet::default()),
-    };
+    );
 
     ws.show_root_patch(patch, bytes_view.clone(), new_selected, new_expanded);
     Ok(SaveReparseInfo { bytes: bytes_view, bytes_len, field_count, elapsed_ms })

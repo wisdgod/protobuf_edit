@@ -21,7 +21,7 @@ pub(crate) struct WorkspaceService {
 }
 
 impl WorkspaceService {
-    pub(crate) fn new(
+    pub(crate) const fn new(
         ws: WorkspaceState,
         catalog: MessageCatalogState,
         toast: ToastManager,
@@ -71,14 +71,14 @@ impl WorkspaceService {
 
     /// Revert all pending field edits, restoring the patch to its last saved state.
     pub(crate) fn revert_edits(&self) {
-        let pending = self.ws.dirty_fields.with_untracked(|state| state.len());
+        let pending = self.ws.dirty_fields.with_untracked(crate::fx::FxHashSet::len);
         if pending == 0 {
             return;
         }
 
         match revert_workspace_edits(&self.ws) {
             Ok(()) => {
-                self.toast.show(ToastKind::Success, format!("Reverted {pending} pending edit(s)."))
+                self.toast.show(ToastKind::Success, format!("Reverted {pending} pending edit(s)."));
             }
             Err(err) => self.toast.show(ToastKind::Error, format!("Undo failed: {err:?}")),
         }

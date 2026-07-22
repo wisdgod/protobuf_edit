@@ -93,24 +93,24 @@ pub(crate) const DEFAULT_FRAME_NAME_TEMPLATE: &str = "{source} frame {idx} ({len
 
 pub(super) fn message_record_to_js(record: &MessageRecord) -> UiResult<JsValue> {
     let obj = Object::new();
-    js_set(&obj, META_ID, JsValue::from_str(&record.id.to_string()))?;
-    js_set(&obj, META_CLASS_ID, JsValue::from_str(&record.class_id.to_string()))?;
-    js_set(&obj, META_NAME, JsValue::from_str(record.name.as_ref()))?;
-    js_set(&obj, META_MODIFIED_MS, JsValue::from_f64(record.modified_ms as f64))?;
-    js_set(&obj, META_BYTES_LEN, JsValue::from_f64(record.bytes_len as f64))?;
+    js_set(&obj, META_ID, &JsValue::from_str(&record.id.to_string()))?;
+    js_set(&obj, META_CLASS_ID, &JsValue::from_str(&record.class_id.to_string()))?;
+    js_set(&obj, META_NAME, &JsValue::from_str(record.name.as_ref()))?;
+    js_set(&obj, META_MODIFIED_MS, &JsValue::from_f64(record.modified_ms as f64))?;
+    js_set(&obj, META_BYTES_LEN, &JsValue::from_f64(record.bytes_len as f64))?;
 
     if let Some(meta) = record.envelope_ref {
-        js_set(&obj, META_REF_KIND, JsValue::from_str("envelope_frame"))?;
-        js_set(&obj, META_REF_SOURCE_ID, JsValue::from_str(&meta.source_id.to_string()))?;
+        js_set(&obj, META_REF_KIND, &JsValue::from_str("envelope_frame"))?;
+        js_set(&obj, META_REF_SOURCE_ID, &JsValue::from_str(&meta.source_id.to_string()))?;
         js_set(
             &obj,
             META_REF_SOURCE_MODIFIED_MS,
-            JsValue::from_f64(meta.source_modified_ms as f64),
+            &JsValue::from_f64(meta.source_modified_ms as f64),
         )?;
-        js_set(&obj, META_REF_PAYLOAD_OFFSET, JsValue::from_f64(meta.payload_offset as f64))?;
-        js_set(&obj, META_REF_PAYLOAD_LEN, JsValue::from_f64(meta.payload_len as f64))?;
-        js_set(&obj, META_REF_FLAGS, JsValue::from_f64(meta.flags as f64))?;
-        js_set(&obj, META_REF_DECOMPRESS, JsValue::from_bool(meta.decompress))?;
+        js_set(&obj, META_REF_PAYLOAD_OFFSET, &JsValue::from_f64(meta.payload_offset as f64))?;
+        js_set(&obj, META_REF_PAYLOAD_LEN, &JsValue::from_f64(meta.payload_len as f64))?;
+        js_set(&obj, META_REF_FLAGS, &JsValue::from_f64(f64::from(meta.flags)))?;
+        js_set(&obj, META_REF_DECOMPRESS, &JsValue::from_bool(meta.decompress))?;
     }
 
     Ok(obj.into())
@@ -127,8 +127,8 @@ pub(super) fn load_class_name_map(raw: Vec<JsValue>) -> UiResult<FxHashMap<Messa
 
 pub(super) fn class_record_to_js(id: MessageId, name: &str) -> UiResult<JsValue> {
     let obj = Object::new();
-    js_set(&obj, CLASS_META_ID, JsValue::from_str(&id.to_string()))?;
-    js_set(&obj, CLASS_META_NAME, JsValue::from_str(name))?;
+    js_set(&obj, CLASS_META_ID, &JsValue::from_str(&id.to_string()))?;
+    js_set(&obj, CLASS_META_NAME, &JsValue::from_str(name))?;
     Ok(obj.into())
 }
 
@@ -185,8 +185,8 @@ pub(super) fn message_record_from_js(value: JsValue) -> UiResult<MessageRecord> 
     })
 }
 
-fn js_set(obj: &Object, key: &str, value: JsValue) -> UiResult<()> {
-    Reflect::set(obj, &JsValue::from_str(key), &value)
+fn js_set(obj: &Object, key: &str, value: &JsValue) -> UiResult<()> {
+    Reflect::set(obj, &JsValue::from_str(key), value)
         .map(|_| ())
         .map_err(|err| UiError::from(format!("Failed to write metadata.{key}: {err:?}")))
 }

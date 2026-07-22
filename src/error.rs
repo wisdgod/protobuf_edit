@@ -17,20 +17,20 @@ impl TreeError {
     #[inline]
     const fn label(self) -> &'static str {
         match self {
-            TreeError::CapacityExceeded => "CapacityExceeded",
-            TreeError::DecodeError => "DecodeError",
-            TreeError::InvalidTag => "InvalidTag",
-            TreeError::WireTypeMismatch => "WireTypeMismatch",
+            Self::CapacityExceeded => "CapacityExceeded",
+            Self::DecodeError => "DecodeError",
+            Self::InvalidTag => "InvalidTag",
+            Self::WireTypeMismatch => "WireTypeMismatch",
         }
     }
 
     #[inline]
     const fn message(self) -> &'static str {
         match self {
-            TreeError::CapacityExceeded => "capacity exceeded",
-            TreeError::DecodeError => "decode error",
-            TreeError::InvalidTag => "invalid tag",
-            TreeError::WireTypeMismatch => "wire type mismatch",
+            Self::CapacityExceeded => "capacity exceeded",
+            Self::DecodeError => "decode error",
+            Self::InvalidTag => "invalid tag",
+            Self::WireTypeMismatch => "wire type mismatch",
         }
     }
 }
@@ -51,7 +51,7 @@ impl From<BufAllocError> for TreeError {
     #[inline]
     fn from(value: BufAllocError) -> Self {
         match value {
-            BufAllocError::CapacityOverflow => TreeError::CapacityExceeded,
+            BufAllocError::CapacityOverflow => Self::CapacityExceeded,
         }
     }
 }

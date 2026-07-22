@@ -26,7 +26,7 @@ pub(crate) struct EnvelopeService {
 }
 
 impl EnvelopeService {
-    pub(crate) fn new(
+    pub(crate) const fn new(
         ws: WorkspaceState,
         catalog: MessageCatalogState,
         toast: ToastManager,

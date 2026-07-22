@@ -15,7 +15,7 @@ impl<'a> Txn<'a> {
     }
 
     #[inline]
-    pub fn tree(&mut self) -> &mut Patch {
+    pub const fn tree(&mut self) -> &mut Patch {
         self.tree
     }
 
@@ -41,6 +41,7 @@ impl Drop for Txn<'_> {
 impl Patch {
     /// Returns whether a transaction is active.
     #[inline]
+    #[must_use]
     pub const fn txn_active(&self) -> bool {
         self.txn.is_some()
     }
@@ -124,33 +125,30 @@ impl Patch {
                     let popped = msg_node.fields_in_order.pop();
                     debug_assert_eq!(popped, Some(field), "txn undo insert order mismatch");
 
-                    let should_remove = match msg_node.query.get_mut(&tag) {
-                        Some(bucket) => {
-                            debug_assert_eq!(
-                                bucket.tail,
-                                Some(field),
-                                "txn undo query tail mismatch"
-                            );
-                            debug_assert!(bucket.len > 0, "txn undo query len underflow");
+                    let should_remove = if let Some(bucket) = msg_node.query.get_mut(&tag) {
+                        debug_assert_eq!(
+                            bucket.tail,
+                            Some(field),
+                            "txn undo query tail mismatch"
+                        );
+                        debug_assert!(bucket.len > 0, "txn undo query len underflow");
 
-                            if let Some(prev) = prev_by_tag {
-                                let prev_idx = prev.as_inner() as usize;
-                                if let Some(prev_node) = self.fields.get_mut(prev_idx) {
-                                    prev_node.next_by_tag = None;
-                                } else {
-                                    debug_assert!(false, "txn undo prev_by_tag out of bounds");
-                                }
+                        if let Some(prev) = prev_by_tag {
+                            let prev_idx = prev.as_inner() as usize;
+                            if let Some(prev_node) = self.fields.get_mut(prev_idx) {
+                                prev_node.next_by_tag = None;
                             } else {
-                                bucket.head = None;
+                                debug_assert!(false, "txn undo prev_by_tag out of bounds");
                             }
-                            bucket.tail = prev_by_tag;
-                            bucket.len -= 1;
-                            bucket.len == 0
+                        } else {
+                            bucket.head = None;
                         }
-                        None => {
-                            debug_assert!(false, "txn undo query bucket missing");
-                            false
-                        }
+                        bucket.tail = prev_by_tag;
+                        bucket.len -= 1;
+                        bucket.len == 0
+                    } else {
+                        debug_assert!(false, "txn undo query bucket missing");
+                        false
                     };
                     if should_remove {
                         let _ = msg_node.query.remove(&tag);

@@ -19,6 +19,7 @@ pub fn encode_tag_value(buf: &mut Buf, tag: Tag) -> Result<(), BufAllocError> {
 }
 
 #[inline]
+#[must_use]
 pub fn decode_tag(data: &[u8]) -> Option<(Tag, u32)> {
     let (raw, n) = varint::decode32(data)?;
     let tag = Tag::new(raw)?;

@@ -5,7 +5,7 @@ use super::helpers::ensure_decode_len;
 use super::{Capacities, FieldMut, FieldRef, Document, TreeError, MAX_FIELDS};
 
 #[inline]
-fn validate_step_capacity(cap: Capacities) -> Result<(), TreeError> {
+const fn validate_step_capacity(cap: Capacities) -> Result<(), TreeError> {
     if cap.fields > MAX_FIELDS {
         return Err(TreeError::CapacityExceeded);
     }

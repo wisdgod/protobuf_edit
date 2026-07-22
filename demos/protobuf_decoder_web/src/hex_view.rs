@@ -157,7 +157,7 @@ pub fn HexGrid(container_ref: NodeRef<html::Div>) -> impl IntoView {
             return (0, 0);
         }
 
-        let client_height = el.client_height() as f64;
+        let client_height = f64::from(el.client_height());
         let total_height = total as f64 * ROW_HEIGHT_PX;
         let max_scroll_top =
             if total_height > client_height { total_height - client_height } else { 0.0 };
@@ -170,16 +170,14 @@ pub fn HexGrid(container_ref: NodeRef<html::Div>) -> impl IntoView {
     let total_rows = move || {
         patch_state
             .with(|p| p.as_ref().map(|p| p.root_bytes().len()))
-            .or_else(|| raw_bytes.with(|b| b.as_ref().map(|v| v.len())))
-            .map(|len| len.div_ceil(BYTES_PER_ROW))
-            .unwrap_or(0)
+            .or_else(|| raw_bytes.with(|b| b.as_ref().map(super::bytes::ByteView::len)))
+            .map_or(0, |len| len.div_ceil(BYTES_PER_ROW))
     };
 
     let visible_count = move || {
         container_ref
             .get()
-            .map(|el| (el.client_height() as f64 / ROW_HEIGHT_PX).ceil() as usize + 16)
-            .unwrap_or(40)
+            .map_or(40, |el| (f64::from(el.client_height()) / ROW_HEIGHT_PX).ceil() as usize + 16)
     };
 
     let selected_root_span = Memo::new(move |_| {
@@ -194,7 +192,7 @@ pub fn HexGrid(container_ref: NodeRef<html::Div>) -> impl IntoView {
     });
 
     let on_byte_dblclick = Callback::new(move |idx: usize| {
-        if patch_state.with(|p| p.is_none()) {
+        if patch_state.with(std::option::Option::is_none) {
             return;
         }
         let mut outcome: Option<(Option<FieldId>, Vec<FieldId>)> = None;
@@ -302,7 +300,7 @@ pub fn HexGrid(container_ref: NodeRef<html::Div>) -> impl IntoView {
         let current = first_row.get_untracked();
         if let Some(el) = container_ref.get() {
             let total_height = total as f64 * ROW_HEIGHT_PX;
-            let client_height = el.client_height() as f64;
+            let client_height = f64::from(el.client_height());
             let max_scroll_top = (total_height - client_height).max(0.0);
             let max_first_row = (max_scroll_top / ROW_HEIGHT_PX).floor() as usize;
             if current > max_first_row {
@@ -319,7 +317,7 @@ pub fn HexGrid(container_ref: NodeRef<html::Div>) -> impl IntoView {
             tabindex="0"
             on:scroll=move |ev| {
                 let el: web_sys::HtmlElement = event_target(&ev);
-                let new_first_row = (el.scroll_top() as f64 / ROW_HEIGHT_PX).floor() as usize;
+                let new_first_row = (f64::from(el.scroll_top()) / ROW_HEIGHT_PX).floor() as usize;
                 if first_row.get_untracked() != new_first_row {
                     first_row.set(new_first_row);
                 }
@@ -331,7 +329,7 @@ pub fn HexGrid(container_ref: NodeRef<html::Div>) -> impl IntoView {
                 is_selecting.set(false);
             }
             on:contextmenu=move |ev: web_sys::MouseEvent| {
-                if hex_selection.with_untracked(|s| s.is_some()) {
+                if hex_selection.with_untracked(std::option::Option::is_some) {
                     ev.prevent_default();
                     ctx_menu_pos.set((ev.client_x(), ev.client_y()));
                     ctx_menu_visible.set(true);
@@ -420,16 +418,9 @@ fn HexRow(
             if !h.contains(i) {
                 continue;
             }
-            best = match best {
-                None => Some(h.kind),
-                Some(prev) => {
-                    if h.kind.priority() > prev.priority() {
-                        Some(h.kind)
-                    } else {
-                        Some(prev)
-                    }
-                }
-            };
+            best = best.map_or(Some(h.kind), |prev| {
+                if h.kind.priority() > prev.priority() { Some(h.kind) } else { Some(prev) }
+            });
         }
         best
     };
@@ -456,11 +447,15 @@ fn HexRow(
                 out
             };
 
-            patch_state.with(|p| match p.as_ref() {
-                Some(patch) => build_cells(patch.root_bytes()),
-                None => raw_bytes
-                    .with(|b| b.as_ref().map(|view| build_cells(view.as_slice())))
-                    .unwrap_or_default(),
+            patch_state.with(|p| {
+                p.as_ref().map_or_else(
+                    || {
+                        raw_bytes
+                            .with(|b| b.as_ref().map(|view| build_cells(view.as_slice())))
+                            .unwrap_or_default()
+                    },
+                    |patch| build_cells(patch.root_bytes()),
+                )
             })
         })
     });
@@ -492,7 +487,7 @@ fn HexRow(
 
     view! {
     <div class="hex-row">
-        <span class="hex-offset">{format!("{:05X}", row_start)}</span>
+        <span class="hex-offset">{format!("{row_start:05X}")}</span>
             <span class="hex-bytes">
                 {move || {
                     row_cells.with(|cells| {

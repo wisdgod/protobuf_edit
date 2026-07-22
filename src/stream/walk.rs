@@ -79,7 +79,7 @@ pub(super) struct Walker {
 }
 
 impl Walker {
-    pub(super) fn new(matcher: PathTrieRef) -> Self {
+    pub(super) const fn new(matcher: PathTrieRef) -> Self {
         Self {
             matcher,
             emit_partial: false,
@@ -89,21 +89,21 @@ impl Walker {
         }
     }
 
-    pub(super) fn set_matcher(&mut self, matcher: PathTrieRef) {
+    pub(super) const fn set_matcher(&mut self, matcher: PathTrieRef) {
         self.matcher = matcher;
     }
 
-    pub(super) fn set_emit_partial(&mut self, enabled: bool) {
+    pub(super) const fn set_emit_partial(&mut self, enabled: bool) {
         self.emit_partial = enabled;
     }
 
     /// Whether no field is currently open or partially buffered.
-    pub(super) fn is_clean(&self) -> bool {
+    pub(super) const fn is_clean(&self) -> bool {
         self.frames.is_empty() && self.tail.is_empty()
     }
 
     /// Bytes of the boundary-straddling header fragment currently buffered.
-    pub(super) fn tail_len(&self) -> u32 {
+    pub(super) const fn tail_len(&self) -> u32 {
         self.tail.len()
     }
 
@@ -126,7 +126,7 @@ impl Walker {
         complete: bool,
         handler: &mut H,
     ) -> Result<usize, TreeError> {
-        for f in self.frames.iter_mut() {
+        for f in &mut self.frames {
             debug_assert!(f.emit_start.is_none());
             f.seen_start = 0;
         }
@@ -177,7 +177,7 @@ impl Walker {
             };
 
             self.consume(unit_len)?;
-            pos = self.dispatch(data, pos + unit_len, unit, unit_len, handler)?;
+            pos = self.dispatch(data, pos + unit_len, &unit, unit_len, handler)?;
         }
 
         if complete {
@@ -229,7 +229,7 @@ impl Walker {
         };
         #[cfg(not(feature = "group"))]
         let enclosing = self.frames.len();
-        for f in self.frames[..enclosing].iter_mut() {
+        for f in &mut self.frames[..enclosing] {
             if let Some(rec) = f.rec.as_mut() {
                 rec.extend_from_slice(&concat[..old_len])
                     .map_err(|_| TreeError::CapacityExceeded)?;
@@ -238,7 +238,7 @@ impl Walker {
         self.tail.clear();
 
         self.consume(unit_len)?;
-        let next = self.dispatch(data, from_data, unit, unit_len, handler)?;
+        let next = self.dispatch(data, from_data, &unit, unit_len, handler)?;
         Ok(Some(next))
     }
 
@@ -249,7 +249,7 @@ impl Walker {
         &mut self,
         data: &[u8],
         next_pos: usize,
-        unit: Unit,
+        unit: &Unit,
         hdr_len: usize,
         handler: &mut H,
     ) -> Result<usize, TreeError> {
@@ -469,7 +469,7 @@ impl Walker {
             return Ok(());
         }
         debug_assert!(u32::try_from(n).is_ok(), "consume steps are bounded by u32 payload sizes");
-        for f in self.frames.iter_mut() {
+        for f in &mut self.frames {
             if let Some(rem) = f.remaining.as_mut() {
                 *rem = rem.checked_sub(n as u32).ok_or(TreeError::DecodeError)?;
             }
@@ -507,7 +507,7 @@ impl Walker {
 /// truncation with `complete == true` is a `DecodeError`.
 fn parse_unit(bytes: &[u8], complete: bool) -> Result<Option<(Unit, usize)>, TreeError> {
     #[inline]
-    fn incomplete(complete: bool) -> Result<Option<(Unit, usize)>, TreeError> {
+    const fn incomplete(complete: bool) -> Result<Option<(Unit, usize)>, TreeError> {
         if complete { Err(TreeError::DecodeError) } else { Ok(None) }
     }
 
@@ -571,12 +571,14 @@ impl Default for Scanner {
 impl Scanner {
     /// Scanner with no match paths; `scan` only validates wire structure.
     #[inline]
-    pub fn new() -> Self {
+    #[must_use]
+    pub const fn new() -> Self {
         Self { matcher: EMPTY_TRIE }
     }
 
     #[inline]
-    pub fn with_trie<const MAX_NODES: usize, const MAX_EDGES: usize>(
+    #[must_use]
+    pub const fn with_trie<const MAX_NODES: usize, const MAX_EDGES: usize>(
         trie: &'static CompiledPathTrie<MAX_NODES, MAX_EDGES>,
     ) -> Self {
         Self { matcher: trie.as_ref() }

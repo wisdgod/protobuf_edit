@@ -12,26 +12,31 @@ pub struct Span {
 
 impl Span {
     #[inline]
+    #[must_use]
     pub const fn new(start: u32, end: u32) -> Option<Self> {
         if start <= end { Some(Self { start, end }) } else { None }
     }
 
     #[inline]
+    #[must_use]
     pub const fn start(self) -> u32 {
         self.start
     }
 
     #[inline]
+    #[must_use]
     pub const fn end(self) -> u32 {
         self.end
     }
 
     #[inline]
+    #[must_use]
     pub const fn len(self) -> u32 {
         self.end - self.start
     }
 
     #[inline]
+    #[must_use]
     pub const fn is_empty(self) -> bool {
         self.start == self.end
     }
@@ -53,6 +58,7 @@ pub struct FieldSpans {
 
 impl FieldSpans {
     #[inline]
+    #[must_use]
     pub const fn payload(self) -> Span {
         match self.value {
             ValueSpans::Varint { value }
@@ -89,7 +95,7 @@ pub enum ValueSpans {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) struct StoredSpans {
+pub struct StoredSpans {
     pub(crate) field: Span,
     pub(crate) tag_len: u8,
     pub(crate) aux_len: u8,
@@ -100,7 +106,7 @@ impl StoredSpans {
     #[inline]
     pub(crate) fn tag_span(self) -> Result<Span, TreeError> {
         let start = self.field.start();
-        let end = start.checked_add(self.tag_len as u32).ok_or(TreeError::CapacityExceeded)?;
+        let end = start.checked_add(u32::from(self.tag_len)).ok_or(TreeError::CapacityExceeded)?;
         Span::new(start, end).ok_or(TreeError::DecodeError)
     }
 
@@ -115,7 +121,7 @@ impl StoredSpans {
             WireType::Varint => {
                 let start = self.field.start();
                 let value_start =
-                    start.checked_add(self.tag_len as u32).ok_or(TreeError::CapacityExceeded)?;
+                    start.checked_add(u32::from(self.tag_len)).ok_or(TreeError::CapacityExceeded)?;
                 let value =
                     Span::new(value_start, self.field.end()).ok_or(TreeError::DecodeError)?;
                 Ok(ValueSpans::Varint { value })
@@ -135,9 +141,9 @@ impl StoredSpans {
             WireType::Len => {
                 let start = self.field.start();
                 let len_start =
-                    start.checked_add(self.tag_len as u32).ok_or(TreeError::CapacityExceeded)?;
+                    start.checked_add(u32::from(self.tag_len)).ok_or(TreeError::CapacityExceeded)?;
                 let len_end = len_start
-                    .checked_add(self.aux_len as u32)
+                    .checked_add(u32::from(self.aux_len))
                     .ok_or(TreeError::CapacityExceeded)?;
                 let len = Span::new(len_start, len_end).ok_or(TreeError::DecodeError)?;
 
@@ -192,7 +198,7 @@ impl StoredSpans {
 }
 
 #[inline]
-pub(crate) fn slice_span(bytes: &[u8], span: Span) -> Result<&[u8], TreeError> {
+pub fn slice_span(bytes: &[u8], span: Span) -> Result<&[u8], TreeError> {
     let start = span.start() as usize;
     let end = span.end() as usize;
     if end > bytes.len() {
@@ -202,14 +208,14 @@ pub(crate) fn slice_span(bytes: &[u8], span: Span) -> Result<&[u8], TreeError> {
 }
 
 #[inline]
-pub(crate) fn span_offset_by(span: Span, base: u32) -> Result<Span, TreeError> {
+pub fn span_offset_by(span: Span, base: u32) -> Result<Span, TreeError> {
     let start = base.checked_add(span.start()).ok_or(TreeError::CapacityExceeded)?;
     let end = base.checked_add(span.end()).ok_or(TreeError::CapacityExceeded)?;
     Span::new(start, end).ok_or(TreeError::DecodeError)
 }
 
 #[inline]
-pub(crate) fn value_spans_offset_by(value: ValueSpans, base: u32) -> Result<ValueSpans, TreeError> {
+pub fn value_spans_offset_by(value: ValueSpans, base: u32) -> Result<ValueSpans, TreeError> {
     match value {
         ValueSpans::Varint { value } => {
             Ok(ValueSpans::Varint { value: span_offset_by(value, base)? })

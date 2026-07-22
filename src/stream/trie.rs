@@ -118,9 +118,7 @@ impl<const MAX_NODES: usize, const MAX_EDGES: usize> CompiledPathTrie<MAX_NODES,
                     i += 1;
                 }
 
-                if found != u16::MAX {
-                    node = found;
-                } else {
+                if found == u16::MAX {
                     if (out.node_count as usize) >= MAX_NODES {
                         return Err(TreeError::CapacityExceeded);
                     }
@@ -138,6 +136,8 @@ impl<const MAX_NODES: usize, const MAX_EDGES: usize> CompiledPathTrie<MAX_NODES,
                     out.edge_count += 1;
 
                     node = next;
+                } else {
+                    node = found;
                 }
                 hop_idx += 1;
             }

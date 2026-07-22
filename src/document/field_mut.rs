@@ -21,6 +21,7 @@ impl<'a> FieldMut<'a> {
     }
 
     #[inline]
+    #[must_use]
     pub const fn ix(&self) -> Ix {
         self.ix
     }
@@ -43,22 +44,26 @@ impl<'a> FieldMut<'a> {
     }
 
     #[inline]
+    #[must_use]
     pub fn tag(&self) -> Tag {
         self.field().tag
     }
 
     #[inline]
+    #[must_use]
     pub fn wire_type(&self) -> WireType {
         self.tag().wire_type()
     }
 
     #[inline]
+    #[must_use]
     pub fn removed(&self) -> bool {
         self.field().removed
     }
 
     #[inline]
-    pub fn as_ref(&self) -> FieldRef<'_> {
+    #[must_use]
+    pub const fn as_ref(&self) -> FieldRef<'_> {
         // SAFETY: `FieldMut` guarantees `ix` is valid.
         unsafe { FieldRef::new_unchecked(self.tree, self.ix) }
     }
@@ -94,7 +99,7 @@ impl<'a> FieldMut<'a> {
         let varint = unsafe { self.tree.varint_unchecked_mut(slot) };
         let mut value = varint.value as u32;
         f(&mut value);
-        varint.value = value as u64;
+        varint.value = u64::from(value);
         varint.raw = RawVarint64::from_u64(varint.value);
         Ok(())
     }
@@ -151,7 +156,7 @@ impl<'a> FieldMut<'a> {
         let varint = unsafe { self.tree.varint_unchecked_mut(slot) };
         let mut value = varint::zigzag_decode32(varint.value as u32);
         f(&mut value);
-        varint.value = varint::zigzag_encode32(value) as u64;
+        varint.value = u64::from(varint::zigzag_encode32(value));
         varint.raw = RawVarint64::from_u64(varint.value);
         Ok(())
     }
@@ -189,7 +194,7 @@ impl<'a> FieldMut<'a> {
         let varint = unsafe { self.tree.varint_unchecked_mut(slot) };
         let mut value = varint.value != 0;
         f(&mut value);
-        varint.value = value as u64;
+        varint.value = u64::from(value);
         varint.raw = RawVarint64::from_u64(varint.value);
         Ok(())
     }
@@ -365,7 +370,7 @@ impl<'a> FieldMut<'a> {
     }
 
     pub fn push_packed_bool(&mut self, value: bool) -> Result<(), TreeError> {
-        self.push_packed_uint32(value as u32)
+        self.push_packed_uint32(u32::from(value))
     }
 
     pub fn push_packed_fixed32(&mut self, value: u32) -> Result<(), TreeError> {
@@ -523,7 +528,7 @@ impl<'a> FieldMut<'a> {
 
 impl Document {
     #[inline]
-    pub fn field_mut(&mut self, ix: Ix) -> Option<FieldMut<'_>> {
+    pub const fn field_mut(&mut self, ix: Ix) -> Option<FieldMut<'_>> {
         let idx = ix.as_inner() as usize;
         if idx >= self.fields.len() {
             return None;

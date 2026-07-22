@@ -34,6 +34,7 @@ pub struct Capacities {
 
 impl Capacities {
     #[inline]
+    #[must_use]
     pub const fn new() -> Self {
         Self {
             fields: 0,
@@ -48,31 +49,37 @@ impl Capacities {
     }
 
     #[inline]
+    #[must_use]
     pub const fn fields(mut self, n: usize) -> Self {
         self.fields = n;
         self
     }
     #[inline]
+    #[must_use]
     pub const fn varints(mut self, n: usize) -> Self {
         self.varints = n;
         self
     }
     #[inline]
+    #[must_use]
     pub const fn fixed32s(mut self, n: usize) -> Self {
         self.fixed32s = n;
         self
     }
     #[inline]
+    #[must_use]
     pub const fn fixed64s(mut self, n: usize) -> Self {
         self.fixed64s = n;
         self
     }
     #[inline]
+    #[must_use]
     pub const fn lendels(mut self, n: usize) -> Self {
         self.lendels = n;
         self
     }
     #[inline]
+    #[must_use]
     pub const fn query(mut self, n: usize) -> Self {
         self.query = n;
         self
@@ -94,6 +101,7 @@ pub struct Bucket {
 
 impl Bucket {
     #[inline]
+    #[must_use]
     pub const fn empty() -> Self {
         Self { head: None, tail: None }
     }
@@ -112,26 +120,26 @@ pub struct Document {
     pub(super) query: FxHashMap<Tag, Bucket>,
 }
 
-/// WireType::Varint payload slot.
+/// `WireType::Varint` payload slot.
 #[derive(Clone)]
 pub struct Varint {
     pub value: u64,
     pub raw: RawVarint64,
 }
 
-/// WireType::I32 payload slot.
+/// `WireType::I32` payload slot.
 #[derive(Clone)]
 pub struct Fixed32 {
     pub value: u32,
 }
 
-/// WireType::I64 payload slot.
+/// `WireType::I64` payload slot.
 #[derive(Clone)]
 pub struct Fixed64 {
     pub value: u64,
 }
 
-/// WireType::Len payload slot.
+/// `WireType::Len` payload slot.
 #[derive(Clone)]
 pub struct LengthDelimited {
     pub buf: Buf,
@@ -221,7 +229,7 @@ impl RawVarint32 {
         let len_bits = (len as u8) << Self::LEN_SHIFT;
         out.tail = if len == 5 {
             let last = raw[4];
-            debug_assert!((last & !Self::LAST_BYTE_MASK) == 0);
+            debug_assert_eq!((last & !Self::LAST_BYTE_MASK), 0);
             len_bits | last
         } else {
             len_bits
@@ -323,7 +331,7 @@ impl RawVarint64 {
         let len_bits = (len as u8) << Self::LEN_SHIFT;
         out.tail = if len == 10 {
             let last = raw[9];
-            debug_assert!((last & !Self::LAST_BYTE_MASK) == 0);
+            debug_assert_eq!((last & !Self::LAST_BYTE_MASK), 0);
             len_bits | last
         } else {
             len_bits

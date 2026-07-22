@@ -53,12 +53,12 @@ pub fn App() -> impl IntoView {
     let export_svc = ExportService::new(ws.clone(), catalog.clone(), toast);
 
     provide_context(ws.clone());
-    provide_context(catalog.clone());
-    provide_context(ui.clone());
+    provide_context(catalog);
+    provide_context(ui);
     provide_context(msg_svc.clone());
-    provide_context(env_svc.clone());
+    provide_context(env_svc);
     provide_context(ws_svc.clone());
-    provide_context(export_svc.clone());
+    provide_context(export_svc);
 
     Effect::new(move |_| {
         let _ = set_document_theme(theme.get().as_str());
@@ -72,10 +72,7 @@ pub fn App() -> impl IntoView {
     let dirty_count = ws.dirty_count;
     let hex_text_mode = ws.hex_text_mode;
 
-    Effect::new({
-        let msg_svc = msg_svc.clone();
-        move |_| msg_svc.bootstrap()
-    });
+    Effect::new(move |_| msg_svc.bootstrap());
 
     let split_ref = NodeRef::<html::Div>::new();
     let hex_container_ref = NodeRef::<html::Div>::new();
@@ -83,161 +80,160 @@ pub fn App() -> impl IntoView {
     let split_pct: RwSignal<f64> = RwSignal::new(50.0);
     let split_dragging: RwSignal<bool> = RwSignal::new(false);
 
-    let _stop_hotkeys = {
-        let ws_svc = ws_svc.clone();
-        let ws = ws.clone();
-        use_event_listener(
-            web_sys::window().expect("window is available"),
-            leptos::ev::keydown,
-            move |ev: web_sys::KeyboardEvent| {
-                if ev.target().is_some_and(|target| {
-                    target.dyn_ref::<web_sys::HtmlInputElement>().is_some()
-                        || target.dyn_ref::<web_sys::HtmlTextAreaElement>().is_some()
-                        || target.dyn_ref::<web_sys::HtmlSelectElement>().is_some()
-                }) {
+    let _stop_hotkeys = use_event_listener(
+        web_sys::window().expect("window is available"),
+        leptos::ev::keydown,
+        move |ev: web_sys::KeyboardEvent| {
+            if ev.target().is_some_and(|target| {
+                target.dyn_ref::<web_sys::HtmlInputElement>().is_some()
+                    || target.dyn_ref::<web_sys::HtmlTextAreaElement>().is_some()
+                    || target.dyn_ref::<web_sys::HtmlSelectElement>().is_some()
+            }) {
+                return;
+            }
+
+            let key = ev.key();
+
+            if key == "Tab" && !ev.ctrl_key() && !ev.meta_key() && !ev.alt_key() {
+                let Some(hex) = hex_container_ref.get() else {
                     return;
+                };
+                let Some(tree) = tree_container_ref.get() else {
+                    return;
+                };
+                ev.prevent_default();
+
+                let active_in_hex = web_sys::window()
+                    .and_then(|w| w.document())
+                    .and_then(|d| d.active_element())
+                    .is_some_and(|active| {
+                        let active: web_sys::Node = active.unchecked_into();
+                        let hex: web_sys::Node = hex.clone().unchecked_into();
+                        hex.contains(Some(&active))
+                    });
+
+                if active_in_hex {
+                    let _ = tree.focus();
+                } else {
+                    let _ = hex.focus();
                 }
+                return;
+            }
 
-                let key = ev.key();
-
-                if key == "Tab" && !ev.ctrl_key() && !ev.meta_key() && !ev.alt_key() {
-                    let Some(hex) = hex_container_ref.get() else {
-                        return;
-                    };
-                    let Some(tree) = tree_container_ref.get() else {
-                        return;
-                    };
+            if (ev.ctrl_key() || ev.meta_key()) && key.eq_ignore_ascii_case("z") {
+                if patch_state.with_untracked(std::option::Option::is_some)
+                    && dirty_count.get_untracked() > 0
+                {
                     ev.prevent_default();
-
-                    let active_in_hex = web_sys::window()
-                        .and_then(|w| w.document())
-                        .and_then(|d| d.active_element())
-                        .is_some_and(|active| {
-                            let active: web_sys::Node = active.unchecked_into();
-                            let hex: web_sys::Node = hex.clone().unchecked_into();
-                            hex.contains(Some(&active))
-                        });
-
-                    if active_in_hex {
-                        let _ = tree.focus();
-                    } else {
-                        let _ = hex.focus();
-                    }
-                    return;
+                    ws_svc.revert_edits();
                 }
+                return;
+            }
 
-                if (ev.ctrl_key() || ev.meta_key()) && key.eq_ignore_ascii_case("z") {
-                    if patch_state.with_untracked(|p| p.is_some())
-                        && dirty_count.get_untracked() > 0
-                    {
-                        ev.prevent_default();
-                        ws_svc.revert_edits();
-                    }
-                    return;
+            if (ev.ctrl_key() || ev.meta_key()) && key.eq_ignore_ascii_case("s") {
+                ev.prevent_default();
+                if patch_state.with_untracked(std::option::Option::is_some)
+                    && dirty_count.get_untracked() > 0
+                {
+                    let _ = ws_svc.save_reparse();
                 }
+                return;
+            }
 
-                if (ev.ctrl_key() || ev.meta_key()) && key.eq_ignore_ascii_case("s") {
+            match key.as_str() {
+                "Escape" => {
                     ev.prevent_default();
-                    if patch_state.with_untracked(|p| p.is_some())
-                        && dirty_count.get_untracked() > 0
-                    {
-                        let _ = ws_svc.save_reparse();
-                    }
-                    return;
+                    selected.set(None);
+                    ws.hex_selection.set(None);
                 }
-
-                match key.as_str() {
-                    "Escape" => {
-                        ev.prevent_default();
-                        selected.set(None);
-                        ws.hex_selection.set(None);
+                "ArrowDown" => {
+                    ev.prevent_default();
+                    let visible = visible_workspace_fields(&ws);
+                    if visible.is_empty() {
+                        return;
                     }
-                    "ArrowDown" => {
-                        ev.prevent_default();
-                        let visible = visible_workspace_fields(&ws);
-                        if visible.is_empty() {
-                            return;
-                        }
 
-                        let next = match selected.get_untracked() {
-                            None => visible.first().copied(),
-                            Some(cur) => visible
+                    let next = selected.get_untracked().map_or_else(
+                        || visible.first().copied(),
+                        |cur| {
+                            visible
                                 .iter()
                                 .position(|&f| f == cur)
                                 .and_then(|i| visible.get(i + 1))
                                 .copied()
-                                .or(Some(cur)),
-                        };
-                        selected.set(next);
+                                .or(Some(cur))
+                        },
+                    );
+                    selected.set(next);
+                }
+                "ArrowUp" => {
+                    ev.prevent_default();
+                    let visible = visible_workspace_fields(&ws);
+                    if visible.is_empty() {
+                        return;
                     }
-                    "ArrowUp" => {
-                        ev.prevent_default();
-                        let visible = visible_workspace_fields(&ws);
-                        if visible.is_empty() {
-                            return;
-                        }
 
-                        let prev = match selected.get_untracked() {
-                            None => visible.last().copied(),
-                            Some(cur) => visible
+                    let prev = selected.get_untracked().map_or_else(
+                        || visible.last().copied(),
+                        |cur| {
+                            visible
                                 .iter()
                                 .position(|&f| f == cur)
                                 .and_then(|i| i.checked_sub(1).and_then(|j| visible.get(j)))
                                 .copied()
-                                .or(Some(cur)),
-                        };
-                        selected.set(prev);
-                    }
-                    "Enter" => {
-                        let Some(field) = selected.get_untracked() else {
-                            return;
-                        };
-                        let is_len = patch_state.with_untracked(|p| {
-                            let Some(patch) = p.as_ref() else {
-                                return false;
-                            };
-                            patch
-                                .field_tag(field)
-                                .ok()
-                                .is_some_and(|tag| tag.wire_type() == protobuf_edit::WireType::Len)
-                        });
-                        if !is_len {
-                            return;
-                        }
-
-                        ev.prevent_default();
-
-                        if expanded.with_untracked(|s| s.contains(&field)) {
-                            expanded.update(|s| {
-                                s.remove(&field);
-                            });
-                            return;
-                        }
-
-                        let mut parsed: Option<Result<protobuf_edit::MessageId, TreeError>> = None;
-                        patch_state.update(|p| {
-                            let Some(patch) = p.as_mut() else {
-                                parsed = Some(Err(TreeError::DecodeError));
-                                return;
-                            };
-                            parsed = Some(patch.parse_child_message(field));
-                        });
-
-                        match parsed.unwrap_or(Err(TreeError::DecodeError)) {
-                            Ok(_child) => expanded.update(|s| {
-                                s.insert(field);
-                            }),
-                            Err(e) => toast.show(
-                                ToastKind::Error,
-                                format!("Failed to parse child message: {e:?}"),
-                            ),
-                        }
-                    }
-                    _ => {}
+                                .or(Some(cur))
+                        },
+                    );
+                    selected.set(prev);
                 }
-            },
-        )
-    };
+                "Enter" => {
+                    let Some(field) = selected.get_untracked() else {
+                        return;
+                    };
+                    let is_len = patch_state.with_untracked(|p| {
+                        let Some(patch) = p.as_ref() else {
+                            return false;
+                        };
+                        patch
+                            .field_tag(field)
+                            .is_ok_and(|tag| tag.wire_type() == protobuf_edit::WireType::Len)
+                    });
+                    if !is_len {
+                        return;
+                    }
+
+                    ev.prevent_default();
+
+                    if expanded.with_untracked(|s| s.contains(&field)) {
+                        expanded.update(|s| {
+                            s.remove(&field);
+                        });
+                        return;
+                    }
+
+                    let mut parsed: Option<Result<protobuf_edit::MessageId, TreeError>> = None;
+                    patch_state.update(|p| {
+                        let Some(patch) = p.as_mut() else {
+                            parsed = Some(Err(TreeError::DecodeError));
+                            return;
+                        };
+                        parsed = Some(patch.parse_child_message(field));
+                    });
+
+                    match parsed.unwrap_or(Err(TreeError::DecodeError)) {
+                        Ok(_child) => expanded.update(|s| {
+                            s.insert(field);
+                        }),
+                        Err(e) => toast.show(
+                            ToastKind::Error,
+                            format!("Failed to parse child message: {e:?}"),
+                        ),
+                    }
+                }
+                _ => {}
+            }
+        },
+    );
 
     let on_split_mouse_move = move |ev: leptos::ev::MouseEvent| {
         if !split_dragging.get_untracked() {
@@ -247,7 +243,7 @@ pub fn App() -> impl IntoView {
             return;
         };
         let rect = el.get_bounding_client_rect();
-        let x = ev.client_x() as f64 - rect.left();
+        let x = f64::from(ev.client_x()) - rect.left();
         let w = rect.width();
         if w <= 0.0 {
             return;
@@ -261,7 +257,7 @@ pub fn App() -> impl IntoView {
     };
 
     let structure_tree_fallback = move || {
-        if raw_bytes.with(|b| b.is_some()) {
+        if raw_bytes.with(std::option::Option::is_some) {
             view! { <div class="panel-header">"No protobuf structure."</div> }.into_any()
         } else {
             view! { <div class="panel-header">"No data loaded."</div> }.into_any()
@@ -279,7 +275,7 @@ pub fn App() -> impl IntoView {
         }
     };
 
-    let on_toggle_theme = UnsyncCallback::new(move |_| {
+    let on_toggle_theme = UnsyncCallback::new(move |()| {
         let _ = start_theme_transition(180);
         let next = theme.get_untracked().toggle();
         theme.set(next);
@@ -330,7 +326,7 @@ pub fn App() -> impl IntoView {
                                     <Breadcrumb />
 
                                     <Show
-                                        when=move || envelope_view.with(|s| s.is_some())
+                                        when=move || envelope_view.with(std::option::Option::is_some)
                                         fallback=|| ()
                                     >
                                         <EnvelopeFramesPanel />
@@ -338,7 +334,7 @@ pub fn App() -> impl IntoView {
 
                                     <div class="field-list" node_ref=tree_container_ref tabindex="0">
                                         <Show
-                                            when=move || patch_state.with(|p| p.is_some())
+                                            when=move || patch_state.with(std::option::Option::is_some)
                                             fallback=structure_tree_fallback
                                         >
                                             {field_tree_view}

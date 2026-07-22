@@ -25,7 +25,7 @@ pub struct Patch {
 }
 
 #[derive(Clone, Default)]
-pub(crate) struct ReadCache {
+pub struct ReadCache {
     pub(crate) enabled: bool,
     pub(crate) varints: Vec<Cell<Option<u64>>>,
 }
@@ -58,7 +58,7 @@ impl ReadCache {
         if !self.enabled {
             return None;
         }
-        self.varints.get(field_idx).and_then(|cell| cell.get())
+        self.varints.get(field_idx).and_then(core::cell::Cell::get)
     }
 
     pub(crate) fn set_varint(&self, field_idx: usize, value: u64) {
@@ -74,7 +74,7 @@ impl ReadCache {
 }
 
 #[derive(Clone)]
-pub(crate) struct MessageNode {
+pub struct MessageNode {
     pub(crate) source: MessageSource,
     pub(crate) parent_field: Option<FieldId>,
     pub(crate) fields_in_order: Vec<FieldId>,
@@ -82,14 +82,14 @@ pub(crate) struct MessageNode {
 }
 
 #[derive(Clone, Copy, Default)]
-pub(crate) struct TagBucket {
+pub struct TagBucket {
     pub(crate) head: Option<FieldId>,
     pub(crate) tail: Option<FieldId>,
     pub(crate) len: u32,
 }
 
 #[derive(Clone)]
-pub(crate) enum MessageSource {
+pub enum MessageSource {
     Root { start: u32, end: u32 },
     Owned { bytes: Buf },
 }
@@ -97,18 +97,18 @@ pub(crate) enum MessageSource {
 impl MessageSource {
     pub(crate) fn bytes<'a>(&'a self, root: &'a [u8]) -> &'a [u8] {
         match self {
-            MessageSource::Root { start, end } => {
+            Self::Root { start, end } => {
                 let start = *start as usize;
                 let end = *end as usize;
                 &root[start..end]
             }
-            MessageSource::Owned { bytes } => bytes.as_slice(),
+            Self::Owned { bytes } => bytes.as_slice(),
         }
     }
 }
 
 #[derive(Clone)]
-pub(crate) struct FieldNode {
+pub struct FieldNode {
     pub(crate) msg: MessageId,
     pub(crate) tag: Tag,
     pub(crate) prev_by_tag: Option<FieldId>,
@@ -121,7 +121,7 @@ pub(crate) struct FieldNode {
 }
 
 #[derive(Clone, Copy)]
-pub(crate) struct VarintEdit {
+pub struct VarintEdit {
     pub(crate) value: u64,
     pub(crate) raw: RawVarint64,
 }
@@ -134,7 +134,7 @@ impl VarintEdit {
 }
 
 #[derive(Clone)]
-pub(crate) enum PayloadEdit {
+pub enum PayloadEdit {
     Varint(VarintEdit),
     I32(u32),
     I64(u64),
@@ -159,6 +159,7 @@ impl<'a> BorrowedPatch<'a> {
     }
 
     #[inline]
+    #[must_use]
     pub fn into_owned(mut self) -> Patch {
         self.patch.source.make_owned();
         self.patch
@@ -182,7 +183,7 @@ impl DerefMut for BorrowedPatch<'_> {
 }
 
 #[derive(Clone)]
-pub(crate) enum UndoAction {
+pub enum UndoAction {
     FieldEdit { field: FieldId, prev: Option<PayloadEdit> },
     FieldDeleted { field: FieldId, prev: bool },
     FieldChild { field: FieldId, prev: Option<MessageId> },
@@ -190,7 +191,7 @@ pub(crate) enum UndoAction {
 }
 
 #[derive(Clone)]
-pub(crate) struct TxnState {
+pub struct TxnState {
     pub(crate) orig_messages_len: usize,
     pub(crate) orig_fields_len: usize,
     pub(crate) undo_log: Vec<UndoAction>,

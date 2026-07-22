@@ -24,12 +24,14 @@ impl Default for ChunkStream {
 
 impl ChunkStream {
     #[inline]
-    pub fn new() -> Self {
+    #[must_use]
+    pub const fn new() -> Self {
         Self { walker: Walker::new(EMPTY_TRIE), fed: 0 }
     }
 
     #[inline]
-    pub fn with_trie<const MAX_NODES: usize, const MAX_EDGES: usize>(
+    #[must_use]
+    pub const fn with_trie<const MAX_NODES: usize, const MAX_EDGES: usize>(
         trie: &'static CompiledPathTrie<MAX_NODES, MAX_EDGES>,
     ) -> Self {
         Self { walker: Walker::new(trie.as_ref()), fed: 0 }
@@ -51,7 +53,7 @@ impl ChunkStream {
     }
 
     #[inline]
-    pub fn set_emit_partial_matches(&mut self, enabled: bool) {
+    pub const fn set_emit_partial_matches(&mut self, enabled: bool) {
         self.walker.set_emit_partial(enabled);
     }
 
@@ -63,8 +65,9 @@ impl ChunkStream {
 
     /// Stream position right after the last fully parsed wire unit.
     #[inline]
+    #[must_use]
     pub fn offset(&self) -> u64 {
-        self.fed - self.walker.tail_len() as u64
+        self.fed - u64::from(self.walker.tail_len())
     }
 
     pub fn feed<H: WireHandler + ?Sized>(
@@ -79,7 +82,7 @@ impl ChunkStream {
 
     /// Errors with `DecodeError` if any field or nesting level is unfinished.
     #[inline]
-    pub fn finish(&self) -> Result<(), TreeError> {
+    pub const fn finish(&self) -> Result<(), TreeError> {
         if self.walker.is_clean() { Ok(()) } else { Err(TreeError::DecodeError) }
     }
 }

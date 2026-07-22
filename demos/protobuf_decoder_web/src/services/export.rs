@@ -16,7 +16,7 @@ pub(crate) struct ExportService {
 }
 
 impl ExportService {
-    pub(crate) fn new(
+    pub(crate) const fn new(
         ws: WorkspaceState,
         catalog: MessageCatalogState,
         toast: ToastManager,
@@ -174,7 +174,7 @@ impl ExportService {
                 };
                 match clipboard_write_text(&url) {
                     Ok(_) => {
-                        toast.show(ToastKind::Success, format!("Copy URL requested: {len} bytes."))
+                        toast.show(ToastKind::Success, format!("Copy URL requested: {len} bytes."));
                     }
                     Err(msg) => toast.show(ToastKind::Error, msg),
                 }

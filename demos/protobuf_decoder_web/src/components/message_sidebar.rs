@@ -67,10 +67,11 @@ pub(crate) fn MessageSidebar(on_toggle_theme: UnsyncCallback<()>) -> impl IntoVi
 
     let has_current_message = move || current_message_id.get().is_some();
 
-    let delete_selected_count = Memo::new(move |_| selected_for_delete.with(|s| s.len()));
+    let delete_selected_count =
+        Memo::new(move |_| selected_for_delete.with(std::collections::HashSet::len));
     let delete_selected_enabled = Memo::new(move |_| selected_for_delete.with(|s| !s.is_empty()));
 
-    let on_toggle_collapsed = UnsyncCallback::new(move |_| {
+    let on_toggle_collapsed = UnsyncCallback::new(move |()| {
         collapsed.update(|v| {
             *v = !*v;
         });
@@ -78,7 +79,7 @@ pub(crate) fn MessageSidebar(on_toggle_theme: UnsyncCallback<()>) -> impl IntoVi
 
     let on_delete_selected = {
         let msg_svc = msg_svc.clone();
-        UnsyncCallback::new(move |_| {
+        UnsyncCallback::new(move |()| {
             let ids: Vec<MessageId> = selected_for_delete.with(|s| s.iter().copied().collect());
             if ids.is_empty() {
                 return;
@@ -87,7 +88,7 @@ pub(crate) fn MessageSidebar(on_toggle_theme: UnsyncCallback<()>) -> impl IntoVi
         })
     };
 
-    let on_select_all_visible = UnsyncCallback::new(move |_| {
+    let on_select_all_visible = UnsyncCallback::new(move |()| {
         let filter = normalize_filter(&filter_text.get_untracked());
         let ids: Vec<MessageId> = messages_list.with(|list| {
             list.iter().filter(|m| matches_filter(m, &filter)).map(|m| m.id).collect()
@@ -98,14 +99,14 @@ pub(crate) fn MessageSidebar(on_toggle_theme: UnsyncCallback<()>) -> impl IntoVi
         selected_for_delete.update(|set| set.extend(ids));
     });
 
-    let on_clear_selection = UnsyncCallback::new(move |_| {
+    let on_clear_selection = UnsyncCallback::new(move |()| {
         selected_for_delete.set(FxHashSet::default());
     });
 
     let on_import_click = {
         let msg_svc = msg_svc.clone();
         let env_svc = env_svc.clone();
-        UnsyncCallback::new(move |_| match import_mode.get_untracked() {
+        UnsyncCallback::new(move |()| match import_mode.get_untracked() {
             ImportMode::Bytes => msg_svc.on_import_click(),
             ImportMode::Envelope => env_svc.import_envelope(),
         })
@@ -116,10 +117,7 @@ pub(crate) fn MessageSidebar(on_toggle_theme: UnsyncCallback<()>) -> impl IntoVi
         move |_| msg_svc.create()
     };
 
-    let on_view_frames = {
-        let env_svc = env_svc.clone();
-        move |_| env_svc.view_frames()
-    };
+    let on_view_frames = move |_| env_svc.view_frames();
 
     let on_name_change = {
         let msg_svc = msg_svc.clone();
@@ -129,10 +127,7 @@ pub(crate) fn MessageSidebar(on_toggle_theme: UnsyncCallback<()>) -> impl IntoVi
         }
     };
 
-    let on_upload = {
-        let msg_svc = msg_svc.clone();
-        move |ev: leptos::ev::Event| msg_svc.upload(ev)
-    };
+    let on_upload = move |ev: leptos::ev::Event| msg_svc.upload(&ev);
 
     let on_store_template = move |_| {
         if let Err(msg) =
@@ -192,14 +187,14 @@ pub(crate) fn MessageSidebar(on_toggle_theme: UnsyncCallback<()>) -> impl IntoVi
                     <button
                         class="btn btn--secondary"
                         on:click=move |_| on_select_all_visible.run(())
-                        disabled=move || messages_list.with(|list| list.is_empty())
+                        disabled=move || messages_list.with(std::vec::Vec::is_empty)
                     >
                         "All"
                     </button>
                     <button
                         class="btn btn--secondary"
                         on:click=move |_| on_clear_selection.run(())
-                        disabled=move || selected_for_delete.with(|s| s.is_empty())
+                        disabled=move || selected_for_delete.with(std::collections::HashSet::is_empty)
                     >
                         "None"
                     </button>
@@ -317,7 +312,7 @@ pub(crate) fn MessageSidebar(on_toggle_theme: UnsyncCallback<()>) -> impl IntoVi
                                 ));
 
                                 if !collapsed_classes.with(|s| s.contains(&class_id)) {
-                                    let mut sorted: Vec<&MessageMeta> = members.to_vec();
+                                    let mut sorted: Vec<&MessageMeta> = members.clone();
                                     sort_members(&mut sorted, class_id);
 
                                     for m in sorted {
@@ -617,7 +612,7 @@ fn message_row_view(meta: &MessageMeta, indent: usize, ctx: &MessageRowCtx) -> A
     let id = meta.id;
     let name = meta.name.clone();
     let name_for_display = name.clone();
-    let name_for_rename = name.clone();
+    let name_for_rename = name;
     let bytes_len = meta.bytes_len;
     let indent_px = (indent as i32) * 14;
 

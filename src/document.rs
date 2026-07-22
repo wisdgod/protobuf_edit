@@ -80,6 +80,7 @@ impl<'a> BorrowedDocument<'a> {
     }
 
     #[inline]
+    #[must_use]
     pub fn into_owned(mut self) -> Document {
         self.doc.make_payloads_owned();
         self.doc
@@ -111,6 +112,7 @@ impl Default for Document {
 
 impl Document {
     #[inline]
+    #[must_use]
     pub fn new() -> Self {
         Self {
             varints: alloc::vec::Vec::new(),
@@ -125,6 +127,7 @@ impl Document {
     }
 
     #[inline]
+    #[must_use]
     pub fn with_capacities(capacities: Capacities) -> Self {
         let mut doc = Self::new();
         doc.reserve_capacities(capacities);
@@ -224,32 +227,38 @@ impl Document {
     }
 
     #[inline]
+    #[must_use]
     pub fn bucket(&self, tag: Tag) -> Option<&Bucket> {
         self.query.get(&tag)
     }
 
     #[inline]
+    #[must_use]
     pub fn bucket_by_parts(&self, field_number: u32, wire_type: WireType) -> Option<&Bucket> {
         let tag = Tag::try_from_parts(field_number, wire_type)?;
         self.bucket(tag)
     }
 
     #[inline]
+    #[must_use]
     pub fn field_head(&self, tag: Tag) -> Option<Ix> {
         self.bucket(tag).and_then(|bucket| bucket.head)
     }
 
     #[inline]
+    #[must_use]
     pub fn field_tail(&self, tag: Tag) -> Option<Ix> {
         self.bucket(tag).and_then(|bucket| bucket.tail)
     }
 
     #[inline]
+    #[must_use]
     pub const fn make_tag(field_number: FieldNumber, wire_type: WireType) -> Tag {
         Tag::from_parts(field_number, wire_type)
     }
 
     #[inline]
+    #[must_use]
     pub const fn make_tag_u32(field_number: u32, wire_type: WireType) -> Option<Tag> {
         Tag::try_from_parts(field_number, wire_type)
     }
@@ -391,9 +400,7 @@ impl Document {
 
     pub(super) fn push_field_with_ix(&mut self, tag: Tag, slot: Ix, field_ix: Ix) {
         let expect_len = field_ix.as_inner() as usize;
-        if unlikely(self.fields.len() != expect_len) {
-            panic!("field index pre-check violated: {} != {}", self.fields.len(), expect_len);
-        }
+        assert!(!unlikely(self.fields.len() != expect_len), "field index pre-check violated: {} != {}", self.fields.len(), expect_len);
 
         let mut field = Field {
             tag,

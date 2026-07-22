@@ -54,14 +54,14 @@ impl Document {
             if unlikely(tag_len == 0) {
                 return Err(TreeError::DecodeError);
             }
-            checked_add(&mut total, tag_len as u32)?;
+            checked_add(&mut total, u32::from(tag_len))?;
             match wire_type {
                 WireType::Varint => {
                     let raw_len = self.varints[slot].raw.len();
                     if unlikely(raw_len == 0) {
                         return Err(TreeError::DecodeError);
                     }
-                    checked_add(&mut total, raw_len as u32)?;
+                    checked_add(&mut total, u32::from(raw_len))?;
                 }
                 WireType::I64 => {
                     checked_add(&mut total, 8)?;
@@ -72,7 +72,7 @@ impl Document {
                     if unlikely(raw_len == 0) {
                         return Err(TreeError::DecodeError);
                     }
-                    checked_add(&mut total, raw_len as u32)?;
+                    checked_add(&mut total, u32::from(raw_len))?;
                     checked_add(&mut total, val.len())?;
                 }
                 #[cfg(feature = "group")]
@@ -137,7 +137,7 @@ impl Document {
                 WireType::I64 => {
                     // SAFETY: covered by `encode_into_unchecked` contract.
                     unsafe {
-                        assume_ok(out.extend_from_slice(&self.fixed64s[slot].value.to_le_bytes()))
+                        assume_ok(out.extend_from_slice(&self.fixed64s[slot].value.to_le_bytes()));
                     };
                 }
                 WireType::Len => {
@@ -167,7 +167,7 @@ impl Document {
                 WireType::I32 => {
                     // SAFETY: covered by `encode_into_unchecked` contract.
                     unsafe {
-                        assume_ok(out.extend_from_slice(&self.fixed32s[slot].value.to_le_bytes()))
+                        assume_ok(out.extend_from_slice(&self.fixed32s[slot].value.to_le_bytes()));
                     };
                 }
             }
@@ -190,10 +190,7 @@ impl Document {
         borrowed_payloads: bool,
     ) -> Result<Self, TreeError> {
         ensure_decode_len(data.len())?;
-        let mut tree = match capacities {
-            Some(caps) => Self::with_capacities(caps),
-            None => Self::new(),
-        };
+        let mut tree = capacities.map_or_else(Self::new, Self::with_capacities);
         decode_into_tree(&mut tree, data, borrowed_payloads)?;
         Ok(tree)
     }

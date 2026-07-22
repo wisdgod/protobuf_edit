@@ -120,6 +120,7 @@ const _: () = {
 
 impl Buf {
     #[inline]
+    #[must_use]
     pub const fn new() -> Self {
         Self { inline: InlineData { buf: MaybeUninit::uninit(), tag: 0 } }
     }
@@ -137,6 +138,7 @@ impl Buf {
     ///
     /// # Panics
     /// Panics if the vector length or capacity exceeds `MAX_CAP`.
+    #[must_use]
     pub fn from_vec(bytes: alloc::vec::Vec<u8>) -> Self {
         assert!(bytes.len() <= MAX_CAP as usize, "vec len exceeds MAX_CAP");
 
@@ -178,6 +180,7 @@ impl Buf {
     /// - That memory must remain valid for the entire lifetime of returned `Buf`.
     /// - The pointed memory must not be mutated through this `Buf`.
     #[inline]
+    #[must_use]
     pub const unsafe fn from_borrowed_parts(ptr: NonNull<u8>, len: u32) -> Self {
         assert!(len <= MAX_CAP, "borrowed len exceeds MAX_CAP");
         Self {
@@ -197,16 +200,18 @@ impl Buf {
     /// - The input slice must outlive all uses of the returned `Buf`.
     /// - The referenced bytes are treated as borrowed/read-only payload.
     #[inline]
+    #[must_use]
     pub const unsafe fn from_borrowed_slice(slice: &[u8]) -> Self {
         assert!(slice.len() <= MAX_CAP as usize, "borrowed len exceeds MAX_CAP");
         let len = slice.len() as u32;
         // SAFETY: `slice.as_ptr()` is non-null even for empty slices, and the caller must ensure
         // the backing memory lives as long as this Buf is used.
-        let ptr = unsafe { NonNull::new_unchecked(slice.as_ptr() as *mut u8) };
+        let ptr = unsafe { NonNull::new_unchecked(slice.as_ptr().cast_mut()) };
         unsafe { Self::from_borrowed_parts(ptr, len) }
     }
 
     #[inline]
+    #[must_use]
     pub const fn from_static(bytes: &'static [u8]) -> Self {
         unsafe { Self::from_borrowed_slice(bytes) }
     }
@@ -217,6 +222,7 @@ impl Buf {
     }
 
     #[inline]
+    #[must_use]
     pub const fn is_inline(&self) -> bool {
         let tag = self.raw_tag();
         let payload = tag_payload(tag);
@@ -224,16 +230,19 @@ impl Buf {
     }
 
     #[inline]
+    #[must_use]
     pub const fn is_borrowed(&self) -> bool {
         tag_is_borrowed(self.raw_tag())
     }
 
     #[inline]
+    #[must_use]
     pub const fn spilled(&self) -> bool {
         !self.is_inline()
     }
 
     #[inline]
+    #[must_use]
     pub const fn len(&self) -> u32 {
         let tag = self.raw_tag();
         let payload = tag_payload(tag);
@@ -245,11 +254,13 @@ impl Buf {
     }
 
     #[inline]
+    #[must_use]
     pub const fn is_empty(&self) -> bool {
         self.len() == 0
     }
 
     #[inline]
+    #[must_use]
     pub const fn capacity(&self) -> u32 {
         let tag = self.raw_tag();
         let payload = tag_payload(tag);
@@ -301,6 +312,7 @@ impl Buf {
     }
 
     #[inline]
+    #[must_use]
     pub const fn as_slice(&self) -> &[u8] {
         unsafe {
             let t = self.triple();
@@ -365,6 +377,7 @@ impl Buf {
     }
 
     #[inline]
+    #[must_use]
     pub const fn as_ptr(&self) -> *const u8 {
         self.triple().ptr
     }
@@ -504,6 +517,7 @@ impl Buf {
         }
     }
 
+    #[inline]
     pub fn try_realloc(&mut self, new_cap: u32) -> Result<(), BufAllocError> {
         let t = self.triple();
         let len = t.len;
@@ -601,6 +615,7 @@ impl Buf {
         if self.is_inline() && !self.is_empty() { self.try_realloc(INLINE_CAP + 1) } else { Ok(()) }
     }
 
+    #[must_use]
     pub fn into_vec(self) -> alloc::vec::Vec<u8> {
         let t = self.triple();
         unsafe {
@@ -660,7 +675,7 @@ impl DerefMut for Buf {
 
 impl Clone for Buf {
     fn clone(&self) -> Self {
-        let mut out = Buf::new();
+        let mut out = Self::new();
         out.try_reserve_exact(self.len()).expect("clone reserve_exact must not fail");
         out.extend_from_slice(self.as_slice())
             .expect("clone reserve/extend must not fail after reserve_exact");
@@ -699,7 +714,7 @@ const fn make_tag(payload: u32, borrowed: bool) -> u32 {
 }
 
 #[inline]
-fn layout_u8(n: u32) -> Layout {
+const fn layout_u8(n: u32) -> Layout {
     debug_assert!(n <= MAX_CAP);
     unsafe { Layout::from_size_align_unchecked(n as usize, 1) }
 }
@@ -725,25 +740,19 @@ const fn growth_target(required: u32) -> Result<u32, BufAllocError> {
 #[inline]
 unsafe fn alloc_non_null(layout: Layout) -> NonNull<u8> {
     let raw = alloc(layout);
-    match NonNull::new(raw) {
-        Some(ptr) => ptr,
-        None => {
-            intrinsics::cold_path();
-            handle_alloc_error(layout);
-        }
+    if let Some(ptr) = NonNull::new(raw) { ptr } else {
+        intrinsics::cold_path();
+        handle_alloc_error(layout);
     }
 }
 
 #[inline]
 unsafe fn realloc_non_null(ptr: *mut u8, old_layout: Layout, new_cap: u32) -> NonNull<u8> {
     let raw = realloc(ptr, old_layout, new_cap as usize);
-    match NonNull::new(raw) {
-        Some(ptr) => ptr,
-        None => {
-            intrinsics::cold_path();
-            handle_alloc_error(layout_u8(new_cap));
-        }
-    }
+    NonNull::new(raw).unwrap_or_else(|| {
+        intrinsics::cold_path();
+        handle_alloc_error(layout_u8(new_cap));
+    })
 }
 
 #[cfg(test)]

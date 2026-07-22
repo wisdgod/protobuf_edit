@@ -37,7 +37,7 @@ impl ByteView {
     }
 
     #[inline]
-    pub(crate) fn len(&self) -> usize {
+    pub(crate) const fn len(&self) -> usize {
         self.end.saturating_sub(self.start)
     }
 }
