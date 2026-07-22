@@ -9,7 +9,7 @@ crate-type = ["cdylib", "rlib"]
 
 [dependencies]
 protobuf_edit = { path = "../..", features = ["nightly"] }
-rustc-hash = { version = "2.1", features = ["nightly"] }
+rustc-hash = { version = "2", features = ["nightly"] }
 
 # Leptos (CSR)
 leptos = { version = "0.8", features = ["csr", "nightly"] }
@@ -23,7 +23,7 @@ wasm-bindgen = "0.2"
 wasm-bindgen-futures = "0.4"
 
 # Utilities
-leptos-use = "0.18"
+leptos-use = "0.19"
 web-sys = { version = "0.3", features = [
   "Blob",
   "Clipboard",
