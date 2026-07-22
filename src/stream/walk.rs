@@ -177,7 +177,14 @@ impl Walker {
             };
 
             self.consume(unit_len)?;
-            pos = self.dispatch(data, pos + unit_len, &unit, unit_len, handler)?;
+            #[cfg(feature = "group")]
+            {
+                pos = self.dispatch(data, pos + unit_len, &unit, unit_len, handler)?;
+            }
+            #[cfg(not(feature = "group"))]
+            {
+                pos = self.dispatch(data, pos + unit_len, &unit, handler)?;
+            }
         }
 
         if complete {
@@ -238,19 +245,23 @@ impl Walker {
         self.tail.clear();
 
         self.consume(unit_len)?;
+        #[cfg(feature = "group")]
         let next = self.dispatch(data, from_data, &unit, unit_len, handler)?;
+        #[cfg(not(feature = "group"))]
+        let next = self.dispatch(data, from_data, &unit, handler)?;
         Ok(Some(next))
     }
 
     /// Applies one parsed unit; `next_pos` is the offset right after it and
-    /// `hdr_len` its full header length (may exceed `next_pos` when the header
-    /// was resumed from `tail`). Returns the offset parsing continues from.
+    /// `hdr_len` (group builds only) its full header length, which may exceed
+    /// `next_pos` when the header was resumed from `tail`. Returns the offset
+    /// parsing continues from.
     fn dispatch<H: WireHandler + ?Sized>(
         &mut self,
         data: &[u8],
         next_pos: usize,
         unit: &Unit,
-        hdr_len: usize,
+        #[cfg(feature = "group")] hdr_len: usize,
         handler: &mut H,
     ) -> Result<usize, TreeError> {
         let tag = unit.tag;
