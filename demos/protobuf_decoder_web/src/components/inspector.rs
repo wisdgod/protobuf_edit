@@ -32,6 +32,77 @@ impl BytesView {
     }
 }
 
+/// Runs one edit against the live patch inside an ensured transaction.
+///
+/// Every mutating inspector action shares this shape; the transaction is
+/// begun lazily so Ctrl+Z can roll all pending edits back to the last save.
+fn edit_patch<T>(
+    patch_state: RwSignal<Option<Patch>, LocalStorage>,
+    f: impl FnOnce(&mut Patch) -> Result<T, TreeError>,
+) -> Result<T, TreeError> {
+    patch_state
+        .try_update(|p| {
+            let patch = p.as_mut().ok_or(TreeError::InvalidId)?;
+            if !patch.txn_active() {
+                patch.txn_begin();
+            }
+            f(patch)
+        })
+        .unwrap_or(Err(TreeError::InvalidId))
+}
+
+/// Multi-format preview line for a validated bytes payload.
+fn bytes_hint(bytes: &[u8], current: BytesView) -> String {
+    if bytes.len() > 4096 {
+        return format!("{} byte(s) | preview skipped", bytes.len());
+    }
+
+    let mut parts: Vec<String> = Vec::new();
+    parts.push(format!("{} byte(s)", bytes.len()));
+
+    let utf8_result = core::str::from_utf8(bytes);
+    let readable = utf8_result.is_ok_and(is_readable_utf8);
+
+    if current != BytesView::Utf8 {
+        match utf8_result {
+            Ok(s) if readable => {
+                parts.push(format!("utf8: \"{}\"", truncate_for_hint(s, 80)));
+            }
+            Ok(s) => {
+                parts.push(format!("utf8 (unreadable): \"{}\"", truncate_for_hint(s, 40)));
+            }
+            Err(_) => {
+                parts.push("utf8: invalid".to_string());
+            }
+        }
+    }
+    if current != BytesView::Hex {
+        parts.push(format!("hex: {}", truncate_for_hint(&hex::encode(bytes), 80)));
+    }
+    if current != BytesView::Base64 {
+        let b64 = base64::engine::general_purpose::STANDARD.encode(bytes);
+        parts.push(format!("base64: {}", truncate_for_hint(&b64, 80)));
+    }
+    parts.join(" | ")
+}
+
+/// Standard error line under an input, shown while its validation fails.
+fn validation_error<T: Send + Sync + 'static>(
+    validation: Memo<Result<Option<T>, UiError>>,
+) -> impl IntoView {
+    view! {
+        <Show when=move || validation.with(Result::is_err) fallback=|| ()>
+            <div class="inspector-error">
+                {move || {
+                    validation
+                        .with(|v| v.as_ref().err().cloned())
+                        .unwrap_or(UiError::Borrowed(""))
+                }}
+            </div>
+        </Show>
+    }
+}
+
 #[component]
 pub(crate) fn InspectorDrawer() -> impl IntoView {
     let workspace = expect_context::<WorkspaceState>();
@@ -67,6 +138,48 @@ pub(crate) fn InspectorDrawer() -> impl IntoView {
         })
     });
 
+    // Backfills the editor inputs from the field's current value; shared by
+    // the selection effect and Clear (which reverts to the source value).
+    let refresh_from_patch = move |patch: &Patch, fid: FieldId| {
+        let Ok(tag) = patch.field_tag(fid) else {
+            return;
+        };
+        match tag.wire_type() {
+            WireType::Varint => {
+                if let Ok(v) = patch.varint(fid) {
+                    varint_text.set(v.to_string());
+                    varint_base.set(Some(v));
+                }
+            }
+            WireType::Len => {
+                if let Ok(bytes) = patch.bytes(fid) {
+                    match core::str::from_utf8(bytes) {
+                        Ok(s) if is_readable_utf8(s) => {
+                            bytes_view.set(BytesView::Utf8);
+                            bytes_text.set(s.to_string());
+                        }
+                        _ => {
+                            bytes_view.set(BytesView::Hex);
+                            bytes_text.set(hex::encode(bytes));
+                        }
+                    }
+                }
+            }
+            WireType::I32 => {
+                if let Ok(bits) = patch.i32_bits(fid) {
+                    fixed_text.set(format!("0x{bits:08X}"));
+                    fixed_base.set(Some(u64::from(bits)));
+                }
+            }
+            WireType::I64 => {
+                if let Ok(bits) = patch.i64_bits(fid) {
+                    fixed_text.set(format!("0x{bits:016X}"));
+                    fixed_base.set(Some(bits));
+                }
+            }
+        }
+    };
+
     Effect::new(move |_| {
         let Some(fid) = selected.get() else {
             varint_text.set(String::new());
@@ -78,45 +191,8 @@ pub(crate) fn InspectorDrawer() -> impl IntoView {
         };
 
         patch_state.with(|p| {
-            let Some(patch) = p.as_ref() else {
-                return;
-            };
-            let Ok(tag) = patch.field_tag(fid) else {
-                return;
-            };
-            match tag.wire_type() {
-                WireType::Varint => {
-                    if let Ok(v) = patch.varint(fid) {
-                        varint_text.set(v.to_string());
-                        varint_base.set(Some(v));
-                    }
-                }
-                WireType::Len => {
-                    if let Ok(bytes) = patch.bytes(fid) {
-                        match core::str::from_utf8(bytes) {
-                            Ok(s) if is_readable_utf8(s) => {
-                                bytes_view.set(BytesView::Utf8);
-                                bytes_text.set(s.to_string());
-                            }
-                            _ => {
-                                bytes_view.set(BytesView::Hex);
-                                bytes_text.set(hex::encode(bytes));
-                            }
-                        }
-                    }
-                }
-                WireType::I32 => {
-                    if let Ok(bits) = patch.i32_bits(fid) {
-                        fixed_text.set(format!("0x{bits:08X}"));
-                        fixed_base.set(Some(u64::from(bits)));
-                    }
-                }
-                WireType::I64 => {
-                    if let Ok(bits) = patch.i64_bits(fid) {
-                        fixed_text.set(format!("0x{bits:016X}"));
-                        fixed_base.set(Some(bits));
-                    }
-                }
+            if let Some(patch) = p.as_ref() {
+                refresh_from_patch(patch, fid);
             }
         });
     });
@@ -190,17 +266,18 @@ pub(crate) fn InspectorDrawer() -> impl IntoView {
                 v != base
             }
             WireType::Len => {
-                let Ok(Some(bytes)) = bytes_validation.get() else {
-                    return false;
-                };
                 let Some(fid) = selected.get() else {
                     return false;
                 };
-                patch_state.with(|p| {
-                    let Some(patch) = p.as_ref() else {
+                // `.with` avoids cloning the decoded payload on every
+                // keystroke (Memo::get is clone semantics).
+                bytes_validation.with(|v| {
+                    let Ok(Some(bytes)) = v else {
                         return false;
                     };
-                    patch.bytes(fid) != Ok(bytes.as_slice())
+                    patch_state.with(|p| {
+                        p.as_ref().is_some_and(|patch| patch.bytes(fid) != Ok(bytes.as_slice()))
+                    })
                 })
             }
             WireType::I32 | WireType::I64 => {
@@ -236,10 +313,11 @@ pub(crate) fn InspectorDrawer() -> impl IntoView {
             return;
         };
 
+        // Reuse the validation memos: the inputs were already parsed for the
+        // enabled state, so re-parsing here could only disagree with it.
         match wt {
             WireType::Varint => {
-                let raw = varint_text.get_untracked();
-                let Ok(value) = parse_u64(&raw) else {
+                let Ok(Some(value)) = varint_validation.get_untracked() else {
                     toast.show(
                         ToastKind::Error,
                         "Invalid varint value. Use decimal or 0x-prefixed hex.",
@@ -247,19 +325,7 @@ pub(crate) fn InspectorDrawer() -> impl IntoView {
                     return;
                 };
 
-                let mut res: Option<Result<(), TreeError>> = None;
-                patch_state.update(|p| {
-                    let Some(patch) = p.as_mut() else {
-                        res = Some(Err(TreeError::InvalidId));
-                        return;
-                    };
-                    if !patch.txn_active() {
-                        patch.txn_begin();
-                    }
-                    res = Some(patch.set_varint(fid, value));
-                });
-
-                match res.unwrap_or(Err(TreeError::InvalidId)) {
+                match edit_patch(patch_state, |patch| patch.set_varint(fid, value)) {
                     Ok(()) => {
                         dirty_fields.update(|s| {
                             s.insert(fid);
@@ -271,16 +337,16 @@ pub(crate) fn InspectorDrawer() -> impl IntoView {
                 }
             }
             WireType::Len => {
-                let raw = bytes_text.get_untracked();
-                let view = bytes_view.get_untracked();
-                let bytes = match decode_bytes_view(&raw, view) {
-                    Ok(v) => v,
+                let bytes = match bytes_validation.get_untracked() {
+                    Ok(Some(bytes)) => bytes,
+                    Ok(None) => return,
                     Err(msg) => {
                         toast.show(ToastKind::Error, msg);
                         return;
                     }
                 };
 
+                let view = bytes_view.get_untracked();
                 let canonical_text = match encode_bytes_view(&bytes, view) {
                     Ok(s) => s,
                     Err(msg) => {
@@ -291,11 +357,8 @@ pub(crate) fn InspectorDrawer() -> impl IntoView {
 
                 let bytes_len = bytes.len();
 
-                let descendants = patch_state.with(|p| {
-                    let Some(patch) = p.as_ref() else {
-                        return Vec::new();
-                    };
-                    collect_child_subtree(patch, fid)
+                let descendants = patch_state.with_untracked(|p| {
+                    p.as_ref().map(|patch| collect_child_subtree(patch, fid)).unwrap_or_default()
                 });
 
                 let mut buf = Buf::new();
@@ -304,19 +367,7 @@ pub(crate) fn InspectorDrawer() -> impl IntoView {
                     return;
                 }
 
-                let mut res: Option<Result<(), TreeError>> = None;
-                patch_state.update(|p| {
-                    let Some(patch) = p.as_mut() else {
-                        res = Some(Err(TreeError::InvalidId));
-                        return;
-                    };
-                    if !patch.txn_active() {
-                        patch.txn_begin();
-                    }
-                    res = Some(patch.set_bytes(fid, buf));
-                });
-
-                match res.unwrap_or(Err(TreeError::InvalidId)) {
+                match edit_patch(patch_state, |patch| patch.set_bytes(fid, buf)) {
                     Ok(()) => {
                         expanded.update(|s| {
                             s.remove(&fid);
@@ -339,82 +390,36 @@ pub(crate) fn InspectorDrawer() -> impl IntoView {
                     Err(e) => toast.show(ToastKind::Error, format!("Failed to apply edit: {e:?}")),
                 }
             }
-            WireType::I32 => {
-                let raw = fixed_text.get_untracked();
-                let Ok(value) = parse_u64(&raw) else {
+            WireType::I32 | WireType::I64 => {
+                let Ok(Some(value)) = fixed_validation.get_untracked() else {
                     toast.show(
                         ToastKind::Error,
-                        "Invalid fixed32 value. Use decimal or 0x-prefixed hex.",
+                        "Invalid fixed value. Use decimal or 0x-prefixed hex.",
                     );
                     return;
                 };
 
-                if value > u64::from(u32::MAX) {
-                    toast.show(ToastKind::Error, "Fixed32 out of range.");
-                    return;
-                }
-                let bits = value as u32;
-
-                let mut res: Option<Result<(), TreeError>> = None;
-                patch_state.update(|p| {
-                    let Some(patch) = p.as_mut() else {
-                        res = Some(Err(TreeError::InvalidId));
-                        return;
-                    };
-                    if !patch.txn_active() {
-                        patch.txn_begin();
-                    }
-                    res = Some(patch.set_i32_bits(fid, bits));
-                });
-
-                match res.unwrap_or(Err(TreeError::InvalidId)) {
-                    Ok(()) => {
-                        dirty_fields.update(|s| {
-                            s.insert(fid);
-                        });
-                        fixed_text.set(format!("0x{bits:08X}"));
-                        fixed_base.set(Some(value));
-                        toast.show(
-                            ToastKind::Success,
-                            format!("Applied fixed32 edit: 0x{bits:08X}."),
-                        );
-                    }
-                    Err(e) => toast.show(ToastKind::Error, format!("Failed to apply edit: {e:?}")),
-                }
-            }
-            WireType::I64 => {
-                let raw = fixed_text.get_untracked();
-                let Ok(value) = parse_u64(&raw) else {
-                    toast.show(
-                        ToastKind::Error,
-                        "Invalid fixed64 value. Use decimal or 0x-prefixed hex.",
-                    );
-                    return;
+                let (res, text) = if wt == WireType::I32 {
+                    let bits = value as u32;
+                    (
+                        edit_patch(patch_state, |patch| patch.set_i32_bits(fid, bits)),
+                        format!("0x{bits:08X}"),
+                    )
+                } else {
+                    (
+                        edit_patch(patch_state, |patch| patch.set_i64_bits(fid, value)),
+                        format!("0x{value:016X}"),
+                    )
                 };
 
-                let mut res: Option<Result<(), TreeError>> = None;
-                patch_state.update(|p| {
-                    let Some(patch) = p.as_mut() else {
-                        res = Some(Err(TreeError::InvalidId));
-                        return;
-                    };
-                    if !patch.txn_active() {
-                        patch.txn_begin();
-                    }
-                    res = Some(patch.set_i64_bits(fid, value));
-                });
-
-                match res.unwrap_or(Err(TreeError::InvalidId)) {
+                match res {
                     Ok(()) => {
                         dirty_fields.update(|s| {
                             s.insert(fid);
                         });
-                        fixed_text.set(format!("0x{value:016X}"));
+                        toast.show(ToastKind::Success, format!("Applied fixed edit: {text}."));
+                        fixed_text.set(text);
                         fixed_base.set(Some(value));
-                        toast.show(
-                            ToastKind::Success,
-                            format!("Applied fixed64 edit: 0x{value:016X}."),
-                        );
                     }
                     Err(e) => toast.show(ToastKind::Error, format!("Failed to apply edit: {e:?}")),
                 }
@@ -434,26 +439,11 @@ pub(crate) fn InspectorDrawer() -> impl IntoView {
             return;
         };
 
-        let descendants = patch_state.with(|p| {
-            let Some(patch) = p.as_ref() else {
-                return Vec::new();
-            };
-            collect_child_subtree(patch, fid)
+        let descendants = patch_state.with_untracked(|p| {
+            p.as_ref().map(|patch| collect_child_subtree(patch, fid)).unwrap_or_default()
         });
 
-        let mut res: Option<Result<(), TreeError>> = None;
-        patch_state.update(|p| {
-            let Some(patch) = p.as_mut() else {
-                res = Some(Err(TreeError::InvalidId));
-                return;
-            };
-            if !patch.txn_active() {
-                patch.txn_begin();
-            }
-            res = Some(patch.delete_field(fid));
-        });
-
-        match res.unwrap_or(Err(TreeError::InvalidId)) {
+        match edit_patch(patch_state, |patch| patch.delete_field(fid)) {
             Ok(()) => {
                 expanded.update(|s| {
                     s.remove(&fid);
@@ -486,7 +476,7 @@ pub(crate) fn InspectorDrawer() -> impl IntoView {
             return;
         };
 
-        let (was_inserted, descendants) = patch_state.with(|p| {
+        let (was_inserted, descendants) = patch_state.with_untracked(|p| {
             let Some(patch) = p.as_ref() else {
                 return (false, Vec::new());
             };
@@ -495,19 +485,7 @@ pub(crate) fn InspectorDrawer() -> impl IntoView {
             (was_inserted, descendants)
         });
 
-        let mut res: Option<Result<(), TreeError>> = None;
-        patch_state.update(|p| {
-            let Some(patch) = p.as_mut() else {
-                res = Some(Err(TreeError::InvalidId));
-                return;
-            };
-            if !patch.txn_active() {
-                patch.txn_begin();
-            }
-            res = Some(patch.clear_field_edit(fid));
-        });
-
-        match res.unwrap_or(Err(TreeError::InvalidId)) {
+        match edit_patch(patch_state, |patch| patch.clear_field_edit(fid)) {
             Ok(()) => {
                 expanded.update(|s| {
                     s.remove(&fid);
@@ -528,38 +506,9 @@ pub(crate) fn InspectorDrawer() -> impl IntoView {
                     return;
                 }
 
-                patch_state.with(|p| {
-                    let Some(patch) = p.as_ref() else {
-                        return;
-                    };
-                    let Ok(tag) = patch.field_tag(fid) else {
-                        return;
-                    };
-                    match tag.wire_type() {
-                        WireType::Varint => {
-                            if let Ok(v) = patch.varint(fid) {
-                                varint_text.set(v.to_string());
-                                varint_base.set(Some(v));
-                            }
-                        }
-                        WireType::Len => {
-                            if let Ok(bytes) = patch.bytes(fid) {
-                                bytes_view.set(BytesView::Hex);
-                                bytes_text.set(hex::encode(bytes));
-                            }
-                        }
-                        WireType::I32 => {
-                            if let Ok(bits) = patch.i32_bits(fid) {
-                                fixed_text.set(format!("0x{bits:08X}"));
-                                fixed_base.set(Some(u64::from(bits)));
-                            }
-                        }
-                        WireType::I64 => {
-                            if let Ok(bits) = patch.i64_bits(fid) {
-                                fixed_text.set(format!("0x{bits:016X}"));
-                                fixed_base.set(Some(bits));
-                            }
-                        }
+                patch_state.with_untracked(|p| {
+                    if let Some(patch) = p.as_ref() {
+                        refresh_from_patch(patch, fid);
                     }
                 });
 
@@ -595,7 +544,7 @@ pub(crate) fn InspectorDrawer() -> impl IntoView {
         patch_state.with(|p| {
             let patch = p.as_ref()?;
             let Some(fid) = selected.get() else {
-                return Some((patch.root(), "root message".to_string()));
+                return Some((patch.root(), "root message"));
             };
 
             if let Ok(tag) = patch.field_tag(fid)
@@ -603,11 +552,11 @@ pub(crate) fn InspectorDrawer() -> impl IntoView {
                 && expanded.with(|s| s.contains(&fid))
                 && let Ok(Some(child)) = patch.field_child_message(fid)
             {
-                return Some((child, "child message of selected field".to_string()));
+                return Some((child, "child message of selected field"));
             }
 
             let parent = patch.field_parent_message(fid).ok()?;
-            Some((parent, "parent message of selected field".to_string()))
+            Some((parent, "parent message of selected field"))
         })
     });
 
@@ -721,23 +670,13 @@ pub(crate) fn InspectorDrawer() -> impl IntoView {
 
         let wt = insert_wire.get_untracked();
 
-        let mut res: Option<Result<FieldId, TreeError>> = None;
-        match wt {
+        let res = match wt {
             WireType::Varint => {
                 let Ok(Some(value)) = insert_varint_validation.get_untracked() else {
                     toast.show(ToastKind::Error, "Invalid varint.");
                     return;
                 };
-                patch_state.update(|p| {
-                    let Some(patch) = p.as_mut() else {
-                        res = Some(Err(TreeError::InvalidId));
-                        return;
-                    };
-                    if !patch.txn_active() {
-                        patch.txn_begin();
-                    }
-                    res = Some(patch.insert_varint(target, tag, value));
-                });
+                edit_patch(patch_state, |patch| patch.insert_varint(target, tag, value))
             }
             WireType::Len => {
                 let Ok(Some(bytes)) = insert_bytes_validation.get_untracked() else {
@@ -751,57 +690,22 @@ pub(crate) fn InspectorDrawer() -> impl IntoView {
                     return;
                 }
 
-                patch_state.update(|p| {
-                    let Some(patch) = p.as_mut() else {
-                        res = Some(Err(TreeError::InvalidId));
-                        return;
-                    };
-                    if !patch.txn_active() {
-                        patch.txn_begin();
-                    }
-                    res = Some(patch.insert_bytes(target, tag, buf));
-                });
+                edit_patch(patch_state, |patch| patch.insert_bytes(target, tag, buf))
             }
-            WireType::I32 => {
+            WireType::I32 | WireType::I64 => {
                 let Ok(Some(value)) = insert_fixed_validation.get_untracked() else {
                     toast.show(ToastKind::Error, "Invalid fixed value.");
                     return;
                 };
-                if value > u64::from(u32::MAX) {
-                    toast.show(ToastKind::Error, "Fixed32 out of range.");
-                    return;
+                if wt == WireType::I32 {
+                    edit_patch(patch_state, |patch| patch.insert_i32_bits(target, tag, value as u32))
+                } else {
+                    edit_patch(patch_state, |patch| patch.insert_i64_bits(target, tag, value))
                 }
-                let bits = value as u32;
-                patch_state.update(|p| {
-                    let Some(patch) = p.as_mut() else {
-                        res = Some(Err(TreeError::InvalidId));
-                        return;
-                    };
-                    if !patch.txn_active() {
-                        patch.txn_begin();
-                    }
-                    res = Some(patch.insert_i32_bits(target, tag, bits));
-                });
             }
-            WireType::I64 => {
-                let Ok(Some(value)) = insert_fixed_validation.get_untracked() else {
-                    toast.show(ToastKind::Error, "Invalid fixed value.");
-                    return;
-                };
-                patch_state.update(|p| {
-                    let Some(patch) = p.as_mut() else {
-                        res = Some(Err(TreeError::InvalidId));
-                        return;
-                    };
-                    if !patch.txn_active() {
-                        patch.txn_begin();
-                    }
-                    res = Some(patch.insert_i64_bits(target, tag, value));
-                });
-            }
-        }
+        };
 
-        match res.unwrap_or(Err(TreeError::InvalidId)) {
+        match res {
             Ok(fid) => {
                 dirty_fields.update(|s| {
                     s.insert(fid);
@@ -968,14 +872,7 @@ pub(crate) fn InspectorDrawer() -> impl IntoView {
                             prop:value=move || varint_text.get()
                             on:input=move |ev| varint_text.set(event_target_value(&ev))
                         />
-                        <Show when=move || varint_validation.get().is_err() fallback=|| ()>
-                            <div class="inspector-error">
-                                {move || match varint_validation.get() {
-                                    Err(msg) => msg,
-                                    Ok(_) => UiError::Borrowed(""),
-                                }}
-                            </div>
-                        </Show>
+                        {validation_error(varint_validation)}
                         <Show when=move || varint_validation.get().is_ok() fallback=|| ()>
                             <div class="inspector-hint">
                                 {move || {
@@ -1005,52 +902,18 @@ pub(crate) fn InspectorDrawer() -> impl IntoView {
                             prop:value=move || bytes_text.get()
                             on:input=move |ev| bytes_text.set(event_target_value(&ev))
                         />
-                        <Show when=move || bytes_validation.get().is_err() fallback=|| ()>
-                            <div class="inspector-error">
-                                {move || match bytes_validation.get() {
-                                    Err(msg) => msg,
-                                    Ok(_) => UiError::Borrowed(""),
-                                }}
-                            </div>
-                        </Show>
-                        <Show when=move || bytes_validation.get().is_ok() fallback=|| ()>
+                        {validation_error(bytes_validation)}
+                        <Show when=move || bytes_validation.with(Result::is_ok) fallback=|| ()>
                             <div class="inspector-hint">
                                 {move || {
-                                    let Ok(Some(bytes)) = bytes_validation.get() else {
-                                        return "—".to_string();
-                                    };
-                                    if bytes.len() > 4096 {
-                                        return format!("{} byte(s) | preview skipped", bytes.len());
-                                    }
-
-                                    let current = bytes_view.get();
-                                    let mut parts: Vec<String> = Vec::new();
-                                    parts.push(format!("{} byte(s)", bytes.len()));
-
-                                    let utf8_result = core::str::from_utf8(&bytes);
-                                    let readable = utf8_result.is_ok_and(is_readable_utf8);
-
-                                    if current != BytesView::Utf8 {
-                                        match utf8_result {
-                                            Ok(s) if readable => {
-                                                parts.push(format!("utf8: \"{}\"", truncate_for_hint(s, 80)));
-                                            }
-                                            Ok(s) => {
-                                                parts.push(format!("utf8 (unreadable): \"{}\"", truncate_for_hint(s, 40)));
-                                            }
-                                            Err(_) => {
-                                                parts.push("utf8: invalid".to_string());
-                                            }
-                                        }
-                                    }
-                                    if current != BytesView::Hex {
-                                        parts.push(format!("hex: {}", truncate_for_hint(&hex::encode(&bytes), 80)));
-                                    }
-                                    if current != BytesView::Base64 {
-                                        let b64 = base64::engine::general_purpose::STANDARD.encode(&bytes);
-                                        parts.push(format!("base64: {}", truncate_for_hint(&b64, 80)));
-                                    }
-                                    parts.join(" | ")
+                                    // `.with` keeps the (possibly large)
+                                    // decoded payload unclones per keystroke.
+                                    bytes_validation.with(|v| {
+                                        let Ok(Some(bytes)) = v else {
+                                            return "—".to_string();
+                                        };
+                                        bytes_hint(bytes, bytes_view.get())
+                                    })
                                 }}
                             </div>
                         </Show>
@@ -1066,14 +929,7 @@ pub(crate) fn InspectorDrawer() -> impl IntoView {
                             prop:value=move || fixed_text.get()
                             on:input=move |ev| fixed_text.set(event_target_value(&ev))
                         />
-                        <Show when=move || fixed_validation.get().is_err() fallback=|| ()>
-                            <div class="inspector-error">
-                                {move || match fixed_validation.get() {
-                                    Err(msg) => msg,
-                                    Ok(_) => UiError::Borrowed(""),
-                                }}
-                            </div>
-                        </Show>
+                        {validation_error(fixed_validation)}
                         <Show when=move || fixed_validation.get().is_ok() fallback=|| ()>
                             <div class="inspector-hint">
                                 {move || {
@@ -1137,14 +993,7 @@ pub(crate) fn InspectorDrawer() -> impl IntoView {
                     prop:value=move || insert_field_number.get()
                     on:input=move |ev| insert_field_number.set(event_target_value(&ev))
                 />
-                <Show when=move || insert_tag_validation.get().is_err() fallback=|| ()>
-                    <div class="inspector-error">
-                        {move || match insert_tag_validation.get() {
-                            Err(msg) => msg,
-                            Ok(_) => UiError::Borrowed(""),
-                        }}
-                    </div>
-                </Show>
+                {validation_error(insert_tag_validation)}
 
                 <label class="inspector-label">"Wire type"</label>
                 <select
@@ -1166,14 +1015,7 @@ pub(crate) fn InspectorDrawer() -> impl IntoView {
                         prop:value=move || insert_varint_text.get()
                         on:input=move |ev| insert_varint_text.set(event_target_value(&ev))
                     />
-                    <Show when=move || insert_varint_validation.get().is_err() fallback=|| ()>
-                        <div class="inspector-error">
-                            {move || match insert_varint_validation.get() {
-                                Err(msg) => msg,
-                                Ok(_) => UiError::Borrowed(""),
-                            }}
-                        </div>
-                    </Show>
+                    {validation_error(insert_varint_validation)}
                     <Show
                         when=move || matches!(insert_varint_validation.get(), Ok(Some(_)))
                         fallback=|| ()
@@ -1206,24 +1048,22 @@ pub(crate) fn InspectorDrawer() -> impl IntoView {
                         prop:value=move || insert_bytes_text.get()
                         on:input=move |ev| insert_bytes_text.set(event_target_value(&ev))
                     />
-                    <Show when=move || insert_bytes_validation.get().is_err() fallback=|| ()>
-                        <div class="inspector-error">
-                            {move || match insert_bytes_validation.get() {
-                                Err(msg) => msg,
-                                Ok(_) => UiError::Borrowed(""),
-                            }}
-                        </div>
-                    </Show>
+                    {validation_error(insert_bytes_validation)}
                     <Show
                         when=move || matches!(insert_bytes_validation.get(), Ok(Some(_)))
                         fallback=|| ()
                     >
                         <div class="inspector-hint">
                             {move || {
-                                let Ok(Some(bytes)) = insert_bytes_validation.get() else {
+                                let Some(len) = insert_bytes_validation
+                                    .with(|v| match v {
+                                        Ok(Some(bytes)) => Some(bytes.len()),
+                                        _ => None,
+                                    })
+                                else {
                                     return "—".to_string();
                                 };
-                                format!("{} byte(s)", bytes.len())
+                                format!("{len} byte(s)")
                             }}
                         </div>
                     </Show>
@@ -1240,14 +1080,7 @@ pub(crate) fn InspectorDrawer() -> impl IntoView {
                         prop:value=move || insert_fixed_text.get()
                         on:input=move |ev| insert_fixed_text.set(event_target_value(&ev))
                     />
-                    <Show when=move || insert_fixed_validation.get().is_err() fallback=|| ()>
-                        <div class="inspector-error">
-                            {move || match insert_fixed_validation.get() {
-                                Err(msg) => msg,
-                                Ok(_) => UiError::Borrowed(""),
-                            }}
-                        </div>
-                    </Show>
+                    {validation_error(insert_fixed_validation)}
                     <Show
                         when=move || matches!(insert_fixed_validation.get(), Ok(Some(_)))
                         fallback=|| ()
