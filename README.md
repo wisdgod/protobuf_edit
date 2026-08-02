@@ -17,16 +17,22 @@ generated protobuf types, but still need to:
 - Performance-oriented: keep hot paths simple, allocation-light, and copy-free where possible.
 - Practical correctness: prefer explicit, testable invariants over cleverness.
 - Byte fidelity: preserve original bytes (including non-canonical varints) for unchanged fields.
-- Multiple models on purpose: choose between `Document`, `Patch`, and the stream walkers based on workload.
+- Multiple models on purpose: pick the tier whose allocation budget matches the workload.
 
 ## Choosing a model
 
+Three tiers by allocation budget:
+
 | Model | Best for | Cost profile |
 |---|---|---|
-| `Document` | deep structured transformations, building messages from scratch | eager decode into typed pools |
+| `FieldCursor` / `encode` | reading a couple of fields; building one message | zero allocation (cursor) / exactly one (encoder) |
 | `Patch` | "edit a few fields and forward the message" | span scan only; unchanged bytes copied verbatim on `save()` |
-| `Scanner` | extracting a few fields from one complete buffer | zero-copy, zero-alloc, single pass |
-| `ChunkStream` | the same extraction over data that arrives in pieces | buffers only boundary-straddling state |
+| `Document` | deep structured transformations, building messages from scratch | eager decode into typed pools |
+| `Scanner` / `ChunkStream` | trie-matched extraction from one buffer / from chunks | zero-copy walk; chunked mode buffers only boundary state |
+
+`cargo bench` (`benches/core.rs`, no external dependencies) keeps these cost claims
+measurable; as reference points on one machine: cursor walk ~1.0 GiB/s, one-edit
+`Patch::save` ~4.3 GiB/s versus a full `Document` re-encode at ~0.8 GiB/s.
 
 ## API layout
 
@@ -36,13 +42,55 @@ Public modules are grouped by concern:
 - `protobuf_edit::error`: shared crate error (`TreeError`)
 - `protobuf_edit::document`: arena-backed structured editing
 - `protobuf_edit::patch`: span-based editing
+- `protobuf_edit::encode`: borrowed message encoder with single-allocation output
 - `protobuf_edit::stream`: trie-matched wire walkers (`Scanner`, `ChunkStream`)
-- `protobuf_edit::wire`: tag primitives (`Tag`, `FieldNumber`, `WireType`, `tag!`)
+- `protobuf_edit::wire`: tag primitives (`Tag`, `FieldNumber`, `WireType`) and the
+  zero-allocation `FieldCursor`
 - `protobuf_edit::varint`: varint and zigzag codecs
 
 The crate root re-exports only the shared vocabulary (`Buf`, `TreeError`, `Tag`,
 `FieldNumber`, `WireType`) and each model's entry type (`Document`, `BorrowedDocument`,
 `Patch`, `BorrowedPatch`); everything else lives in its module.
+
+## `FieldCursor` and `encode`: the zero-allocation tier
+
+`FieldCursor` iterates one complete message without allocating or copying. Each
+step yields the tag, the typed decoded value, the exact raw byte span, and the
+field's offset; the first error poisons the cursor so nothing past a malformed
+unit is exposed. Descending into a nested message is caller-driven: open a new
+cursor over the `Len` payload.
+
+```rust
+use protobuf_edit::wire::{FieldCursor, WireValue};
+
+for field in FieldCursor::new(message_bytes) {
+    let field = field?; // CursorError { offset, kind }
+    match field.value {
+        WireValue::Varint(v) => println!("field {} = {v}", field.tag.field_number().as_inner()),
+        WireValue::Len(payload) => {
+            for inner in FieldCursor::new(payload) { /* ... */ }
+        }
+        _ => {}
+    }
+    let _ = (field.raw, field.offset); // exact bytes + position, for span math
+}
+```
+
+`encode` builds a message from a borrowed tree of fields — nested messages
+borrow child slices, so no intermediate buffers exist — and writes it with
+exactly one allocation of the exact size:
+
+```rust
+use protobuf_edit::encode::{encode, Field, Value};
+use protobuf_edit::field_number;
+
+let inner = [Field::new(field_number!(1), Value::Varint(150))];
+let fields = [
+    Field::new(field_number!(3), Value::Message(&inner)),
+    Field::new(field_number!(4), Value::Bytes(b"payload")),
+];
+let buf = encode(&fields)?; // single exact allocation
+```
 
 ## `Document`: structured editing
 
@@ -124,8 +172,11 @@ bytes survive byte-for-byte.
 
 - `Patch::from_bytes(data)` clones the input; `Patch::from_buf(buf)` takes ownership;
   `BorrowedPatch::from_bytes(data)` borrows it (zero-copy)
-- Navigation: `root()`, `message_fields(msg)`, `fields_by_tag(msg, tag)`,
-  `parse_child_message(field)` lazily parses a nested message
+- Navigation: `root()`; `message_fields(msg)` iterates all fields in arena order
+  (deleted included); `fields_by_number(msg, number)` iterates the live fields of
+  one field number in wire order (wire type is representation, not identity, so
+  mixed-wire-type occurrences share the chain); `parse_child_message(field)`
+  lazily parses a nested message
 - Reads: `varint(field)`, `i32_bits` / `i64_bits`, `bytes`; `enable_read_cache()` memoizes
   repeated varint reads
 - Spans: `field_spans(field)` (tag / len-prefix / payload sub-spans),
@@ -137,13 +188,12 @@ bytes survive byte-for-byte.
   `Txn::begin(&mut patch)` guard (rolls back on drop)
 
 ```rust
-use protobuf_edit::{Patch, tag};
+use protobuf_edit::{field_number, tag, Patch};
 
 let mut patch = Patch::from_bytes(&[0x08, 0x96, 0x01])?; // field 1 = 150
 let root = patch.root();
-let t = tag!(1, Varint);
 
-let field = patch.fields_by_tag(root, t)?.next().unwrap();
+let field = patch.fields_by_number(root, field_number!(1))?.next().unwrap();
 let before = patch.varint(field)?;
 patch.set_varint(field, before + 1)?;
 patch.insert_varint(root, tag!(2, Varint), 7)?;
@@ -195,10 +245,8 @@ payloads flow through without ever being buffered whole.
 ## `wire`, `varint`, `buf`
 
 - `wire`: `Tag` (non-zero `(field_number << 3) | wire_type`), `FieldNumber` (niche-packed
-  `1..=2^29-1`), `WireType`, `encode_tag` / `encode_tag_value` / `decode_tag`, and
-  `FieldCursor` — a zero-allocation iterator over one complete message that yields each
-  field's decoded value, exact raw span, and offset (`Result<RawField, CursorError>`,
-  errors carry offset + kind).
+  `1..=2^29-1`), `WireType`, `encode_tag` / `encode_tag_value` / `decode_tag`, and the
+  `FieldCursor` shown above.
 - Definition macros, compile-time checked and structure-preserving:
   `tag!(1, Len)` / `tag!(1, 2)` → `Tag` (no `WireType` import needed),
   `tag!([(1, Len), (3, Varint)])` → `[Tag; 2]`;
