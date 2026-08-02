@@ -68,6 +68,7 @@ impl Patch {
         self.txn = Some(TxnState {
             orig_messages_len: self.messages.len(),
             orig_fields_len: self.fields.len(),
+            orig_edits_len: self.edits.len(),
             undo_log: Vec::new(),
         });
     }
@@ -155,6 +156,10 @@ impl Patch {
 
         self.messages.truncate(state.orig_messages_len);
         self.fields.truncate(state.orig_fields_len);
+        // Pre-transaction slots were never overwritten in place (see
+        // `Patch::store_edit`), so restored `edit` indices still hold their
+        // original values; transaction-era slots are reclaimed here.
+        self.edits.truncate(state.orig_edits_len);
         self.read_cache.truncate_fields(state.orig_fields_len);
     }
 }

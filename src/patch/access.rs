@@ -80,7 +80,7 @@ impl Patch {
 
     pub fn field_spans(&self, field: FieldId) -> Result<Option<FieldSpans>, TreeError> {
         let node = self.field(field)?;
-        let Some(spans) = node.spans else {
+        let Some(spans) = node.spans() else {
             return Ok(None);
         };
         Ok(Some(spans.expand(node.tag.wire_type())?))
@@ -91,7 +91,7 @@ impl Patch {
     /// Inserted fields and fields inside owned child messages return `None`.
     pub fn field_root_spans(&self, field: FieldId) -> Result<Option<FieldSpans>, TreeError> {
         let node = self.field(field)?;
-        let Some(spans) = node.spans else {
+        let Some(spans) = node.spans() else {
             return Ok(None);
         };
         let Some(msg_span) = self.message_root_span(node.msg)? else {
@@ -117,14 +117,14 @@ impl Patch {
         if node.tag.wire_type() != WireType::Varint {
             return Err(TreeError::WireTypeMismatch);
         }
-        if let Some(PayloadEdit::Varint(edit)) = node.edit.as_ref() {
+        if let Some(PayloadEdit::Varint(edit)) = self.field_edit(node) {
             return Ok(edit.value);
         }
         let field_idx = field.as_inner() as usize;
         if let Some(cached) = self.read_cache.get_varint(field_idx) {
             return Ok(cached);
         }
-        let Some(spans) = node.spans else {
+        let Some(spans) = node.spans() else {
             return Err(TreeError::InvalidId);
         };
         let msg_bytes = self.message_bytes(node.msg)?;
@@ -142,10 +142,10 @@ impl Patch {
         if node.tag.wire_type() != WireType::I32 {
             return Err(TreeError::WireTypeMismatch);
         }
-        if let Some(PayloadEdit::I32(bits)) = node.edit.as_ref() {
+        if let Some(PayloadEdit::I32(bits)) = self.field_edit(node) {
             return Ok(*bits);
         }
-        let Some(spans) = node.spans else {
+        let Some(spans) = node.spans() else {
             return Err(TreeError::InvalidId);
         };
         let msg_bytes = self.message_bytes(node.msg)?;
@@ -162,10 +162,10 @@ impl Patch {
         if node.tag.wire_type() != WireType::I64 {
             return Err(TreeError::WireTypeMismatch);
         }
-        if let Some(PayloadEdit::I64(bits)) = node.edit.as_ref() {
+        if let Some(PayloadEdit::I64(bits)) = self.field_edit(node) {
             return Ok(*bits);
         }
-        let Some(spans) = node.spans else {
+        let Some(spans) = node.spans() else {
             return Err(TreeError::InvalidId);
         };
         let msg_bytes = self.message_bytes(node.msg)?;
@@ -186,10 +186,10 @@ impl Patch {
             WireType::SGroup => {}
             _ => return Err(TreeError::WireTypeMismatch),
         }
-        if let Some(PayloadEdit::Bytes(buf)) = node.edit.as_ref() {
+        if let Some(PayloadEdit::Bytes(buf)) = self.field_edit(node) {
             return Ok(buf.as_slice());
         }
-        let Some(spans) = node.spans else {
+        let Some(spans) = node.spans() else {
             return Err(TreeError::InvalidId);
         };
         let msg_bytes = self.message_bytes(node.msg)?;

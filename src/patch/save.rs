@@ -78,7 +78,7 @@ impl Patch {
 
             if field.edit.is_none()
                 && !child_dirty
-                && let Some(spans) = field.spans
+                && let Some(spans) = field.spans()
             {
                 len = len.checked_add(spans.field.len()).ok_or(TreeError::CapacityExceeded)?;
                 continue;
@@ -95,7 +95,7 @@ impl Patch {
     }
 
     fn save_field_len(&self, node: &FieldNode, plan: &mut SavePlan) -> Result<u32, TreeError> {
-        let tag_len = match node.spans {
+        let tag_len = match node.spans() {
             Some(spans) => u32::from(spans.tag_len),
             None if !node.raw_tag.is_empty() => u32::from(node.raw_tag.len()),
             None => crate::varint::encoded_len32(node.tag.get()),
@@ -103,32 +103,32 @@ impl Patch {
 
         let value_len = match node.tag.wire_type() {
             WireType::Varint => {
-                let Some(PayloadEdit::Varint(edit)) = node.edit.as_ref() else {
+                let Some(PayloadEdit::Varint(edit)) = self.field_edit(node) else {
                     return Err(TreeError::Corrupted);
                 };
                 u32::from(edit.raw.len())
             }
             WireType::I32 => {
-                let Some(PayloadEdit::I32(_bits)) = node.edit.as_ref() else {
+                let Some(PayloadEdit::I32(_bits)) = self.field_edit(node) else {
                     return Err(TreeError::Corrupted);
                 };
                 4
             }
             WireType::I64 => {
-                let Some(PayloadEdit::I64(_bits)) = node.edit.as_ref() else {
+                let Some(PayloadEdit::I64(_bits)) = self.field_edit(node) else {
                     return Err(TreeError::Corrupted);
                 };
                 8
             }
             WireType::Len => {
                 let (orig_len_bytes, orig_payload_len) = node
-                    .spans
+                    .spans()
                     .map_or((None, 0), |spans| (Some(u32::from(spans.aux_len)), spans.payload_len));
 
                 let payload_len = if let Some(child) = node.child {
                     self.save_message_info(child, plan)?.len
                 } else {
-                    match node.edit.as_ref() {
+                    match self.field_edit(node) {
                         Some(PayloadEdit::Bytes(buf)) => buf.len(),
                         None | Some(_) => return Err(TreeError::Corrupted),
                     }
@@ -142,7 +142,7 @@ impl Patch {
             }
             #[cfg(feature = "group")]
             WireType::SGroup => {
-                let end_tag_len = match node.spans {
+                let end_tag_len = match node.spans() {
                     Some(spans) => spans.aux_len as u32,
                     None => {
                         let (field_number, _wire_type) = node.tag.split();
@@ -155,7 +155,7 @@ impl Patch {
                 let body_len = if let Some(child) = node.child {
                     self.save_message_info(child, plan)?.len
                 } else {
-                    match node.edit.as_ref() {
+                    match self.field_edit(node) {
                         Some(PayloadEdit::Bytes(buf)) => buf.len(),
                         None => return Err(TreeError::Corrupted),
                         Some(_) => return Err(TreeError::Corrupted),
@@ -198,7 +198,7 @@ impl Patch {
 
             if field.edit.is_none()
                 && !child_dirty
-                && let Some(spans) = field.spans
+                && let Some(spans) = field.spans()
             {
                 let span = spans.field;
                 pending_copy = match pending_copy {
@@ -237,7 +237,7 @@ impl Patch {
         out: &mut Buf,
     ) -> Result<(), TreeError> {
         let node = self.field(field)?;
-        match node.spans {
+        match node.spans() {
             Some(spans) => {
                 let tag_span = spans.tag_span()?;
                 let tag_bytes = slice_span(msg_bytes, tag_span)?;
@@ -255,20 +255,20 @@ impl Patch {
 
         match node.tag.wire_type() {
             WireType::Varint => {
-                let Some(PayloadEdit::Varint(edit)) = node.edit.as_ref() else {
+                let Some(PayloadEdit::Varint(edit)) = self.field_edit(node) else {
                     return Err(TreeError::Corrupted);
                 };
                 let (bytes, len) = edit.raw.to_array();
                 out.extend_from_slice(&bytes[..len])?;
             }
             WireType::I32 => {
-                let Some(PayloadEdit::I32(bits)) = node.edit.as_ref() else {
+                let Some(PayloadEdit::I32(bits)) = self.field_edit(node) else {
                     return Err(TreeError::Corrupted);
                 };
                 out.extend_from_slice(&bits.to_le_bytes())?;
             }
             WireType::I64 => {
-                let Some(PayloadEdit::I64(bits)) = node.edit.as_ref() else {
+                let Some(PayloadEdit::I64(bits)) = self.field_edit(node) else {
                     return Err(TreeError::Corrupted);
                 };
                 out.extend_from_slice(&bits.to_le_bytes())?;
@@ -293,7 +293,7 @@ impl Patch {
         plan: &mut SavePlan,
         out: &mut Buf,
     ) -> Result<(), TreeError> {
-        let (orig_len_span, orig_payload_len) = match node.spans {
+        let (orig_len_span, orig_payload_len) = match node.spans() {
             Some(spans) => (Some(stored_len_prefix_span(spans)?), spans.payload_len),
             None => (None, 0),
         };
@@ -301,7 +301,7 @@ impl Patch {
         let payload_len = if let Some(child) = node.child {
             self.save_message_info(child, plan)?.len
         } else {
-            match node.edit.as_ref() {
+            match self.field_edit(node) {
                 Some(PayloadEdit::Bytes(buf)) => buf.len(),
                 None | Some(_) => return Err(TreeError::Corrupted),
             }
@@ -322,7 +322,7 @@ impl Patch {
             return Ok(());
         }
 
-        let Some(PayloadEdit::Bytes(payload)) = node.edit.as_ref() else {
+        let Some(PayloadEdit::Bytes(payload)) = self.field_edit(node) else {
             return Err(TreeError::Corrupted);
         };
         out.extend_from_slice(payload.as_slice())?;
@@ -337,7 +337,7 @@ impl Patch {
         plan: &mut SavePlan,
         out: &mut Buf,
     ) -> Result<(), TreeError> {
-        let end_tag_span = match node.spans {
+        let end_tag_span = match node.spans() {
             Some(spans) => Some(stored_group_end_tag_span(spans)?),
             None => None,
         };
@@ -345,7 +345,7 @@ impl Patch {
         if let Some(child) = node.child {
             self.write_message(child, plan, out)?;
         } else {
-            let Some(PayloadEdit::Bytes(body)) = node.edit.as_ref() else {
+            let Some(PayloadEdit::Bytes(body)) = self.field_edit(node) else {
                 return Err(TreeError::Corrupted);
             };
             out.extend_from_slice(body.as_slice())?;

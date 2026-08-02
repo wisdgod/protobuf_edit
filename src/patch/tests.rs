@@ -358,3 +358,35 @@ fn transaction_rolls_back_insertions_and_deletions() {
     assert_eq!(roundtrip.first_ref(tag1).unwrap().as_uint64(), Some(7));
     assert!(roundtrip.first_ref(tag2).is_none());
 }
+
+#[test]
+fn rollback_restores_pre_transaction_edit_values() {
+    let mut doc = Document::new();
+    let _ = doc.push_varint(fnn(1), 7).unwrap();
+    let bytes = doc.to_buf().unwrap();
+
+    let mut patch = Patch::from_bytes(bytes.as_slice()).unwrap();
+    let root = patch.root();
+    let tag1 = Tag::from_parts(fnn(1), WireType::Varint);
+    let field = patch.fields_by_tag(root, tag1).unwrap().next().unwrap();
+
+    // Pre-transaction edit occupies a pool slot.
+    patch.set_varint(field, 10).unwrap();
+    assert_eq!(patch.varint(field).unwrap(), 10);
+
+    // In-transaction edits must not clobber the pre-transaction slot value.
+    patch.txn_begin();
+    patch.set_varint(field, 20).unwrap();
+    patch.set_varint(field, 30).unwrap();
+    assert_eq!(patch.varint(field).unwrap(), 30);
+    patch.txn_rollback();
+
+    assert_eq!(patch.varint(field).unwrap(), 10, "rollback must restore the pre-txn edit value");
+
+    // Rolling back an edit on a previously unedited field clears it fully.
+    patch.txn_begin();
+    patch.clear_field_edit(field).unwrap();
+    patch.set_varint(field, 40).unwrap();
+    patch.txn_rollback();
+    assert_eq!(patch.varint(field).unwrap(), 10);
+}

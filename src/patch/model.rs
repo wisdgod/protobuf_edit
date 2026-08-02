@@ -11,6 +11,13 @@ use crate::Buf;
 
 use super::{FieldId, MessageId, StoredSpans};
 
+define_valid_range_type!(
+    /// Index into the payload-edit side pool.
+    ///
+    /// `u32::MAX` is reserved as `Option<EditIx>::None`.
+    pub(crate) struct EditIx(u32 as u32 in 0..=4_294_967_294);
+);
+
 /// Span-aware message patch rooted at a source buffer.
 ///
 /// `Patch::from_bytes` clones the input bytes into an owned `Buf`. For a
@@ -20,8 +27,54 @@ pub struct Patch {
     pub(crate) source: Buf,
     pub(crate) messages: Vec<MessageNode>,
     pub(crate) fields: Vec<FieldNode>,
+    /// Payload-edit side pool referenced by `FieldNode::edit`.
+    ///
+    /// Slots orphaned by replaced or cleared edits stay allocated until the
+    /// `Patch` drops; they are 32-byte values bounded by user edit actions.
+    pub(crate) edits: Vec<PayloadEdit>,
     pub(crate) read_cache: ReadCache,
     pub(crate) txn: Option<TxnState>,
+}
+
+impl Patch {
+    /// Resolves a field's payload edit from the side pool.
+    #[inline]
+    pub(crate) fn field_edit(&self, node: &FieldNode) -> Option<&PayloadEdit> {
+        node.edit.map(|ix| &self.edits[ix.as_inner() as usize])
+    }
+
+    /// Stores `value` into the side pool for a field currently at `slot`.
+    ///
+    /// Overwrites the current slot in place when that cannot break undo:
+    /// either no transaction is active, or the slot was created inside the
+    /// active transaction (pre-transaction slot values must survive for
+    /// rollback). Returns the new slot index.
+    pub(crate) fn store_edit(
+        edits: &mut Vec<PayloadEdit>,
+        txn: Option<&TxnState>,
+        slot: Option<EditIx>,
+        value: PayloadEdit,
+    ) -> Result<EditIx, TreeError> {
+        if let Some(ix) = slot {
+            let idx = ix.as_inner() as usize;
+            let in_place = txn.is_none_or(|state| idx >= state.orig_edits_len);
+            if in_place {
+                edits[idx] = value;
+                return Ok(ix);
+            }
+        }
+        let next = edits.len();
+        let Some(ix_u32) = u32::try_from(next).ok() else {
+            return Err(TreeError::CapacityExceeded);
+        };
+        if ix_u32 == EditIx::MAX.as_inner() {
+            return Err(TreeError::CapacityExceeded);
+        }
+        edits.try_reserve(1).map_err(|_| TreeError::CapacityExceeded)?;
+        edits.push(value);
+        // SAFETY: `ix_u32 < EditIx::MAX` checked above.
+        Ok(unsafe { EditIx::new_unchecked(ix_u32) })
+    }
 }
 
 #[derive(Clone, Default)]
@@ -114,11 +167,25 @@ pub struct FieldNode {
     pub(crate) prev_by_tag: Option<FieldId>,
     pub(crate) next_by_tag: Option<FieldId>,
     pub(crate) raw_tag: RawVarint32,
-    pub(crate) spans: Option<StoredSpans>,
-    pub(crate) edit: Option<PayloadEdit>,
+    /// Recorded wire spans; `StoredSpans::EMPTY` for inserted fields.
+    pub(crate) spans: StoredSpans,
+    /// Slot in the `Patch::edits` side pool, if this field has an overlay.
+    pub(crate) edit: Option<EditIx>,
     pub(crate) child: Option<MessageId>,
     pub(crate) deleted: bool,
 }
+
+impl FieldNode {
+    /// Recorded spans, or `None` for fields inserted after parse.
+    #[inline]
+    pub(crate) fn spans(&self) -> Option<StoredSpans> {
+        self.spans.to_opt()
+    }
+}
+
+const _: () = {
+    assert!(core::mem::size_of::<FieldNode>() == 48);
+};
 
 #[derive(Clone, Copy)]
 pub struct VarintEdit {
@@ -182,9 +249,9 @@ impl DerefMut for BorrowedPatch<'_> {
     }
 }
 
-#[derive(Clone)]
+#[derive(Clone, Copy)]
 pub enum UndoAction {
-    FieldEdit { field: FieldId, prev: Option<PayloadEdit> },
+    FieldEdit { field: FieldId, prev: Option<EditIx> },
     FieldDeleted { field: FieldId, prev: bool },
     FieldChild { field: FieldId, prev: Option<MessageId> },
     InsertField { msg: MessageId, field: FieldId },
@@ -194,6 +261,7 @@ pub enum UndoAction {
 pub struct TxnState {
     pub(crate) orig_messages_len: usize,
     pub(crate) orig_fields_len: usize,
+    pub(crate) orig_edits_len: usize,
     pub(crate) undo_log: Vec<UndoAction>,
 }
 
@@ -204,6 +272,7 @@ impl Clone for Patch {
             source: self.source.clone(),
             messages: self.messages.clone(),
             fields: self.fields.clone(),
+            edits: self.edits.clone(),
             read_cache: self.read_cache.clone(),
             txn: None,
         }

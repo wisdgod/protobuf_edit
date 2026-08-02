@@ -103,6 +103,19 @@ pub struct StoredSpans {
 }
 
 impl StoredSpans {
+    /// Sentinel for fields with no recorded spans (inserted after parse).
+    ///
+    /// Real spans always have `tag_len >= 1` (a wire tag is at least one
+    /// byte), so `tag_len == 0` is unambiguous.
+    pub(crate) const EMPTY: Self =
+        Self { field: Span { start: 0, end: 0 }, tag_len: 0, aux_len: 0, payload_len: 0 };
+
+    /// `None` when this is the `EMPTY` sentinel.
+    #[inline]
+    pub(crate) const fn to_opt(self) -> Option<Self> {
+        if self.tag_len == 0 { None } else { Some(self) }
+    }
+
     #[inline]
     pub(crate) fn tag_span(self) -> Result<Span, TreeError> {
         let start = self.field.start();

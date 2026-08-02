@@ -30,6 +30,7 @@ impl Patch {
             source,
             messages: Vec::new(),
             fields: Vec::new(),
+            edits: Vec::new(),
             read_cache: super::ReadCache::default(),
             txn: None,
         };
@@ -53,7 +54,8 @@ impl Patch {
         }
 
         let parent_msg_source = self.message(parent_msg)?.source.clone();
-        let child_source = match (node.edit.as_ref(), node.spans) {
+        let node = self.field(field)?;
+        let child_source = match (self.field_edit(node), node.spans()) {
             (Some(PayloadEdit::Bytes(buf)), _spans) => MessageSource::Owned { bytes: buf.clone() },
             (Some(_), _spans) => return Err(TreeError::WireTypeMismatch),
             (None, Some(spans)) => {
@@ -210,7 +212,7 @@ impl Patch {
                         prev_by_tag,
                         next_by_tag: None,
                         raw_tag: RawVarint32::default(),
-                        spans: Some(spans),
+                        spans,
                         edit: None,
                         child: None,
                         deleted: false,

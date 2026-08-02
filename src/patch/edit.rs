@@ -7,7 +7,7 @@ use super::{FieldId, FieldNode, MessageId, Patch, PayloadEdit, TagBucket, UndoAc
 
 impl Patch {
     pub fn clear_field_edit(&mut self, field: FieldId) -> Result<(), TreeError> {
-        if self.field(field)?.spans.is_none() {
+        if self.field(field)?.spans().is_none() {
             return self.delete_field(field);
         }
 
@@ -110,62 +110,55 @@ impl Patch {
         self.insert_field_with_edit(msg, tag, PayloadEdit::Bytes(payload))
     }
 
-    pub fn set_varint(&mut self, field: FieldId, value: u64) -> Result<(), TreeError> {
+    /// Stores `value` as `field`'s overlay after `check` approves the node's
+    /// wire type. Returns the node for follow-up bookkeeping.
+    fn set_edit_checked(
+        &mut self,
+        field: FieldId,
+        value: PayloadEdit,
+        check: fn(WireType) -> bool,
+    ) -> Result<&mut FieldNode, TreeError> {
         let idx = field.as_inner() as usize;
-        let Self { txn, fields, .. } = self;
+        let Self { txn, fields, edits, .. } = self;
         let node = fields.get_mut(idx).ok_or(TreeError::InvalidId)?;
-        if node.tag.wire_type() != WireType::Varint {
+        if !check(node.tag.wire_type()) {
             return Err(TreeError::WireTypeMismatch);
         }
-        let prev_edit = node.edit.replace(PayloadEdit::Varint(VarintEdit::new(value)));
+        let prev = node.edit;
+        let ix = Self::store_edit(edits, txn.as_ref(), prev, value)?;
+        node.edit = Some(ix);
         if let Some(state) = txn.as_mut() {
-            state.undo_log.push(UndoAction::FieldEdit { field, prev: prev_edit });
+            state.undo_log.push(UndoAction::FieldEdit { field, prev });
         }
+        Ok(node)
+    }
+
+    pub fn set_varint(&mut self, field: FieldId, value: u64) -> Result<(), TreeError> {
+        self.set_edit_checked(field, PayloadEdit::Varint(VarintEdit::new(value)), |w| {
+            w == WireType::Varint
+        })?;
         Ok(())
     }
 
     pub fn set_i32_bits(&mut self, field: FieldId, bits: u32) -> Result<(), TreeError> {
-        let idx = field.as_inner() as usize;
-        let Self { txn, fields, .. } = self;
-        let node = fields.get_mut(idx).ok_or(TreeError::InvalidId)?;
-        if node.tag.wire_type() != WireType::I32 {
-            return Err(TreeError::WireTypeMismatch);
-        }
-        let prev_edit = node.edit.replace(PayloadEdit::I32(bits));
-        if let Some(state) = txn.as_mut() {
-            state.undo_log.push(UndoAction::FieldEdit { field, prev: prev_edit });
-        }
+        self.set_edit_checked(field, PayloadEdit::I32(bits), |w| w == WireType::I32)?;
         Ok(())
     }
 
     pub fn set_i64_bits(&mut self, field: FieldId, bits: u64) -> Result<(), TreeError> {
-        let idx = field.as_inner() as usize;
-        let Self { txn, fields, .. } = self;
-        let node = fields.get_mut(idx).ok_or(TreeError::InvalidId)?;
-        if node.tag.wire_type() != WireType::I64 {
-            return Err(TreeError::WireTypeMismatch);
-        }
-        let prev_edit = node.edit.replace(PayloadEdit::I64(bits));
-        if let Some(state) = txn.as_mut() {
-            state.undo_log.push(UndoAction::FieldEdit { field, prev: prev_edit });
-        }
+        self.set_edit_checked(field, PayloadEdit::I64(bits), |w| w == WireType::I64)?;
         Ok(())
     }
 
     pub fn set_bytes(&mut self, field: FieldId, payload: Buf) -> Result<(), TreeError> {
-        let idx = field.as_inner() as usize;
-        let Self { txn, fields, .. } = self;
-        let node = fields.get_mut(idx).ok_or(TreeError::InvalidId)?;
-        match node.tag.wire_type() {
-            WireType::Len => {}
+        let node = self.set_edit_checked(field, PayloadEdit::Bytes(payload), |w| match w {
+            WireType::Len => true,
             #[cfg(feature = "group")]
-            WireType::SGroup => {}
-            _ => return Err(TreeError::WireTypeMismatch),
-        }
-        let prev_edit = node.edit.replace(PayloadEdit::Bytes(payload));
+            WireType::SGroup => true,
+            _ => false,
+        })?;
         let prev_child = node.child.take();
-        if let Some(state) = txn.as_mut() {
-            state.undo_log.push(UndoAction::FieldEdit { field, prev: prev_edit });
+        if let Some(state) = self.txn.as_mut() {
             state.undo_log.push(UndoAction::FieldChild { field, prev: prev_child });
         }
         Ok(())
@@ -178,6 +171,7 @@ impl Patch {
         edit: PayloadEdit,
     ) -> Result<FieldId, TreeError> {
         let prev_by_tag = self.message(msg)?.query.get(&tag).and_then(|bucket| bucket.tail);
+        let edit_ix = Self::store_edit(&mut self.edits, self.txn.as_ref(), None, edit)?;
         let field_id = Self::alloc_field(
             &mut self.fields,
             &mut self.read_cache,
@@ -187,8 +181,8 @@ impl Patch {
                 prev_by_tag,
                 next_by_tag: None,
                 raw_tag: RawVarint32::from_u32(tag.get()),
-                spans: None,
-                edit: Some(edit),
+                spans: super::StoredSpans::EMPTY,
+                edit: Some(edit_ix),
                 child: None,
                 deleted: false,
             },
