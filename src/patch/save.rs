@@ -26,12 +26,12 @@ impl SavePlan {
 
     fn get(&self, msg: MessageId) -> Result<Option<MessageSaveInfo>, TreeError> {
         let idx = msg.as_inner() as usize;
-        Ok(*self.messages.get(idx).ok_or(TreeError::DecodeError)?)
+        Ok(*self.messages.get(idx).ok_or(TreeError::InvalidId)?)
     }
 
     fn set(&mut self, msg: MessageId, info: MessageSaveInfo) -> Result<(), TreeError> {
         let idx = msg.as_inner() as usize;
-        let slot = self.messages.get_mut(idx).ok_or(TreeError::DecodeError)?;
+        let slot = self.messages.get_mut(idx).ok_or(TreeError::InvalidId)?;
         *slot = Some(info);
         Ok(())
     }
@@ -104,19 +104,19 @@ impl Patch {
         let value_len = match node.tag.wire_type() {
             WireType::Varint => {
                 let Some(PayloadEdit::Varint(edit)) = node.edit.as_ref() else {
-                    return Err(TreeError::DecodeError);
+                    return Err(TreeError::Corrupted);
                 };
                 u32::from(edit.raw.len())
             }
             WireType::I32 => {
                 let Some(PayloadEdit::I32(_bits)) = node.edit.as_ref() else {
-                    return Err(TreeError::DecodeError);
+                    return Err(TreeError::Corrupted);
                 };
                 4
             }
             WireType::I64 => {
                 let Some(PayloadEdit::I64(_bits)) = node.edit.as_ref() else {
-                    return Err(TreeError::DecodeError);
+                    return Err(TreeError::Corrupted);
                 };
                 8
             }
@@ -130,7 +130,7 @@ impl Patch {
                 } else {
                     match node.edit.as_ref() {
                         Some(PayloadEdit::Bytes(buf)) => buf.len(),
-                        None | Some(_) => return Err(TreeError::DecodeError),
+                        None | Some(_) => return Err(TreeError::Corrupted),
                     }
                 };
 
@@ -157,14 +157,14 @@ impl Patch {
                 } else {
                     match node.edit.as_ref() {
                         Some(PayloadEdit::Bytes(buf)) => buf.len(),
-                        None => return Err(TreeError::DecodeError),
-                        Some(_) => return Err(TreeError::DecodeError),
+                        None => return Err(TreeError::Corrupted),
+                        Some(_) => return Err(TreeError::Corrupted),
                     }
                 };
                 body_len.checked_add(end_tag_len).ok_or(TreeError::CapacityExceeded)?
             }
             #[cfg(feature = "group")]
-            WireType::EGroup => return Err(TreeError::DecodeError),
+            WireType::EGroup => return Err(TreeError::Corrupted),
         };
 
         tag_len.checked_add(value_len).ok_or(TreeError::CapacityExceeded)
@@ -203,7 +203,7 @@ impl Patch {
                 let span = spans.field;
                 pending_copy = match pending_copy {
                     Some(prev) if prev.end() == span.start() => Some(
-                        super::Span::new(prev.start(), span.end()).ok_or(TreeError::DecodeError)?,
+                        super::Span::new(prev.start(), span.end()).ok_or(TreeError::Corrupted)?,
                     ),
                     Some(prev) => {
                         let chunk = slice_span(msg_bytes, prev)?;
@@ -256,20 +256,20 @@ impl Patch {
         match node.tag.wire_type() {
             WireType::Varint => {
                 let Some(PayloadEdit::Varint(edit)) = node.edit.as_ref() else {
-                    return Err(TreeError::DecodeError);
+                    return Err(TreeError::Corrupted);
                 };
                 let (bytes, len) = edit.raw.to_array();
                 out.extend_from_slice(&bytes[..len])?;
             }
             WireType::I32 => {
                 let Some(PayloadEdit::I32(bits)) = node.edit.as_ref() else {
-                    return Err(TreeError::DecodeError);
+                    return Err(TreeError::Corrupted);
                 };
                 out.extend_from_slice(&bits.to_le_bytes())?;
             }
             WireType::I64 => {
                 let Some(PayloadEdit::I64(bits)) = node.edit.as_ref() else {
-                    return Err(TreeError::DecodeError);
+                    return Err(TreeError::Corrupted);
                 };
                 out.extend_from_slice(&bits.to_le_bytes())?;
             }
@@ -281,7 +281,7 @@ impl Patch {
                 self.write_group_field(msg_bytes, node, plan, out)?;
             }
             #[cfg(feature = "group")]
-            WireType::EGroup => return Err(TreeError::DecodeError),
+            WireType::EGroup => return Err(TreeError::Corrupted),
         }
         Ok(())
     }
@@ -303,7 +303,7 @@ impl Patch {
         } else {
             match node.edit.as_ref() {
                 Some(PayloadEdit::Bytes(buf)) => buf.len(),
-                None | Some(_) => return Err(TreeError::DecodeError),
+                None | Some(_) => return Err(TreeError::Corrupted),
             }
         };
 
@@ -323,7 +323,7 @@ impl Patch {
         }
 
         let Some(PayloadEdit::Bytes(payload)) = node.edit.as_ref() else {
-            return Err(TreeError::DecodeError);
+            return Err(TreeError::Corrupted);
         };
         out.extend_from_slice(payload.as_slice())?;
         Ok(())
@@ -346,7 +346,7 @@ impl Patch {
             self.write_message(child, plan, out)?;
         } else {
             let Some(PayloadEdit::Bytes(body)) = node.edit.as_ref() else {
-                return Err(TreeError::DecodeError);
+                return Err(TreeError::Corrupted);
             };
             out.extend_from_slice(body.as_slice())?;
         }
@@ -375,13 +375,13 @@ fn stored_len_prefix_span(spans: StoredSpans) -> Result<Span, TreeError> {
         start.checked_add(u32::from(spans.tag_len)).ok_or(TreeError::CapacityExceeded)?;
     let len_end =
         len_start.checked_add(u32::from(spans.aux_len)).ok_or(TreeError::CapacityExceeded)?;
-    Span::new(len_start, len_end).ok_or(TreeError::DecodeError)
+    Span::new(len_start, len_end).ok_or(TreeError::Corrupted)
 }
 
 #[cfg(feature = "group")]
 #[inline]
 fn stored_group_end_tag_span(spans: StoredSpans) -> Result<Span, TreeError> {
     let end = spans.field.end();
-    let start = end.checked_sub(spans.aux_len as u32).ok_or(TreeError::DecodeError)?;
-    Span::new(start, end).ok_or(TreeError::DecodeError)
+    let start = end.checked_sub(spans.aux_len as u32).ok_or(TreeError::Corrupted)?;
+    Span::new(start, end).ok_or(TreeError::Corrupted)
 }

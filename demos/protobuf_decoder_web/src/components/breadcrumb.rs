@@ -103,7 +103,7 @@ pub(crate) fn Breadcrumb() -> impl IntoView {
         let mut result = None;
         patch_state.update(|p| {
             let Some(patch) = p.as_mut() else {
-                result = Some(Err(protobuf_edit::TreeError::DecodeError));
+                result = Some(Err(protobuf_edit::TreeError::InvalidId));
                 return;
             };
             result = Some(resolve_user_path(patch, &steps));

@@ -50,7 +50,7 @@ impl Patch {
         let msg = self.message(msg)?;
         match &msg.source {
             MessageSource::Root { start, end } => {
-                Span::new(*start, *end).ok_or(TreeError::DecodeError).map(Some)
+                Span::new(*start, *end).ok_or(TreeError::Corrupted).map(Some)
             }
             MessageSource::Owned { .. } => Ok(None),
         }
@@ -125,14 +125,14 @@ impl Patch {
             return Ok(cached);
         }
         let Some(spans) = node.spans else {
-            return Err(TreeError::DecodeError);
+            return Err(TreeError::InvalidId);
         };
         let msg_bytes = self.message_bytes(node.msg)?;
         let ValueSpans::Varint { value } = spans.value_spans(WireType::Varint)? else {
-            return Err(TreeError::DecodeError);
+            return Err(TreeError::Corrupted);
         };
         let data = slice_span(msg_bytes, value)?;
-        let (v, _used) = crate::varint::decode64(data).ok_or(TreeError::DecodeError)?;
+        let (v, _used) = crate::varint::decode64(data).ok_or(TreeError::Corrupted)?;
         self.read_cache.set_varint(field_idx, v);
         Ok(v)
     }
@@ -146,14 +146,14 @@ impl Patch {
             return Ok(*bits);
         }
         let Some(spans) = node.spans else {
-            return Err(TreeError::DecodeError);
+            return Err(TreeError::InvalidId);
         };
         let msg_bytes = self.message_bytes(node.msg)?;
         let ValueSpans::I32 { value } = spans.value_spans(WireType::I32)? else {
-            return Err(TreeError::DecodeError);
+            return Err(TreeError::Corrupted);
         };
         let data = slice_span(msg_bytes, value)?;
-        let b: [u8; 4] = data.try_into().map_err(|_| TreeError::DecodeError)?;
+        let b: [u8; 4] = data.try_into().map_err(|_| TreeError::Corrupted)?;
         Ok(u32::from_le_bytes(b))
     }
 
@@ -166,14 +166,14 @@ impl Patch {
             return Ok(*bits);
         }
         let Some(spans) = node.spans else {
-            return Err(TreeError::DecodeError);
+            return Err(TreeError::InvalidId);
         };
         let msg_bytes = self.message_bytes(node.msg)?;
         let ValueSpans::I64 { value } = spans.value_spans(WireType::I64)? else {
-            return Err(TreeError::DecodeError);
+            return Err(TreeError::Corrupted);
         };
         let data = slice_span(msg_bytes, value)?;
-        let b: [u8; 8] = data.try_into().map_err(|_| TreeError::DecodeError)?;
+        let b: [u8; 8] = data.try_into().map_err(|_| TreeError::Corrupted)?;
         Ok(u64::from_le_bytes(b))
     }
 
@@ -190,7 +190,7 @@ impl Patch {
             return Ok(buf.as_slice());
         }
         let Some(spans) = node.spans else {
-            return Err(TreeError::DecodeError);
+            return Err(TreeError::InvalidId);
         };
         let msg_bytes = self.message_bytes(node.msg)?;
         let payload = spans.payload_span(wire)?;
@@ -199,16 +199,16 @@ impl Patch {
 
     pub(crate) fn message(&self, id: MessageId) -> Result<&MessageNode, TreeError> {
         let idx = id.as_inner() as usize;
-        self.messages.get(idx).ok_or(TreeError::DecodeError)
+        self.messages.get(idx).ok_or(TreeError::InvalidId)
     }
 
     pub(crate) fn message_mut(&mut self, id: MessageId) -> Result<&mut MessageNode, TreeError> {
         let idx = id.as_inner() as usize;
-        self.messages.get_mut(idx).ok_or(TreeError::DecodeError)
+        self.messages.get_mut(idx).ok_or(TreeError::InvalidId)
     }
 
     pub(crate) fn field(&self, id: FieldId) -> Result<&FieldNode, TreeError> {
         let idx = id.as_inner() as usize;
-        self.fields.get(idx).ok_or(TreeError::DecodeError)
+        self.fields.get(idx).ok_or(TreeError::InvalidId)
     }
 }

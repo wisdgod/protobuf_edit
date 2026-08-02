@@ -202,7 +202,7 @@ fn chunk_stream_finish_errors_on_partial_field() {
     let mut parser = ChunkStream::with_trie(trie);
     let mut collect = Collect::default();
     parser.feed(data.as_slice(), &mut collect).unwrap();
-    assert!(matches!(parser.finish(), Err(TreeError::DecodeError)));
+    assert!(matches!(parser.finish(), Err(TreeError::Truncated)));
 }
 
 #[test]
@@ -357,7 +357,7 @@ fn chunk_stream_depth_limit_100() {
     let mut parser = ChunkStream::with_trie(trie_deep);
     let mut collect = Collect::default();
     let err = parser.feed(bad_src.as_slice(), &mut collect).unwrap_err();
-    assert!(matches!(err, TreeError::DecodeError));
+    assert!(matches!(err, TreeError::CapacityExceeded));
 }
 
 #[test]
@@ -518,7 +518,7 @@ fn scanner_errors_on_truncated_input() {
     data.push(0x80).unwrap();
 
     let err = Scanner::new().scan(data.as_slice(), &mut Collect::default()).unwrap_err();
-    assert!(matches!(err, TreeError::DecodeError));
+    assert!(matches!(err, TreeError::Malformed { .. }));
 
     let mut root = Document::new();
     let _ = root.push_length_delimited(fnn(1), buf_from_slice(b"abc")).unwrap();
@@ -526,7 +526,7 @@ fn scanner_errors_on_truncated_input() {
     let truncated = &src.as_slice()[..src.len() as usize - 1];
 
     let err = Scanner::new().scan(truncated, &mut Collect::default()).unwrap_err();
-    assert!(matches!(err, TreeError::DecodeError));
+    assert!(matches!(err, TreeError::Truncated));
 }
 
 #[test]
@@ -563,7 +563,7 @@ fn scanner_depth_limit_100() {
     let err = Scanner::with_trie(trie_deep)
         .scan(bad_src.as_slice(), &mut Collect::default())
         .unwrap_err();
-    assert!(matches!(err, TreeError::DecodeError));
+    assert!(matches!(err, TreeError::CapacityExceeded));
 }
 
 #[cfg(feature = "group")]

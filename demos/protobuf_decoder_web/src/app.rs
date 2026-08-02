@@ -214,13 +214,13 @@ pub fn App() -> impl IntoView {
                     let mut parsed: Option<Result<protobuf_edit::patch::MessageId, TreeError>> = None;
                     patch_state.update(|p| {
                         let Some(patch) = p.as_mut() else {
-                            parsed = Some(Err(TreeError::DecodeError));
+                            parsed = Some(Err(TreeError::InvalidId));
                             return;
                         };
                         parsed = Some(patch.parse_child_message(field));
                     });
 
-                    match parsed.unwrap_or(Err(TreeError::DecodeError)) {
+                    match parsed.unwrap_or(Err(TreeError::InvalidId)) {
                         Ok(_child) => expanded.update(|s| {
                             s.insert(field);
                         }),

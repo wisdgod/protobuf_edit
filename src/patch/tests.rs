@@ -29,7 +29,7 @@ fn does_not_parse_child_message_from_non_message_bytes() {
     assert_eq!(tree.field_child_message(outer_field).unwrap(), None);
 
     let err = tree.parse_child_message(outer_field).unwrap_err();
-    assert_eq!(err, TreeError::DecodeError);
+    assert!(matches!(err, TreeError::Malformed { .. }));
 }
 
 #[test]

@@ -28,7 +28,7 @@ fn raw_varint32_unchecked_roundtrip_and_decode_validation() {
     assert_eq!(&bytes_max[..len_max], &raw_max);
 
     let bad_last = [0xFF, 0xFF, 0xFF, 0xFF, 0xF0];
-    assert!(matches!(RawVarint32::from_data(&bad_last), Err(TreeError::DecodeError)));
+    assert!(RawVarint32::from_data(&bad_last).is_none());
 }
 
 #[test]
@@ -46,7 +46,7 @@ fn raw_varint64_unchecked_roundtrip_and_decode_validation() {
     assert_eq!(&bytes_max[..len_max], &raw_max);
 
     let bad_last = [0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0x02];
-    assert!(matches!(RawVarint64::from_data(&bad_last), Err(TreeError::DecodeError)));
+    assert!(RawVarint64::from_data(&bad_last).is_none());
 }
 
 #[test]
@@ -151,7 +151,7 @@ fn decode_error_on_unexpected_end_group() {
     let mut bad = Buf::new();
     // Raw tag: (field_number << 3) | wire_type, where EndGroup wire type is 4.
     let _ = varint::encode32(&mut bad, (9 << 3) | 4).unwrap();
-    assert!(matches!(Document::from_bytes(&bad), Err(TreeError::DecodeError)));
+    assert!(matches!(Document::from_bytes(&bad), Err(TreeError::Malformed { offset: 0 })));
 }
 
 #[test]
@@ -161,7 +161,8 @@ fn decode_error_on_truncated_length_delimited() {
     let _ = varint::encode32(&mut bad, 3).unwrap();
     let _ = bad.push(0xAA);
 
-    assert!(matches!(Document::from_bytes(&bad), Err(TreeError::DecodeError)));
+    // Declared 3-byte payload starts at offset 2 but only 1 byte follows.
+    assert!(matches!(Document::from_bytes(&bad), Err(TreeError::Malformed { offset: 2 })));
 }
 
 #[test]
@@ -208,7 +209,7 @@ fn invalid_field_numbers_are_unrepresentable() {
 fn decode_len_guard_matches_protobuf_limit() {
     const MAX: usize = const { i32::MAX as usize };
     assert!(super::helpers::ensure_decode_len(MAX).is_ok());
-    assert!(matches!(super::helpers::ensure_decode_len(MAX + 1), Err(TreeError::DecodeError)));
+    assert!(matches!(super::helpers::ensure_decode_len(MAX + 1), Err(TreeError::CapacityExceeded)));
 }
 
 #[test]

@@ -210,8 +210,12 @@ payloads flow through without ever being buffered whole.
   `Buf::into_vec` move allocations without copying; `Buf::from_static` wraps constants.
   Fallible (`try_*`) variants exist for every growth path.
 
-All fallible APIs return `TreeError` (`CapacityExceeded` / `DecodeError` / `InvalidTag` /
-`WireTypeMismatch`).
+All fallible APIs return `TreeError`. Decode failures are structured:
+`Malformed { offset }` points at the failing unit within the buffer being decoded
+(message-local for nested messages) and `Truncated` reports an input that ended
+inside a field. The remaining variants describe states: `InvalidId` (stale or
+foreign id, or data unavailable for it), `Corrupted` (internal invariant broken),
+`CapacityExceeded`, `InvalidTag`, and `WireTypeMismatch`.
 
 ## Cargo features
 

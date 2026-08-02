@@ -182,7 +182,7 @@ pub(crate) fn revert_pending_edits(ws: &WorkspaceState) -> Result<(), TreeError>
     let mut result = Ok(());
     ws.patch_state.update(|state| {
         let Some(mut patch) = state.take() else {
-            result = Err(TreeError::DecodeError);
+            result = Err(TreeError::InvalidId);
             return;
         };
 
@@ -190,7 +190,7 @@ pub(crate) fn revert_pending_edits(ws: &WorkspaceState) -> Result<(), TreeError>
             patch.txn_rollback();
         } else {
             let Some(bytes_view) = bytes_view.as_ref() else {
-                result = Err(TreeError::DecodeError);
+                result = Err(TreeError::InvalidId);
                 *state = Some(patch);
                 return;
             };
@@ -239,7 +239,7 @@ pub(crate) fn save_and_reparse(ws: &WorkspaceState) -> Result<SaveReparseInfo, T
     let t0 = js_sys::Date::now();
     let (mut patch, bytes_view) = ws.patch_state.with(|state| {
         let Some(patch) = state.as_ref() else {
-            return Err(TreeError::DecodeError);
+            return Err(TreeError::InvalidId);
         };
         let bytes = patch.save()?;
         let bytes = ByteView::from_vec(bytes.into_vec());

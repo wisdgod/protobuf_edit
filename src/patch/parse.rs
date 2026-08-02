@@ -78,13 +78,13 @@ impl Patch {
                     }
                 }
             }
-            (None, None) => return Err(TreeError::DecodeError),
+            (None, None) => return Err(TreeError::InvalidId),
         };
 
         let child = self.parse_message_node(child_source, Some(field))?;
         let idx = field.as_inner() as usize;
         let Self { txn, fields, .. } = self;
-        let node = fields.get_mut(idx).ok_or(TreeError::DecodeError)?;
+        let node = fields.get_mut(idx).ok_or(TreeError::InvalidId)?;
         let prev_child = node.child.replace(child);
         if let Some(state) = txn.as_mut() {
             state.undo_log.push(UndoAction::FieldChild { field, prev: prev_child });
@@ -118,54 +118,55 @@ impl Patch {
             let mut offset = 0usize;
             while offset < bytes.len() {
                 let field_start = offset;
-                let (tag, tag_len) =
-                    crate::wire::decode_tag(&bytes[offset..]).ok_or(TreeError::DecodeError)?;
-                let tag_len = u8::try_from(tag_len).map_err(|_| TreeError::DecodeError)?;
+                let (tag, tag_len) = crate::wire::decode_tag(&bytes[offset..])
+                    .ok_or_else(|| TreeError::malformed_at(offset))?;
+                let tag_len = u8::try_from(tag_len).map_err(|_| TreeError::Corrupted)?;
                 offset = offset.checked_add(tag_len as usize).ok_or(TreeError::CapacityExceeded)?;
                 if offset > bytes.len() {
-                    return Err(TreeError::DecodeError);
+                    return Err(TreeError::malformed_at(field_start));
                 }
 
                 let spans = match tag.wire_type() {
                     WireType::Varint => {
                         let (_v, used) = crate::varint::decode64(&bytes[offset..])
-                            .ok_or(TreeError::DecodeError)?;
+                            .ok_or_else(|| TreeError::malformed_at(offset))?;
                         offset =
                             offset.checked_add(used as usize).ok_or(TreeError::CapacityExceeded)?;
                         if offset > bytes.len() {
-                            return Err(TreeError::DecodeError);
+                            // decode64 never reads past its input slice.
+                            return Err(TreeError::Corrupted);
                         }
                         let field = Span::new(field_start as u32, offset as u32)
-                            .ok_or(TreeError::DecodeError)?;
+                            .ok_or(TreeError::Corrupted)?;
                         StoredSpans { field, tag_len, aux_len: 0, payload_len: 0 }
                     }
                     WireType::I64 => {
                         let val_end = offset.checked_add(8).ok_or(TreeError::CapacityExceeded)?;
                         if val_end > bytes.len() {
-                            return Err(TreeError::DecodeError);
+                            return Err(TreeError::malformed_at(offset));
                         }
                         offset = val_end;
                         let field = Span::new(field_start as u32, val_end as u32)
-                            .ok_or(TreeError::DecodeError)?;
+                            .ok_or(TreeError::Corrupted)?;
                         StoredSpans { field, tag_len, aux_len: 0, payload_len: 0 }
                     }
                     WireType::Len => {
                         let (len, used) = crate::varint::decode32(&bytes[offset..])
-                            .ok_or(TreeError::DecodeError)?;
+                            .ok_or_else(|| TreeError::malformed_at(offset))?;
                         offset =
                             offset.checked_add(used as usize).ok_or(TreeError::CapacityExceeded)?;
-                        let used = u8::try_from(used).map_err(|_| TreeError::DecodeError)?;
+                        let used = u8::try_from(used).map_err(|_| TreeError::Corrupted)?;
 
                         let payload_start = offset;
                         let payload_end = payload_start
                             .checked_add(len as usize)
                             .ok_or(TreeError::CapacityExceeded)?;
                         if payload_end > bytes.len() {
-                            return Err(TreeError::DecodeError);
+                            return Err(TreeError::malformed_at(payload_start));
                         }
                         offset = payload_end;
                         let field = Span::new(field_start as u32, payload_end as u32)
-                            .ok_or(TreeError::DecodeError)?;
+                            .ok_or(TreeError::Corrupted)?;
                         StoredSpans { field, tag_len, aux_len: used, payload_len: len }
                     }
                     #[cfg(feature = "group")]
@@ -174,27 +175,27 @@ impl Patch {
                         let body_start = offset;
                         let (end_tag_start, end_after) =
                             crate::wire::find_group_end(bytes, body_start, field_number)
-                                .ok_or(TreeError::DecodeError)?;
+                                .ok_or_else(|| TreeError::malformed_at(body_start))?;
                         offset = end_after;
 
                         let end_tag_len =
-                            end_after.checked_sub(end_tag_start).ok_or(TreeError::DecodeError)?;
+                            end_after.checked_sub(end_tag_start).ok_or(TreeError::Corrupted)?;
                         let end_tag_len =
-                            u8::try_from(end_tag_len).map_err(|_| TreeError::DecodeError)?;
+                            u8::try_from(end_tag_len).map_err(|_| TreeError::Corrupted)?;
                         let field = Span::new(field_start as u32, end_after as u32)
-                            .ok_or(TreeError::DecodeError)?;
+                            .ok_or(TreeError::Corrupted)?;
                         StoredSpans { field, tag_len, aux_len: end_tag_len, payload_len: 0 }
                     }
                     #[cfg(feature = "group")]
-                    WireType::EGroup => return Err(TreeError::DecodeError),
+                    WireType::EGroup => return Err(TreeError::malformed_at(field_start)),
                     WireType::I32 => {
                         let val_end = offset.checked_add(4).ok_or(TreeError::CapacityExceeded)?;
                         if val_end > bytes.len() {
-                            return Err(TreeError::DecodeError);
+                            return Err(TreeError::malformed_at(offset));
                         }
                         offset = val_end;
                         let field = Span::new(field_start as u32, val_end as u32)
-                            .ok_or(TreeError::DecodeError)?;
+                            .ok_or(TreeError::Corrupted)?;
                         StoredSpans { field, tag_len, aux_len: 0, payload_len: 0 }
                     }
                 };
@@ -218,7 +219,7 @@ impl Patch {
 
                 if let Some(prev) = prev_by_tag {
                     let prev_idx = prev.as_inner() as usize;
-                    let prev_node = self.fields.get_mut(prev_idx).ok_or(TreeError::DecodeError)?;
+                    let prev_node = self.fields.get_mut(prev_idx).ok_or(TreeError::Corrupted)?;
                     debug_assert_eq!(prev_node.next_by_tag, None);
                     prev_node.next_by_tag = Some(field_id);
                 }

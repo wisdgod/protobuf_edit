@@ -80,9 +80,9 @@ impl ChunkStream {
         Ok(())
     }
 
-    /// Errors with `DecodeError` if any field or nesting level is unfinished.
+    /// Errors with `Truncated` if any field or nesting level is unfinished.
     #[inline]
     pub const fn finish(&self) -> Result<(), TreeError> {
-        if self.walker.is_clean() { Ok(()) } else { Err(TreeError::DecodeError) }
+        if self.walker.is_clean() { Ok(()) } else { Err(TreeError::Truncated) }
     }
 }

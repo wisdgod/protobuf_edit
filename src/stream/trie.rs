@@ -100,7 +100,8 @@ impl<const MAX_NODES: usize, const MAX_EDGES: usize> CompiledPathTrie<MAX_NODES,
         while path_idx < paths.len() {
             let path = paths[path_idx];
             if path.is_empty() {
-                return Err(TreeError::DecodeError);
+                // A trie path must contain at least one tag.
+                return Err(TreeError::InvalidTag);
             }
 
             let mut node = 0u16;

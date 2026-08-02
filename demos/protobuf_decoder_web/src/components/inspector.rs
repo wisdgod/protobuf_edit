@@ -250,7 +250,7 @@ pub(crate) fn InspectorDrawer() -> impl IntoView {
                 let mut res: Option<Result<(), TreeError>> = None;
                 patch_state.update(|p| {
                     let Some(patch) = p.as_mut() else {
-                        res = Some(Err(TreeError::DecodeError));
+                        res = Some(Err(TreeError::InvalidId));
                         return;
                     };
                     if !patch.txn_active() {
@@ -259,7 +259,7 @@ pub(crate) fn InspectorDrawer() -> impl IntoView {
                     res = Some(patch.set_varint(fid, value));
                 });
 
-                match res.unwrap_or(Err(TreeError::DecodeError)) {
+                match res.unwrap_or(Err(TreeError::InvalidId)) {
                     Ok(()) => {
                         dirty_fields.update(|s| {
                             s.insert(fid);
@@ -307,7 +307,7 @@ pub(crate) fn InspectorDrawer() -> impl IntoView {
                 let mut res: Option<Result<(), TreeError>> = None;
                 patch_state.update(|p| {
                     let Some(patch) = p.as_mut() else {
-                        res = Some(Err(TreeError::DecodeError));
+                        res = Some(Err(TreeError::InvalidId));
                         return;
                     };
                     if !patch.txn_active() {
@@ -316,7 +316,7 @@ pub(crate) fn InspectorDrawer() -> impl IntoView {
                     res = Some(patch.set_bytes(fid, buf));
                 });
 
-                match res.unwrap_or(Err(TreeError::DecodeError)) {
+                match res.unwrap_or(Err(TreeError::InvalidId)) {
                     Ok(()) => {
                         expanded.update(|s| {
                             s.remove(&fid);
@@ -358,7 +358,7 @@ pub(crate) fn InspectorDrawer() -> impl IntoView {
                 let mut res: Option<Result<(), TreeError>> = None;
                 patch_state.update(|p| {
                     let Some(patch) = p.as_mut() else {
-                        res = Some(Err(TreeError::DecodeError));
+                        res = Some(Err(TreeError::InvalidId));
                         return;
                     };
                     if !patch.txn_active() {
@@ -367,7 +367,7 @@ pub(crate) fn InspectorDrawer() -> impl IntoView {
                     res = Some(patch.set_i32_bits(fid, bits));
                 });
 
-                match res.unwrap_or(Err(TreeError::DecodeError)) {
+                match res.unwrap_or(Err(TreeError::InvalidId)) {
                     Ok(()) => {
                         dirty_fields.update(|s| {
                             s.insert(fid);
@@ -395,7 +395,7 @@ pub(crate) fn InspectorDrawer() -> impl IntoView {
                 let mut res: Option<Result<(), TreeError>> = None;
                 patch_state.update(|p| {
                     let Some(patch) = p.as_mut() else {
-                        res = Some(Err(TreeError::DecodeError));
+                        res = Some(Err(TreeError::InvalidId));
                         return;
                     };
                     if !patch.txn_active() {
@@ -404,7 +404,7 @@ pub(crate) fn InspectorDrawer() -> impl IntoView {
                     res = Some(patch.set_i64_bits(fid, value));
                 });
 
-                match res.unwrap_or(Err(TreeError::DecodeError)) {
+                match res.unwrap_or(Err(TreeError::InvalidId)) {
                     Ok(()) => {
                         dirty_fields.update(|s| {
                             s.insert(fid);
@@ -444,7 +444,7 @@ pub(crate) fn InspectorDrawer() -> impl IntoView {
         let mut res: Option<Result<(), TreeError>> = None;
         patch_state.update(|p| {
             let Some(patch) = p.as_mut() else {
-                res = Some(Err(TreeError::DecodeError));
+                res = Some(Err(TreeError::InvalidId));
                 return;
             };
             if !patch.txn_active() {
@@ -453,7 +453,7 @@ pub(crate) fn InspectorDrawer() -> impl IntoView {
             res = Some(patch.delete_field(fid));
         });
 
-        match res.unwrap_or(Err(TreeError::DecodeError)) {
+        match res.unwrap_or(Err(TreeError::InvalidId)) {
             Ok(()) => {
                 expanded.update(|s| {
                     s.remove(&fid);
@@ -498,7 +498,7 @@ pub(crate) fn InspectorDrawer() -> impl IntoView {
         let mut res: Option<Result<(), TreeError>> = None;
         patch_state.update(|p| {
             let Some(patch) = p.as_mut() else {
-                res = Some(Err(TreeError::DecodeError));
+                res = Some(Err(TreeError::InvalidId));
                 return;
             };
             if !patch.txn_active() {
@@ -507,7 +507,7 @@ pub(crate) fn InspectorDrawer() -> impl IntoView {
             res = Some(patch.clear_field_edit(fid));
         });
 
-        match res.unwrap_or(Err(TreeError::DecodeError)) {
+        match res.unwrap_or(Err(TreeError::InvalidId)) {
             Ok(()) => {
                 expanded.update(|s| {
                     s.remove(&fid);
@@ -584,13 +584,13 @@ pub(crate) fn InspectorDrawer() -> impl IntoView {
         let mut res: Option<Result<(), TreeError>> = None;
         patch_state.update(|p| {
             let Some(patch) = p.as_mut() else {
-                res = Some(Err(TreeError::DecodeError));
+                res = Some(Err(TreeError::InvalidId));
                 return;
             };
             res = Some(patch.parse_child_message(fid).map(|_| ()));
         });
 
-        match res.unwrap_or(Err(TreeError::DecodeError)) {
+        match res.unwrap_or(Err(TreeError::InvalidId)) {
             Ok(()) => {
                 expanded.update(|s| {
                     s.insert(fid);
@@ -739,7 +739,7 @@ pub(crate) fn InspectorDrawer() -> impl IntoView {
                 };
                 patch_state.update(|p| {
                     let Some(patch) = p.as_mut() else {
-                        res = Some(Err(TreeError::DecodeError));
+                        res = Some(Err(TreeError::InvalidId));
                         return;
                     };
                     if !patch.txn_active() {
@@ -762,7 +762,7 @@ pub(crate) fn InspectorDrawer() -> impl IntoView {
 
                 patch_state.update(|p| {
                     let Some(patch) = p.as_mut() else {
-                        res = Some(Err(TreeError::DecodeError));
+                        res = Some(Err(TreeError::InvalidId));
                         return;
                     };
                     if !patch.txn_active() {
@@ -783,7 +783,7 @@ pub(crate) fn InspectorDrawer() -> impl IntoView {
                 let bits = value as u32;
                 patch_state.update(|p| {
                     let Some(patch) = p.as_mut() else {
-                        res = Some(Err(TreeError::DecodeError));
+                        res = Some(Err(TreeError::InvalidId));
                         return;
                     };
                     if !patch.txn_active() {
@@ -799,7 +799,7 @@ pub(crate) fn InspectorDrawer() -> impl IntoView {
                 };
                 patch_state.update(|p| {
                     let Some(patch) = p.as_mut() else {
-                        res = Some(Err(TreeError::DecodeError));
+                        res = Some(Err(TreeError::InvalidId));
                         return;
                     };
                     if !patch.txn_active() {
@@ -810,7 +810,7 @@ pub(crate) fn InspectorDrawer() -> impl IntoView {
             }
         }
 
-        match res.unwrap_or(Err(TreeError::DecodeError)) {
+        match res.unwrap_or(Err(TreeError::InvalidId)) {
             Ok(fid) => {
                 dirty_fields.update(|s| {
                     s.insert(fid);

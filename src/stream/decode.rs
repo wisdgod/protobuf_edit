@@ -13,7 +13,8 @@ pub(super) fn decode_tag_prefix(data: &[u8]) -> Result<Option<(Tag, usize)>, Tre
 
     let Some((raw_tag, used)) = varint::decode32(data) else {
         return if data.len() >= MAX_VARINT32_BYTES {
-            Err(TreeError::DecodeError)
+            // Offset is local to `data`; callers rebase via `offset_by`.
+            Err(TreeError::malformed_at(0))
         } else {
             Ok(None)
         };
@@ -27,7 +28,8 @@ pub(super) fn decode_tag_prefix(data: &[u8]) -> Result<Option<(Tag, usize)>, Tre
 pub(super) fn decode_varint32_prefix(data: &[u8]) -> Result<Option<(u32, usize)>, TreeError> {
     let Some((value, used)) = varint::decode32(data) else {
         return if data.len() >= MAX_VARINT32_BYTES {
-            Err(TreeError::DecodeError)
+            // Offset is local to `data`; callers rebase via `offset_by`.
+            Err(TreeError::malformed_at(0))
         } else {
             Ok(None)
         };
@@ -39,7 +41,8 @@ pub(super) fn decode_varint32_prefix(data: &[u8]) -> Result<Option<(u32, usize)>
 pub(super) fn decode_varint64_prefix(data: &[u8]) -> Result<Option<(u64, usize)>, TreeError> {
     let Some((value, used)) = varint::decode64(data) else {
         return if data.len() >= MAX_VARINT64_BYTES {
-            Err(TreeError::DecodeError)
+            // Offset is local to `data`; callers rebase via `offset_by`.
+            Err(TreeError::malformed_at(0))
         } else {
             Ok(None)
         };

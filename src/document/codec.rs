@@ -52,14 +52,14 @@ impl Document {
 
             let tag_len = field.raw.len();
             if unlikely(tag_len == 0) {
-                return Err(TreeError::DecodeError);
+                return Err(TreeError::Corrupted);
             }
             checked_add(&mut total, u32::from(tag_len))?;
             match wire_type {
                 WireType::Varint => {
                     let raw_len = self.varints[slot].raw.len();
                     if unlikely(raw_len == 0) {
-                        return Err(TreeError::DecodeError);
+                        return Err(TreeError::Corrupted);
                     }
                     checked_add(&mut total, u32::from(raw_len))?;
                 }
@@ -70,7 +70,7 @@ impl Document {
                     let val = &self.lendels[slot].buf;
                     let raw_len = self.lendels[slot].raw.len();
                     if unlikely(raw_len == 0) {
-                        return Err(TreeError::DecodeError);
+                        return Err(TreeError::Corrupted);
                     }
                     checked_add(&mut total, u32::from(raw_len))?;
                     checked_add(&mut total, val.len())?;
@@ -204,8 +204,9 @@ fn decode_capacities(data: &[u8]) -> Result<Capacities, TreeError> {
     let mut capacities = Capacities::default();
 
     while likely(offset < data_len) {
+        let _field_start = offset;
         let (tag_value, tag_len) =
-            wire::decode_tag(&data[offset..]).ok_or(TreeError::DecodeError)?;
+            wire::decode_tag(&data[offset..]).ok_or_else(|| TreeError::malformed_at(offset))?;
         let (_field_number, wire_type) = tag_value.split();
         offset = trusted_advance(offset, tag_len as usize, data_len);
 
@@ -216,7 +217,8 @@ fn decode_capacities(data: &[u8]) -> Result<Capacities, TreeError> {
 
         match wire_type {
             WireType::Varint => {
-                let (_, n) = varint::decode64(&data[offset..]).ok_or(TreeError::DecodeError)?;
+                let (_, n) = varint::decode64(&data[offset..])
+                    .ok_or_else(|| TreeError::malformed_at(offset))?;
                 offset = trusted_advance(offset, n as usize, data_len);
                 capacities.varints =
                     capacities.varints.checked_add(1).ok_or(TreeError::CapacityExceeded)?;
@@ -227,7 +229,8 @@ fn decode_capacities(data: &[u8]) -> Result<Capacities, TreeError> {
                     capacities.fixed64s.checked_add(1).ok_or(TreeError::CapacityExceeded)?;
             }
             WireType::Len => {
-                let (len, n) = varint::decode32(&data[offset..]).ok_or(TreeError::DecodeError)?;
+                let (len, n) = varint::decode32(&data[offset..])
+                    .ok_or_else(|| TreeError::malformed_at(offset))?;
                 let prefix_end = trusted_advance(offset, n as usize, data_len);
                 offset = checked_advance(prefix_end, len as usize, data_len)?;
                 capacities.lendels =
@@ -236,13 +239,13 @@ fn decode_capacities(data: &[u8]) -> Result<Capacities, TreeError> {
             #[cfg(feature = "group")]
             WireType::SGroup => {
                 let (_, next_after_end) = wire::find_group_end(data, offset, _field_number)
-                    .ok_or(TreeError::DecodeError)?;
+                    .ok_or_else(|| TreeError::malformed_at(offset))?;
                 offset = next_after_end;
                 capacities.groups =
                     capacities.groups.checked_add(1).ok_or(TreeError::CapacityExceeded)?;
             }
             #[cfg(feature = "group")]
-            WireType::EGroup => return Err(TreeError::DecodeError),
+            WireType::EGroup => return Err(TreeError::malformed_at(_field_start)),
             WireType::I32 => {
                 offset = checked_advance(offset, 4, data_len)?;
                 capacities.fixed32s =
@@ -284,8 +287,9 @@ fn decode_into_tree(
     let mut reserved = false;
 
     while likely(offset < data_len) {
+        let _field_start = offset;
         let (tag_value, tag_len) =
-            wire::decode_tag(&data[offset..]).ok_or(TreeError::DecodeError)?;
+            wire::decode_tag(&data[offset..]).ok_or_else(|| TreeError::malformed_at(offset))?;
         let (field_number, wire_type) = tag_value.split();
 
         offset = trusted_advance(offset, tag_len as usize, data_len);
@@ -296,7 +300,8 @@ fn decode_into_tree(
 
         match wire_type {
             WireType::Varint => {
-                let (value, n, raw) = RawVarint64::from_data(&data[offset..])?;
+                let (value, n, raw) = RawVarint64::from_data(&data[offset..])
+                    .ok_or_else(|| TreeError::malformed_at(offset))?;
                 let end = trusted_advance(offset, n as usize, data_len);
                 tree.push_varint_with_raw(field_number, value, raw)?;
                 seen_varints += 1;
@@ -312,7 +317,8 @@ fn decode_into_tree(
                 offset = end;
             }
             WireType::Len => {
-                let (len, n, raw) = RawVarint32::from_data(&data[offset..])?;
+                let (len, n, raw) = RawVarint32::from_data(&data[offset..])
+                    .ok_or_else(|| TreeError::malformed_at(offset))?;
                 let prefix_end = trusted_advance(offset, n as usize, data_len);
                 let body_end = checked_advance(prefix_end, len as usize, data_len)?;
 
@@ -334,7 +340,7 @@ fn decode_into_tree(
             WireType::SGroup => {
                 let (group_end_tag_start, next_after_end) =
                     wire::find_group_end(data, offset, field_number)
-                        .ok_or(TreeError::DecodeError)?;
+                        .ok_or_else(|| TreeError::malformed_at(offset))?;
                 let mut buf = if borrowed_payloads {
                     // SAFETY: `data` outlives this function; borrowed buffers are only exposed
                     // through short-lived field views inside scoped APIs.
@@ -350,7 +356,7 @@ fn decode_into_tree(
                 offset = next_after_end;
             }
             #[cfg(feature = "group")]
-            WireType::EGroup => return Err(TreeError::DecodeError),
+            WireType::EGroup => return Err(TreeError::malformed_at(_field_start)),
             WireType::I32 => {
                 let end = checked_advance(offset, 4, data_len)?;
                 let bytes: [u8; 4] = data[offset..end]

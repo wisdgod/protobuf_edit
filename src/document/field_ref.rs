@@ -58,13 +58,15 @@ impl core::iter::FusedIterator for FieldRefIter<'_> {}
 
 struct PackedVarint32Iter<'a> {
     data: &'a [u8],
+    /// Byte offset within the packed payload, reported on decode errors.
+    pos: usize,
     done: bool,
 }
 
 impl<'a> PackedVarint32Iter<'a> {
     #[inline]
     const fn new(data: &'a [u8]) -> Self {
-        Self { data, done: false }
+        Self { data, pos: 0, done: false }
     }
 }
 
@@ -81,10 +83,11 @@ impl Iterator for PackedVarint32Iter<'_> {
         }
         if let Some((v, n)) = varint::decode32(self.data) {
             self.data = &self.data[n as usize..];
+            self.pos += n as usize;
             Some(Ok(v))
         } else {
             self.done = true;
-            Some(Err(TreeError::DecodeError))
+            Some(Err(TreeError::malformed_at(self.pos)))
         }
     }
 
@@ -100,13 +103,15 @@ impl core::iter::FusedIterator for PackedVarint32Iter<'_> {}
 
 struct PackedVarint64Iter<'a> {
     data: &'a [u8],
+    /// Byte offset within the packed payload, reported on decode errors.
+    pos: usize,
     done: bool,
 }
 
 impl<'a> PackedVarint64Iter<'a> {
     #[inline]
     const fn new(data: &'a [u8]) -> Self {
-        Self { data, done: false }
+        Self { data, pos: 0, done: false }
     }
 }
 
@@ -123,10 +128,11 @@ impl Iterator for PackedVarint64Iter<'_> {
         }
         if let Some((v, n)) = varint::decode64(self.data) {
             self.data = &self.data[n as usize..];
+            self.pos += n as usize;
             Some(Ok(v))
         } else {
             self.done = true;
-            Some(Err(TreeError::DecodeError))
+            Some(Err(TreeError::malformed_at(self.pos)))
         }
     }
 
@@ -487,7 +493,8 @@ impl<'a> FieldRef<'a> {
     > {
         let data = self.packed_payload()?;
         if data.len() % 4 != 0 {
-            return Err(TreeError::DecodeError);
+            // The trailing partial element starts at the last aligned offset.
+            return Err(TreeError::malformed_at(data.len() - data.len() % 4));
         }
         Ok(PackedFixed32Iter::new(data))
     }
@@ -500,7 +507,8 @@ impl<'a> FieldRef<'a> {
     > {
         let data = self.packed_payload()?;
         if data.len() % 8 != 0 {
-            return Err(TreeError::DecodeError);
+            // The trailing partial element starts at the last aligned offset.
+            return Err(TreeError::malformed_at(data.len() - data.len() % 8));
         }
         Ok(PackedFixed64Iter::new(data))
     }

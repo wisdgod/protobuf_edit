@@ -3,7 +3,6 @@ use core::fmt;
 use core::mem::MaybeUninit;
 
 use crate::buf::Buf;
-use crate::error::TreeError;
 use crate::fx::FxHashMap;
 use crate::varint;
 use crate::wire::Tag;
@@ -205,12 +204,17 @@ impl RawVarint32 {
         unsafe { Self::from_slice_unchecked(bytes) }
     }
 
+    /// Decodes a varint prefix and captures its raw bytes.
+    ///
+    /// Returns `None` on a truncated or invalid varint; the caller knows the
+    /// buffer offset and attaches it to the error.
     #[inline]
-    pub fn from_data(data: &[u8]) -> Result<(u32, u32, Self), TreeError> {
-        let (value, consumed) = varint::decode32(data).ok_or(TreeError::DecodeError)?;
+    #[must_use]
+    pub fn from_data(data: &[u8]) -> Option<(u32, u32, Self)> {
+        let (value, consumed) = varint::decode32(data)?;
         // SAFETY: decode32 guarantees consumed ∈ 1..=5 and validates the terminal byte range.
         let raw = unsafe { Self::from_slice_unchecked(&data[..consumed as usize]) };
-        Ok((value, consumed, raw))
+        Some((value, consumed, raw))
     }
 
     /// # Safety
@@ -307,12 +311,17 @@ impl RawVarint64 {
         unsafe { Self::from_slice_unchecked(bytes) }
     }
 
+    /// Decodes a varint prefix and captures its raw bytes.
+    ///
+    /// Returns `None` on a truncated or invalid varint; the caller knows the
+    /// buffer offset and attaches it to the error.
     #[inline]
-    pub fn from_data(data: &[u8]) -> Result<(u64, u32, Self), TreeError> {
-        let (value, consumed) = varint::decode64(data).ok_or(TreeError::DecodeError)?;
+    #[must_use]
+    pub fn from_data(data: &[u8]) -> Option<(u64, u32, Self)> {
+        let (value, consumed) = varint::decode64(data)?;
         // SAFETY: decode64 guarantees consumed ∈ 1..=10 and validates the terminal byte range.
         let raw = unsafe { Self::from_slice_unchecked(&data[..consumed as usize]) };
-        Ok((value, consumed, raw))
+        Some((value, consumed, raw))
     }
 
     /// # Safety

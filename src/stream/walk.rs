@@ -116,7 +116,7 @@ impl Walker {
     /// Parses as much of `data` as possible, emitting matched fields.
     ///
     /// With `complete == true` the input must hold whole fields up to the end;
-    /// truncation is a `DecodeError` and nothing is buffered. With
+    /// truncation is an error and nothing is buffered. With
     /// `complete == false` unfinished state is carried into the next call.
     /// Returns the number of structurally consumed bytes (bytes absorbed into
     /// `tail` are counted once their unit completes).
@@ -155,7 +155,7 @@ impl Walker {
                 _ => None,
             };
             if let Some(take) = opaque_take {
-                self.consume(take)?;
+                self.consume(take, pos)?;
                 pos += take;
                 if self.frames.last().is_some_and(|f| f.remaining == Some(0)) {
                     continue;
@@ -167,7 +167,9 @@ impl Walker {
                 break;
             }
 
-            let Some((unit, unit_len)) = parse_unit(&data[pos..], complete)? else {
+            let Some((unit, unit_len)) =
+                parse_unit(&data[pos..], complete).map_err(|e| e.offset_by(pos))?
+            else {
                 debug_assert!(!complete);
                 // Sub-unit fragment (< MAX_UNIT bytes) waits for the next chunk.
                 self.tail
@@ -176,7 +178,7 @@ impl Walker {
                 break;
             };
 
-            self.consume(unit_len)?;
+            self.consume(unit_len, pos)?;
             #[cfg(feature = "group")]
             {
                 pos = self.dispatch(data, pos + unit_len, &unit, unit_len, handler)?;
@@ -189,7 +191,7 @@ impl Walker {
 
         if complete {
             if !self.frames.is_empty() || !self.tail.is_empty() {
-                return Err(TreeError::DecodeError);
+                return Err(TreeError::Truncated);
             }
             return Ok(pos);
         }
@@ -244,7 +246,9 @@ impl Walker {
         }
         self.tail.clear();
 
-        self.consume(unit_len)?;
+        // The unit began in a previous chunk; report boundary errors at the
+        // start of the current input.
+        self.consume(unit_len, 0)?;
         #[cfg(feature = "group")]
         let next = self.dispatch(data, from_data, &unit, unit_len, handler)?;
         #[cfg(not(feature = "group"))]
@@ -296,7 +300,7 @@ impl Walker {
                 if !terminal && !has_children {
                     // Uninteresting payload: skip wholesale, never parse inside.
                     if fully_available {
-                        self.consume(len_usize)?;
+                        self.consume(len_usize, next_pos)?;
                         return Ok(next_pos + len_usize);
                     }
                     self.push_frame(Frame {
@@ -315,7 +319,7 @@ impl Walker {
                 if terminal && !has_children {
                     // Leaf payload: opaque bytes, emitted whole.
                     if fully_available {
-                        self.consume(len_usize)?;
+                        self.consume(len_usize, next_pos)?;
                         let body = &data[next_pos..next_pos + len_usize];
                         self.with_path_tag(tag, |path| {
                             handler.on_length_delimited(path, body, len, true)
@@ -373,7 +377,7 @@ impl Walker {
                     f.remaining.is_none() && f.tag.field_number() == tag.field_number()
                 });
                 if !matches {
-                    return Err(TreeError::DecodeError);
+                    return Err(TreeError::malformed_at(next_pos.saturating_sub(hdr_len)));
                 }
                 // The body ends where this end-group tag begins. For a tag
                 // resumed from `tail` the body ended in a previous call and is
@@ -474,15 +478,16 @@ impl Walker {
 
     /// Subtracts `n` consumed bytes from every open Len frame.
     ///
-    /// Underflow means a field crosses its enclosing payload boundary.
-    fn consume(&mut self, n: usize) -> Result<(), TreeError> {
+    /// Underflow means a field crosses its enclosing payload boundary; the
+    /// error reports `at`, the input offset the consumed unit started at.
+    fn consume(&mut self, n: usize, at: usize) -> Result<(), TreeError> {
         if n == 0 {
             return Ok(());
         }
         debug_assert!(u32::try_from(n).is_ok(), "consume steps are bounded by u32 payload sizes");
         for f in &mut self.frames {
             if let Some(rem) = f.remaining.as_mut() {
-                *rem = rem.checked_sub(n as u32).ok_or(TreeError::DecodeError)?;
+                *rem = rem.checked_sub(n as u32).ok_or_else(|| TreeError::malformed_at(at))?;
             }
         }
         Ok(())
@@ -490,7 +495,7 @@ impl Walker {
 
     fn push_frame(&mut self, frame: Frame) -> Result<(), TreeError> {
         if self.frames.len() + 1 > MAX_DECODE_DEPTH {
-            return Err(TreeError::DecodeError);
+            return Err(TreeError::CapacityExceeded);
         }
         self.frames.try_reserve(1).map_err(|_| TreeError::CapacityExceeded)?;
         self.path.try_reserve(1).map_err(|_| TreeError::CapacityExceeded)?;
@@ -515,11 +520,12 @@ impl Walker {
 /// Parses one field header (plus inline scalar value) from `bytes`.
 ///
 /// Returns `Ok(None)` when `bytes` ends mid-unit and `complete` is false;
-/// truncation with `complete == true` is a `DecodeError`.
+/// truncation with `complete == true` is `Malformed` at the unit start.
+/// Error offsets are local to `bytes`; callers rebase via `offset_by`.
 fn parse_unit(bytes: &[u8], complete: bool) -> Result<Option<(Unit, usize)>, TreeError> {
     #[inline]
     const fn incomplete(complete: bool) -> Result<Option<(Unit, usize)>, TreeError> {
-        if complete { Err(TreeError::DecodeError) } else { Ok(None) }
+        if complete { Err(TreeError::Malformed { offset: 0 }) } else { Ok(None) }
     }
 
     let Some((tag, tag_len)) = decode_tag_prefix(bytes)? else {
@@ -529,7 +535,9 @@ fn parse_unit(bytes: &[u8], complete: bool) -> Result<Option<(Unit, usize)>, Tre
 
     let (kind, extra) = match tag.wire_type() {
         WireType::Varint => {
-            let Some((value, n)) = decode_varint64_prefix(rest)? else {
+            let Some((value, n)) =
+                decode_varint64_prefix(rest).map_err(|e| e.offset_by(tag_len))?
+            else {
                 return incomplete(complete);
             };
             (UnitKind::Varint(value), n)
@@ -549,7 +557,8 @@ fn parse_unit(bytes: &[u8], complete: bool) -> Result<Option<(Unit, usize)>, Tre
             (UnitKind::I64(value), 8)
         }
         WireType::Len => {
-            let Some((len, n)) = decode_varint32_prefix(rest)? else {
+            let Some((len, n)) = decode_varint32_prefix(rest).map_err(|e| e.offset_by(tag_len))?
+            else {
                 return incomplete(complete);
             };
             (UnitKind::Len(len), n)
@@ -597,7 +606,7 @@ impl Scanner {
 
     /// Walks `data` as one complete message, emitting matched fields.
     ///
-    /// Errors with `DecodeError` on malformed or truncated input.
+    /// Errors with `Malformed`/`Truncated` on malformed or truncated input.
     pub fn scan<H: WireHandler + ?Sized>(
         &self,
         data: &[u8],

@@ -25,7 +25,7 @@ pub(super) const fn checked_push_plan(
 #[inline]
 pub(super) const fn ensure_decode_len(len: usize) -> Result<(), TreeError> {
     if unlikely(len > const { i32::MAX as usize }) {
-        return Err(TreeError::DecodeError);
+        return Err(TreeError::CapacityExceeded);
     }
     Ok(())
 }
@@ -36,9 +36,9 @@ pub(super) fn checked_advance(
     delta: usize,
     data_len: usize,
 ) -> Result<usize, TreeError> {
-    let next = offset.checked_add(delta).ok_or(TreeError::DecodeError)?;
+    let next = offset.checked_add(delta).ok_or_else(|| TreeError::malformed_at(offset))?;
     if unlikely(next > data_len) {
-        return Err(TreeError::DecodeError);
+        return Err(TreeError::malformed_at(offset));
     }
     Ok(next)
 }

@@ -262,7 +262,7 @@ impl Document {
         raw: RawVarint64,
     ) -> Result<Ix, TreeError> {
         if raw.is_empty() {
-            return Err(TreeError::DecodeError);
+            return Err(TreeError::Corrupted);
         }
         let (tag, slot, field_ix) = checked_push_plan(
             field_number,
@@ -307,7 +307,7 @@ impl Document {
         raw: RawVarint32,
     ) -> Result<Ix, TreeError> {
         if raw.is_empty() {
-            return Err(TreeError::DecodeError);
+            return Err(TreeError::Corrupted);
         }
         let (tag, slot, field_ix) =
             checked_push_plan(field_number, WireType::Len, self.lendels.len(), self.fields.len())?;

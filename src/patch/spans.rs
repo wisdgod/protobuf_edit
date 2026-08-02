@@ -107,7 +107,7 @@ impl StoredSpans {
     pub(crate) fn tag_span(self) -> Result<Span, TreeError> {
         let start = self.field.start();
         let end = start.checked_add(u32::from(self.tag_len)).ok_or(TreeError::CapacityExceeded)?;
-        Span::new(start, end).ok_or(TreeError::DecodeError)
+        Span::new(start, end).ok_or(TreeError::Corrupted)
     }
 
     #[inline]
@@ -123,20 +123,19 @@ impl StoredSpans {
                 let value_start = start
                     .checked_add(u32::from(self.tag_len))
                     .ok_or(TreeError::CapacityExceeded)?;
-                let value =
-                    Span::new(value_start, self.field.end()).ok_or(TreeError::DecodeError)?;
+                let value = Span::new(value_start, self.field.end()).ok_or(TreeError::Corrupted)?;
                 Ok(ValueSpans::Varint { value })
             }
             WireType::I32 => {
                 let end = self.field.end();
-                let start = end.checked_sub(4).ok_or(TreeError::DecodeError)?;
-                let value = Span::new(start, end).ok_or(TreeError::DecodeError)?;
+                let start = end.checked_sub(4).ok_or(TreeError::Corrupted)?;
+                let value = Span::new(start, end).ok_or(TreeError::Corrupted)?;
                 Ok(ValueSpans::I32 { value })
             }
             WireType::I64 => {
                 let end = self.field.end();
-                let start = end.checked_sub(8).ok_or(TreeError::DecodeError)?;
-                let value = Span::new(start, end).ok_or(TreeError::DecodeError)?;
+                let start = end.checked_sub(8).ok_or(TreeError::Corrupted)?;
+                let value = Span::new(start, end).ok_or(TreeError::Corrupted)?;
                 Ok(ValueSpans::I64 { value })
             }
             WireType::Len => {
@@ -147,14 +146,13 @@ impl StoredSpans {
                 let len_end = len_start
                     .checked_add(u32::from(self.aux_len))
                     .ok_or(TreeError::CapacityExceeded)?;
-                let len = Span::new(len_start, len_end).ok_or(TreeError::DecodeError)?;
+                let len = Span::new(len_start, len_end).ok_or(TreeError::Corrupted)?;
 
                 let payload_start = len_end;
                 let payload_end = payload_start
                     .checked_add(self.payload_len)
                     .ok_or(TreeError::CapacityExceeded)?;
-                let payload =
-                    Span::new(payload_start, payload_end).ok_or(TreeError::DecodeError)?;
+                let payload = Span::new(payload_start, payload_end).ok_or(TreeError::Corrupted)?;
                 debug_assert_eq!(payload_end, self.field.end());
                 Ok(ValueSpans::Len { len, payload })
             }
@@ -167,14 +165,13 @@ impl StoredSpans {
                     .field
                     .end()
                     .checked_sub(self.aux_len as u32)
-                    .ok_or(TreeError::DecodeError)?;
-                let body = Span::new(body_start, body_end).ok_or(TreeError::DecodeError)?;
-                let end_tag =
-                    Span::new(body_end, self.field.end()).ok_or(TreeError::DecodeError)?;
+                    .ok_or(TreeError::Corrupted)?;
+                let body = Span::new(body_start, body_end).ok_or(TreeError::Corrupted)?;
+                let end_tag = Span::new(body_end, self.field.end()).ok_or(TreeError::Corrupted)?;
                 Ok(ValueSpans::Group { body, end_tag })
             }
             #[cfg(feature = "group")]
-            WireType::EGroup => Err(TreeError::DecodeError),
+            WireType::EGroup => Err(TreeError::Corrupted),
         }
     }
 
@@ -183,14 +180,14 @@ impl StoredSpans {
         match wire {
             WireType::Len => {
                 let ValueSpans::Len { payload, .. } = self.value_spans(wire)? else {
-                    return Err(TreeError::DecodeError);
+                    return Err(TreeError::Corrupted);
                 };
                 Ok(payload)
             }
             #[cfg(feature = "group")]
             WireType::SGroup => {
                 let ValueSpans::Group { body, .. } = self.value_spans(wire)? else {
-                    return Err(TreeError::DecodeError);
+                    return Err(TreeError::Corrupted);
                 };
                 Ok(body)
             }
@@ -204,7 +201,7 @@ pub fn slice_span(bytes: &[u8], span: Span) -> Result<&[u8], TreeError> {
     let start = span.start() as usize;
     let end = span.end() as usize;
     if end > bytes.len() {
-        return Err(TreeError::DecodeError);
+        return Err(TreeError::Corrupted);
     }
     Ok(&bytes[start..end])
 }
@@ -213,7 +210,7 @@ pub fn slice_span(bytes: &[u8], span: Span) -> Result<&[u8], TreeError> {
 pub fn span_offset_by(span: Span, base: u32) -> Result<Span, TreeError> {
     let start = base.checked_add(span.start()).ok_or(TreeError::CapacityExceeded)?;
     let end = base.checked_add(span.end()).ok_or(TreeError::CapacityExceeded)?;
-    Span::new(start, end).ok_or(TreeError::DecodeError)
+    Span::new(start, end).ok_or(TreeError::Corrupted)
 }
 
 #[inline]
