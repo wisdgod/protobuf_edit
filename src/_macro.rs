@@ -24,6 +24,9 @@ macro_rules! define_valid_range_type {
             ::core::assert!(::core::mem::size_of::<$int>() == ::core::mem::size_of::<$uint>());
         };
 
+        // Generated constructor/constant surface; each instantiation uses a
+        // different subset.
+        #[allow(dead_code)]
         impl $name {
             pub const MIN: $name = unsafe { ::core::mem::transmute($low as $int) };
             pub const MAX: $name = unsafe { ::core::mem::transmute($high as $int) };

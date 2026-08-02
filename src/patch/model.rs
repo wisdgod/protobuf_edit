@@ -64,16 +64,12 @@ impl Patch {
             }
         }
         let next = edits.len();
-        let Some(ix_u32) = u32::try_from(next).ok() else {
+        let Some(ix) = u32::try_from(next).ok().and_then(EditIx::new) else {
             return Err(TreeError::CapacityExceeded);
         };
-        if ix_u32 == EditIx::MAX.as_inner() {
-            return Err(TreeError::CapacityExceeded);
-        }
         edits.try_reserve(1).map_err(|_| TreeError::CapacityExceeded)?;
         edits.push(value);
-        // SAFETY: `ix_u32 < EditIx::MAX` checked above.
-        Ok(unsafe { EditIx::new_unchecked(ix_u32) })
+        Ok(ix)
     }
 }
 
