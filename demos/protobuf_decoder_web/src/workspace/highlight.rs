@@ -73,20 +73,13 @@ pub(crate) fn compute_selected_highlights(
         });
     }
 
-    if let Ok(mut msg) = patch.field_parent_message(fid) {
-        while let Ok(Some(parent_field)) = patch.message_parent_field(msg) {
-            if let Ok(Some(spans)) = patch.field_root_spans(parent_field) {
-                out.push(HighlightRange {
-                    start: spans.field.start() as usize,
-                    end: spans.field.end() as usize,
-                    kind: HighlightKind::Ancestor,
-                });
-            }
-            if let Ok(parent_msg) = patch.field_parent_message(parent_field) {
-                msg = parent_msg;
-            } else {
-                break;
-            }
+    for parent_field in super::ancestor_fields(patch, fid) {
+        if let Ok(Some(spans)) = patch.field_root_spans(parent_field) {
+            out.push(HighlightRange {
+                start: spans.field.start() as usize,
+                end: spans.field.end() as usize,
+                kind: HighlightKind::Ancestor,
+            });
         }
     }
 

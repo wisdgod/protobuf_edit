@@ -65,6 +65,63 @@ pub(crate) fn MessageSidebar(on_toggle_theme: UnsyncCallback<()>) -> impl IntoVi
         selected_for_delete.update(|set| set.retain(|id| ids.contains(id)));
     });
 
+    // Structural row list; selection checkboxes are reactive inside the rows,
+    // so toggling them does not rebuild the list.
+    let row_specs: Memo<Vec<RowSpec>> = Memo::new(move |_| {
+        messages_list.with(|list| {
+            filter_text.with(|raw| {
+                let filter = raw.trim();
+                let GroupedMessages { groups, group_order, meta_by_id } =
+                    build_groups(list, filter);
+
+                let mut out: Vec<RowSpec> = Vec::new();
+                for class_id in group_order {
+                    let Some(members) = groups.get(&class_id) else {
+                        continue;
+                    };
+
+                    if members.len() <= 1 {
+                        if let Some(m) = members.first() {
+                            out.push(RowSpec::Message { meta: (*m).clone(), indent: 0 });
+                        }
+                        continue;
+                    }
+
+                    let root_id = meta_by_id.get(&class_id).map(|meta| meta.id);
+                    let title = meta_by_id
+                        .get(&class_id)
+                        .map(|meta| meta.class_name.clone())
+                        .or_else(|| members.first().map(|m| m.class_name.clone()))
+                        .unwrap_or_else(|| Arc::<str>::from(format!("Class {class_id}")));
+                    let label = Arc::<str>::from(format!("{title} ({})", members.len()));
+                    let default_select_id = root_id
+                        .or_else(|| members.iter().max_by_key(|m| m.modified_ms).map(|m| m.id));
+                    let member_ids: Arc<[MessageId]> = members.iter().map(|m| m.id).collect();
+
+                    out.push(RowSpec::Class {
+                        class_id,
+                        label,
+                        title,
+                        member_ids,
+                        default_select_id,
+                    });
+
+                    if !collapsed_classes.with(|s| s.contains(&class_id)) {
+                        let mut sorted: Vec<&MessageMeta> = members.clone();
+                        sort_members(&mut sorted, class_id);
+                        for m in sorted {
+                            if m.id == class_id {
+                                continue;
+                            }
+                            out.push(RowSpec::Message { meta: m.clone(), indent: 1 });
+                        }
+                    }
+                }
+                out
+            })
+        })
+    });
+
     let has_current_message = move || current_message_id.get().is_some();
 
     let delete_selected_count =
@@ -89,9 +146,11 @@ pub(crate) fn MessageSidebar(on_toggle_theme: UnsyncCallback<()>) -> impl IntoVi
     };
 
     let on_select_all_visible = UnsyncCallback::new(move |()| {
-        let filter = normalize_filter(&filter_text.get_untracked());
-        let ids: Vec<MessageId> = messages_list.with(|list| {
-            list.iter().filter(|m| matches_filter(m, &filter)).map(|m| m.id).collect()
+        let ids: Vec<MessageId> = filter_text.with_untracked(|raw| {
+            let filter = raw.trim();
+            messages_list.with_untracked(|list| {
+                list.iter().filter(|m| matches_filter(m, filter)).map(|m| m.id).collect()
+            })
         });
         if ids.is_empty() {
             return;
@@ -271,62 +330,38 @@ pub(crate) fn MessageSidebar(on_toggle_theme: UnsyncCallback<()>) -> impl IntoVi
                 </details>
 
                 <div class="message-list">
-                    {move || {
-                        let filter = normalize_filter(&filter_text.get());
-                        messages_list.with(|list| {
-                            if list.is_empty() {
-                                return vec![view! { <div class="message-empty">"No messages."</div> }
-                                    .into_any()];
-                            }
-
-                            let GroupedMessages {
-                                groups,
-                                group_order,
-                                meta_by_id,
-                            } = build_groups(list, &filter);
-
-                            let mut out: Vec<AnyView> = Vec::new();
-                            for class_id in group_order {
-                                let Some(members) = groups.get(&class_id) else {
-                                    continue;
-                                };
-
-                                if members.len() <= 1 {
-                                    let Some(m) = members.first() else {
-                                        continue;
-                                    };
-                                    out.push(message_row_view(
-                                        m,
-                                        0,
+                    <Show
+                        when=move || messages_list.with(|list| !list.is_empty())
+                        fallback=|| view! { <div class="message-empty">"No messages."</div> }
+                    >
+                        <For
+                            each=move || row_specs.get()
+                            key=RowSpec::key
+                            children={
+                                let row_ctx = row_ctx.clone();
+                                move |spec| match spec {
+                                    RowSpec::Class {
+                                        class_id,
+                                        label,
+                                        title,
+                                        member_ids,
+                                        default_select_id,
+                                    } => class_row_view(
+                                        class_id,
+                                        label,
+                                        title,
+                                        member_ids,
+                                        default_select_id,
+                                        collapsed_classes,
                                         &row_ctx,
-                                    ));
-                                    continue;
-                                }
-
-                                out.push(class_row_view(
-                                    class_id,
-                                    members,
-                                    &meta_by_id,
-                                    collapsed_classes,
-                                    &row_ctx,
-                                ));
-
-                                if !collapsed_classes.with(|s| s.contains(&class_id)) {
-                                    let mut sorted: Vec<&MessageMeta> = members.clone();
-                                    sort_members(&mut sorted, class_id);
-
-                                    for m in sorted {
-                                        if m.id == class_id {
-                                            continue;
-                                        }
-                                        out.push(message_row_view(m, 1, &row_ctx));
+                                    ),
+                                    RowSpec::Message { meta, indent } => {
+                                        message_row_view(&meta, indent, &row_ctx)
                                     }
                                 }
                             }
-
-                            out
-                        })
-                    }}
+                        />
+                    </Show>
                 </div>
             </div>
             <div class="sidebar-footer">
@@ -336,11 +371,29 @@ pub(crate) fn MessageSidebar(on_toggle_theme: UnsyncCallback<()>) -> impl IntoVi
     }
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum SelectState {
-    None,
-    Some,
-    All,
+/// One rendered list row; keyed so `<For>` preserves untouched row DOM.
+#[derive(Clone, PartialEq, Eq)]
+enum RowSpec {
+    Class {
+        class_id: MessageId,
+        label: Arc<str>,
+        title: Arc<str>,
+        member_ids: Arc<[MessageId]>,
+        default_select_id: Option<MessageId>,
+    },
+    Message {
+        meta: MessageMeta,
+        indent: usize,
+    },
+}
+
+impl RowSpec {
+    fn key(&self) -> (bool, MessageId) {
+        match self {
+            Self::Class { class_id, .. } => (true, *class_id),
+            Self::Message { meta, .. } => (false, meta.id),
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -352,16 +405,21 @@ struct MessageRowCtx {
     msg_svc: MessageService,
 }
 
-fn normalize_filter(raw: &str) -> String {
-    raw.trim().to_lowercase()
+/// ASCII-case-insensitive substring search without allocating.
+fn contains_ignore_ascii_case(haystack: &str, needle: &str) -> bool {
+    if needle.is_empty() {
+        return true;
+    }
+    if needle.len() > haystack.len() {
+        return false;
+    }
+    haystack.as_bytes().windows(needle.len()).any(|w| w.eq_ignore_ascii_case(needle.as_bytes()))
 }
 
 fn matches_filter(meta: &MessageMeta, filter: &str) -> bool {
-    if filter.is_empty() {
-        return true;
-    }
-    meta.name.as_ref().to_lowercase().contains(filter)
-        || meta.class_name.as_ref().to_lowercase().contains(filter)
+    filter.is_empty()
+        || contains_ignore_ascii_case(meta.name.as_ref(), filter)
+        || contains_ignore_ascii_case(meta.class_name.as_ref(), filter)
 }
 
 struct GroupedMessages<'a> {
@@ -401,22 +459,6 @@ fn sort_members(members: &mut Vec<&MessageMeta>, class_id: MessageId) {
             .then_with(|| b.modified_ms.cmp(&a.modified_ms))
             .then_with(|| b.id.cmp(&a.id))
     });
-}
-
-fn class_select_state(
-    members: &[&MessageMeta],
-    selected_for_delete: RwSignal<FxHashSet<MessageId>>,
-) -> SelectState {
-    let selected =
-        selected_for_delete.with(|set| members.iter().filter(|m| set.contains(&m.id)).count());
-
-    if selected == 0 {
-        return SelectState::None;
-    }
-    if selected == members.len() {
-        return SelectState::All;
-    }
-    SelectState::Some
 }
 
 fn commit_rename(
@@ -484,32 +526,41 @@ fn handle_rename_blur(
 
 fn class_row_view(
     class_id: MessageId,
-    members: &[&MessageMeta],
-    meta_by_id: &FxHashMap<MessageId, &MessageMeta>,
+    label: Arc<str>,
+    title: Arc<str>,
+    member_ids: Arc<[MessageId]>,
+    default_select_id: Option<MessageId>,
     collapsed_classes: RwSignal<FxHashSet<MessageId>>,
     ctx: &MessageRowCtx,
 ) -> AnyView {
     let MessageRowCtx { selected_for_delete, renaming_id, rename_text, msg_svc, .. } = ctx.clone();
 
-    let root_id: Option<MessageId> = meta_by_id.get(&class_id).map(|meta| meta.id);
-    let title = meta_by_id
-        .get(&class_id)
-        .map(|meta| meta.class_name.clone())
-        .or_else(|| members.first().map(|m| m.class_name.clone()))
-        .unwrap_or_else(|| std::sync::Arc::<str>::from(format!("Class {class_id}")));
-    let label = Arc::<str>::from(format!("{title} ({})", members.len()));
-    let expanded = !collapsed_classes.with(|s| s.contains(&class_id));
-    let caret = if expanded { "▾" } else { "▸" };
+    // Caret and checkbox state are reactive, so collapsing a class or
+    // toggling a selection never rebuilds the row list.
+    let caret =
+        move || if collapsed_classes.with(|s| s.contains(&class_id)) { "▸" } else { "▾" };
 
-    let class_selected_state = class_select_state(members, selected_for_delete);
-    let class_checked = class_selected_state == SelectState::All;
-    let class_indeterminate = class_selected_state == SelectState::Some;
-    let class_members: Vec<MessageId> = members.iter().map(|m| m.id).collect();
+    let selected_count = {
+        let member_ids = member_ids.clone();
+        move || {
+            selected_for_delete
+                .with(|set| member_ids.iter().filter(|id| set.contains(id)).count())
+        }
+    };
+    let class_checked = {
+        let selected_count = selected_count.clone();
+        let total = member_ids.len();
+        move || total > 0 && selected_count() == total
+    };
+    let class_indeterminate = {
+        let total = member_ids.len();
+        move || {
+            let n = selected_count();
+            n > 0 && n < total
+        }
+    };
 
     let class_is_renaming = move || renaming_id.get().is_some_and(|id| id == class_id);
-
-    let default_select_id: Option<MessageId> =
-        root_id.or_else(|| members.iter().max_by_key(|m| m.modified_ms).map(|m| m.id));
 
     let on_toggle_collapse = move |_| {
         collapsed_classes.update(|s| {
@@ -521,18 +572,21 @@ fn class_row_view(
         });
     };
 
-    let on_checkbox_change = move |ev| {
-        let input: web_sys::HtmlInputElement = event_target(&ev);
-        let checked = input.checked();
-        selected_for_delete.update(|set| {
-            if checked {
-                set.extend(class_members.iter().copied());
-            } else {
-                for id in &class_members {
-                    set.remove(id);
+    let on_checkbox_change = {
+        let member_ids = member_ids.clone();
+        move |ev| {
+            let input: web_sys::HtmlInputElement = event_target(&ev);
+            let checked = input.checked();
+            selected_for_delete.update(|set| {
+                if checked {
+                    set.extend(member_ids.iter().copied());
+                } else {
+                    for id in member_ids.iter() {
+                        set.remove(id);
+                    }
                 }
-            }
-        });
+            });
+        }
     };
 
     let select_svc = msg_svc.clone();

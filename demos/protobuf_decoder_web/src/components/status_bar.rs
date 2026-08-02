@@ -29,15 +29,18 @@ pub(crate) fn StatusBar() -> impl IntoView {
         <div class="status-bar">
             <div class="status-left">
                 <div>
-                    {move || workspace.bytes_count.get().unwrap_or(0)}
-                    " bytes | "
-                    {move || workspace.bytes_count.get().unwrap_or(0).saturating_add(15) / 16}
-                    " rows | "
-                    {move || workspace.field_count.get().unwrap_or(0)}
-                    " field(s)"
-                    " | "
-                    {move || workspace.highlight_range_count.get()}
-                    " highlight(s)"
+                    {move || {
+                        let Some(bytes) = workspace.bytes_count.get() else {
+                            return Oco::Borrowed("no data");
+                        };
+                        let rows = bytes.div_ceil(16);
+                        let fields = workspace.root_field_count.get().unwrap_or(0);
+                        let highlights = workspace.highlight_range_count.get();
+                        Oco::from(format!(
+                            "{bytes} bytes | {rows} rows | {fields} root field(s) | \
+                             {highlights} highlight(s)"
+                        ))
+                    }}
                 </div>
             </div>
 

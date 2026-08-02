@@ -153,9 +153,12 @@ fn FieldRow(field: FieldId, depth: usize) -> AnyView {
                     <span class="expand-icon">
                         {move || {
                             if !is_expandable.get() {
-                                return String::new();
+                                ""
+                            } else if is_expanded() {
+                                "▾"
+                            } else {
+                                "▸"
                             }
-                            if is_expanded() { "▾".to_string() } else { "▸".to_string() }
                         }}
                     </span>
                 </span>

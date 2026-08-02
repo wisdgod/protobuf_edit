@@ -32,20 +32,13 @@ pub(crate) fn Breadcrumb() -> impl IntoView {
                 return vec![Crumb { label: Arc::<str>::from("."), field_id: None }];
             };
 
-            let mut chain_fields: Vec<FieldId> = Vec::new();
-            if let Some(fid) = selected_field {
-                chain_fields.push(fid);
-                let mut msg = patch.field_parent_message(fid).ok();
-                while let Some(m) = msg {
-                    match patch.message_parent_field(m) {
-                        Ok(Some(parent_field)) => {
-                            chain_fields.push(parent_field);
-                            msg = patch.field_parent_message(parent_field).ok();
-                        }
-                        Ok(None) | Err(_) => break,
-                    }
-                }
-            }
+            let mut chain_fields: Vec<FieldId> = selected_field
+                .map(|fid| {
+                    core::iter::once(fid)
+                        .chain(crate::workspace::ancestor_fields(patch, fid))
+                        .collect()
+                })
+                .unwrap_or_default();
             chain_fields.reverse();
 
             let mut out = Vec::with_capacity(chain_fields.len().saturating_add(1));

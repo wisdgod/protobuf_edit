@@ -254,12 +254,15 @@ impl MessageService {
 
         let this = self.clone();
         spawn_local(async move {
-            let mut deleted: usize = 0;
-            for id in ids {
-                match messages::delete_message(id).await {
-                    Ok(()) => deleted = deleted.saturating_add(1),
-                    Err(msg) => toast.show(ToastKind::Error, msg),
+            let (deleted, failed) = match messages::delete_messages(&ids).await {
+                Ok(counts) => counts,
+                Err(msg) => {
+                    toast.show(ToastKind::Error, msg);
+                    return;
                 }
+            };
+            if failed != 0 {
+                toast.show(ToastKind::Error, format!("Failed to delete {failed} message(s)."));
             }
 
             this.refresh_inner().await;

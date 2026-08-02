@@ -59,7 +59,8 @@ pub(crate) struct WorkspaceState {
     pub highlight_range_count: Memo<usize>,
     pub read_only: Memo<bool>,
     pub bytes_count: Memo<Option<usize>>,
-    pub field_count: Memo<Option<usize>>,
+    /// Live fields of the root message only; nested fields are not counted.
+    pub root_field_count: Memo<Option<usize>>,
     pub dirty_count: Memo<usize>,
 }
 
@@ -102,7 +103,7 @@ impl WorkspaceState {
                 .with(|b| b.as_ref().map(ByteView::len))
                 .or_else(|| raw_bytes.with(|b| b.as_ref().map(ByteView::len)))
         });
-        let field_count = Memo::new(move |_| {
+        let root_field_count = Memo::new(move |_| {
             patch_state.with(|p| {
                 let patch = p.as_ref()?;
                 let fields = patch.message_fields(patch.root()).ok()?;
@@ -135,7 +136,7 @@ impl WorkspaceState {
             highlight_range_count,
             read_only,
             bytes_count,
-            field_count,
+            root_field_count,
             dirty_count,
         }
     }

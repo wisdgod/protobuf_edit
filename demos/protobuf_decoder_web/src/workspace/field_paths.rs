@@ -48,19 +48,19 @@ pub(crate) fn decode_selection_path(input: &str) -> Option<Vec<SelectionStep>> {
     Some(out)
 }
 
+/// Walks the parent fields of `fid` (exclusive) up to the root message.
+pub(crate) fn ancestor_fields(patch: &Patch, fid: FieldId) -> impl Iterator<Item = FieldId> + '_ {
+    let mut msg = patch.field_parent_message(fid).ok();
+    core::iter::from_fn(move || {
+        let parent_field = patch.message_parent_field(msg?).ok()??;
+        msg = patch.field_parent_message(parent_field).ok();
+        Some(parent_field)
+    })
+}
+
 pub(crate) fn build_selection_path(patch: &Patch, selected: FieldId) -> Option<Vec<SelectionStep>> {
-    let mut chain_fields: Vec<FieldId> = Vec::new();
-    chain_fields.push(selected);
-    let mut msg = patch.field_parent_message(selected).ok();
-    while let Some(m) = msg {
-        match patch.message_parent_field(m) {
-            Ok(Some(parent_field)) => {
-                chain_fields.push(parent_field);
-                msg = patch.field_parent_message(parent_field).ok();
-            }
-            Ok(None) | Err(_) => break,
-        }
-    }
+    let mut chain_fields: Vec<FieldId> =
+        core::iter::once(selected).chain(ancestor_fields(patch, selected)).collect();
     chain_fields.reverse();
 
     let mut out = Vec::with_capacity(chain_fields.len());

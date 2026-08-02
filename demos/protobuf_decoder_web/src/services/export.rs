@@ -24,21 +24,68 @@ impl ExportService {
         Self { ws, catalog, toast }
     }
 
-    fn read_bytes(&self) -> Option<(Vec<u8>, usize)> {
-        let from_patch = self.ws.patch_state.with(|p| {
-            p.as_ref().map(|patch| {
-                let bytes = patch.root_bytes();
-                (bytes.to_vec(), bytes.len())
-            })
-        });
-        from_patch.or_else(|| {
-            self.ws.raw_bytes.with(|b| {
-                b.as_ref().map(|v| {
-                    let bytes = v.as_slice();
-                    (bytes.to_vec(), bytes.len())
-                })
-            })
-        })
+    /// Runs `f` over the currently displayed bytes without copying them.
+    ///
+    /// Prefers the patch's byte mirror, then raw bytes; `None` means nothing
+    /// is loaded in the workspace (callers fall back to IndexedDB).
+    fn with_current_bytes<R>(&self, f: impl FnOnce(&[u8]) -> R) -> Option<R> {
+        if self.ws.patch_bytes.with_untracked(Option::is_some) {
+            return self.ws.patch_bytes.with_untracked(|b| b.as_ref().map(|v| f(v.as_slice())));
+        }
+        self.ws.raw_bytes.with_untracked(|b| b.as_ref().map(|v| f(v.as_slice())))
+    }
+
+    fn show_copied(toast: ToastManager, pending: usize, label: &str, len: usize) {
+        let msg = if pending == 0 {
+            format!("Copied {label}: {len} bytes.")
+        } else {
+            format!("Copied {label}: {len} bytes. ({pending} edit(s) pending.)")
+        };
+        toast.show(ToastKind::Success, msg);
+    }
+
+    fn copy_and_toast(toast: ToastManager, pending: usize, label: &str, len: usize, text: &str) {
+        match clipboard_write_text(text) {
+            Ok(_) => Self::show_copied(toast, pending, label, len),
+            Err(msg) => toast.show(ToastKind::Error, msg),
+        }
+    }
+
+    fn copy_share_url_text(toast: ToastManager, b64: &str, len: usize) {
+        let hash = format!("base64={b64}");
+        let url = match build_share_url(&hash) {
+            Ok(v) => v,
+            Err(msg) => {
+                toast.show(ToastKind::Error, msg);
+                return;
+            }
+        };
+        match clipboard_write_text(&url) {
+            Ok(_) => toast.show(ToastKind::Success, format!("Copy URL requested: {len} bytes.")),
+            Err(msg) => toast.show(ToastKind::Error, msg),
+        }
+    }
+
+    fn show_download_result(
+        toast: ToastManager,
+        pending: usize,
+        filename: &str,
+        len: usize,
+        res: Result<(), crate::error::UiError>,
+    ) {
+        match res {
+            Ok(()) => {
+                let msg = if pending == 0 {
+                    format!("Started download: {filename} ({len} bytes).")
+                } else {
+                    format!(
+                        "Started download: {filename} ({len} bytes). ({pending} edit(s) pending.)"
+                    )
+                };
+                toast.show(ToastKind::Success, msg);
+            }
+            Err(msg) => toast.show(ToastKind::Error, msg),
+        }
     }
 
     pub(crate) fn copy_as(&self, fmt: CopyFormat) {
@@ -46,21 +93,9 @@ impl ExportService {
         let toast = self.toast;
         let current_message_id = self.catalog.current_message_id;
 
-        if let Some((bytes, len)) = self.read_bytes() {
-            let text = fmt.format(&bytes);
-            match clipboard_write_text(&text) {
-                Ok(_) => {
-                    let pending = dirty_count.get_untracked();
-                    let label = fmt.label();
-                    let msg = if pending == 0 {
-                        format!("Copied {label}: {len} bytes.")
-                    } else {
-                        format!("Copied {label}: {len} bytes. ({pending} edit(s) pending.)")
-                    };
-                    toast.show(ToastKind::Success, msg);
-                }
-                Err(msg) => toast.show(ToastKind::Error, msg),
-            }
+        if let Some((text, len)) = self.with_current_bytes(|bytes| (fmt.format(bytes), bytes.len()))
+        {
+            Self::copy_and_toast(toast, dirty_count.get_untracked(), fmt.label(), len, &text);
             return;
         }
 
@@ -77,53 +112,33 @@ impl ExportService {
                 }
             };
             let bytes = loaded.bytes.as_slice();
-            let len = bytes.len();
             let text = fmt.format(bytes);
-            match clipboard_write_text(&text) {
-                Ok(_) => {
-                    let pending = dirty_count.get_untracked();
-                    let label = fmt.label();
-                    let msg = if pending == 0 {
-                        format!("Copied {label}: {len} bytes.")
-                    } else {
-                        format!("Copied {label}: {len} bytes. ({pending} edit(s) pending.)")
-                    };
-                    toast.show(ToastKind::Success, msg);
-                }
-                Err(msg) => toast.show(ToastKind::Error, msg),
-            }
+            Self::copy_and_toast(
+                toast,
+                dirty_count.get_untracked(),
+                fmt.label(),
+                bytes.len(),
+                &text,
+            );
         });
     }
 
     pub(crate) fn copy_range_as(&self, start: usize, end: usize, fmt: CopyFormat) {
         let toast = self.toast;
 
-        let bytes = self.ws.patch_state.with(|p| {
-            p.as_ref().map(|patch| {
-                let b = patch.root_bytes();
-                b[start..end.min(b.len())].to_vec()
-            })
-        });
-        let bytes = bytes.or_else(|| {
-            self.ws.raw_bytes.with(|b| {
-                b.as_ref().map(|v| {
-                    let b = v.as_slice();
-                    b[start..end.min(b.len())].to_vec()
-                })
-            })
+        let copied = self.with_current_bytes(|bytes| {
+            let slice = &bytes[start.min(bytes.len())..end.min(bytes.len())];
+            (fmt.format(slice), slice.len())
         });
 
-        let Some(bytes) = bytes else {
+        let Some((text, len)) = copied else {
             toast.show(ToastKind::Error, "No data loaded.");
             return;
         };
 
-        let len = bytes.len();
-        let text = fmt.format(&bytes);
         match clipboard_write_text(&text) {
             Ok(_) => {
-                let label = fmt.label();
-                toast.show(ToastKind::Success, format!("Copied {label}: {len} byte(s)."));
+                toast.show(ToastKind::Success, format!("Copied {}: {len} byte(s).", fmt.label()));
             }
             Err(msg) => toast.show(ToastKind::Error, msg),
         }
@@ -133,67 +148,28 @@ impl ExportService {
         let toast = self.toast;
         let current_message_id = self.catalog.current_message_id;
 
-        let b64_and_len = self.ws.patch_state.with(|p| {
-            p.as_ref().map(|patch| {
-                let bytes = patch.root_bytes();
-                (encode_base64_url(bytes), bytes.len())
-            })
-        });
-        let b64_and_len = b64_and_len.or_else(|| {
-            self.ws.raw_bytes.with(|b| {
-                b.as_ref().map(|v| {
-                    let bytes = v.as_slice();
-                    (encode_base64_url(bytes), bytes.len())
-                })
-            })
-        });
+        if let Some((b64, len)) =
+            self.with_current_bytes(|bytes| (encode_base64_url(bytes), bytes.len()))
+        {
+            Self::copy_share_url_text(toast, &b64, len);
+            return;
+        }
 
-        let Some((b64, len)) = b64_and_len else {
-            let Some(id) = current_message_id.get_untracked() else {
-                toast.show(ToastKind::Error, "No message selected.");
-                return;
-            };
-            spawn_local(async move {
-                let loaded = match messages::load_message_bytes(id).await {
-                    Ok(v) => v,
-                    Err(msg) => {
-                        toast.show(ToastKind::Error, msg);
-                        return;
-                    }
-                };
-                let bytes = loaded.bytes.as_slice();
-                let b64 = encode_base64_url(bytes);
-                let len = bytes.len();
-                let hash = format!("base64={b64}");
-                let url = match build_share_url(&hash) {
-                    Ok(v) => v,
-                    Err(msg) => {
-                        toast.show(ToastKind::Error, msg);
-                        return;
-                    }
-                };
-                match clipboard_write_text(&url) {
-                    Ok(_) => {
-                        toast.show(ToastKind::Success, format!("Copy URL requested: {len} bytes."));
-                    }
-                    Err(msg) => toast.show(ToastKind::Error, msg),
-                }
-            });
+        let Some(id) = current_message_id.get_untracked() else {
+            toast.show(ToastKind::Error, "No message selected.");
             return;
         };
-
-        let hash = format!("base64={b64}");
-        let url = match build_share_url(&hash) {
-            Ok(v) => v,
-            Err(msg) => {
-                toast.show(ToastKind::Error, msg);
-                return;
-            }
-        };
-        match clipboard_write_text(&url) {
-            Ok(_) => toast.show(ToastKind::Success, format!("Copy URL requested: {len} bytes.")),
-            Err(msg) => toast.show(ToastKind::Error, msg),
-        }
+        spawn_local(async move {
+            let loaded = match messages::load_message_bytes(id).await {
+                Ok(v) => v,
+                Err(msg) => {
+                    toast.show(ToastKind::Error, msg);
+                    return;
+                }
+            };
+            let bytes = loaded.bytes.as_slice();
+            Self::copy_share_url_text(toast, &encode_base64_url(bytes), bytes.len());
+        });
     }
 
     pub(crate) fn download_bin(&self) {
@@ -209,63 +185,30 @@ impl ExportService {
 
         let filename = messages::download_filename(&message_name_text.get_untracked(), id);
 
-        let from_patch = self.ws.patch_state.with(|p| {
-            p.as_ref().map(|patch| {
-                let bytes = patch.root_bytes();
-                (download_bytes(&filename, bytes), bytes.len())
-            })
-        });
-        let from_raw = from_patch.or_else(|| {
-            self.ws.raw_bytes.with(|b| {
-                b.as_ref().map(|v| {
-                    let bytes = v.as_slice();
-                    (download_bytes(&filename, bytes), bytes.len())
-                })
-            })
-        });
-
-        let Some((res, len)) = from_raw else {
-            spawn_local(async move {
-                let loaded = match messages::load_message_bytes(id).await {
-                    Ok(v) => v,
-                    Err(msg) => {
-                        toast.show(ToastKind::Error, msg);
-                        return;
-                    }
-                };
-                let bytes = loaded.bytes.as_slice();
-                let len = bytes.len();
-                match download_bytes(&filename, bytes) {
-                    Ok(()) => {
-                        let pending = dirty_count.get_untracked();
-                        let msg = if pending == 0 {
-                            format!("Started download: {filename} ({len} bytes).")
-                        } else {
-                            format!(
-                                "Started download: {filename} ({len} bytes). ({pending} edit(s) pending.)"
-                            )
-                        };
-                        toast.show(ToastKind::Success, msg);
-                    }
-                    Err(msg) => toast.show(ToastKind::Error, msg),
-                }
-            });
+        if let Some((res, len)) =
+            self.with_current_bytes(|bytes| (download_bytes(&filename, bytes), bytes.len()))
+        {
+            Self::show_download_result(toast, dirty_count.get_untracked(), &filename, len, res);
             return;
-        };
-
-        match res {
-            Ok(()) => {
-                let pending = dirty_count.get_untracked();
-                let msg = if pending == 0 {
-                    format!("Started download: {filename} ({len} bytes).")
-                } else {
-                    format!(
-                        "Started download: {filename} ({len} bytes). ({pending} edit(s) pending.)"
-                    )
-                };
-                toast.show(ToastKind::Success, msg);
-            }
-            Err(msg) => toast.show(ToastKind::Error, msg),
         }
+
+        spawn_local(async move {
+            let loaded = match messages::load_message_bytes(id).await {
+                Ok(v) => v,
+                Err(msg) => {
+                    toast.show(ToastKind::Error, msg);
+                    return;
+                }
+            };
+            let bytes = loaded.bytes.as_slice();
+            let res = download_bytes(&filename, bytes);
+            Self::show_download_result(
+                toast,
+                dirty_count.get_untracked(),
+                &filename,
+                bytes.len(),
+                res,
+            );
+        });
     }
 }

@@ -154,22 +154,44 @@ async fn create_message_impl(
     Ok(id)
 }
 
-pub(crate) async fn delete_message(id: MessageId) -> UiResult<()> {
-    let record = load_message_record(id).await?;
-    idb::delete_message_bytes_and_meta(id).await?;
+/// Deletes several messages with one listing + class-cleanup pass at the end.
+///
+/// Returns `(deleted, failed)`. Deleting one message at a time re-listed the
+/// whole store per item, making bulk deletes O(N^2) in IndexedDB round-trips.
+pub(crate) async fn delete_messages(ids: &[MessageId]) -> UiResult<(usize, usize)> {
+    let mut affected_classes: Vec<MessageId> = Vec::new();
+    let mut deleted = 0usize;
+    let mut failed = 0usize;
+
+    for &id in ids {
+        let Ok(record) = load_message_record(id).await else {
+            failed += 1;
+            continue;
+        };
+        if idb::delete_message_bytes_and_meta(id).await.is_err() {
+            failed += 1;
+            continue;
+        }
+        if !affected_classes.contains(&record.class_id) {
+            affected_classes.push(record.class_id);
+        }
+        deleted += 1;
+    }
 
     let list = list_messages().await?;
-    let class_referenced = list.iter().any(|m| m.class_id == record.class_id);
-    if !class_referenced {
-        let _ = idb::delete_class_auto_expand(record.class_id).await;
-        let _ = idb::delete_class_meta(record.class_id).await;
+    for class_id in affected_classes {
+        if !list.iter().any(|m| m.class_id == class_id) {
+            let _ = idb::delete_class_auto_expand(class_id).await;
+            let _ = idb::delete_class_meta(class_id).await;
+        }
     }
 
-    let current = current_message()?;
-    if current == Some(id) {
+    if let Some(current) = current_message()?
+        && ids.contains(&current)
+    {
         set_current_message(list.first().map(|m| m.id))?;
     }
-    Ok(())
+    Ok((deleted, failed))
 }
 
 pub(crate) async fn rename_message(id: MessageId, name: &str) -> UiResult<()> {
