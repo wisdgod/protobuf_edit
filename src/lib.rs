@@ -22,7 +22,8 @@
 //! - `error`: shared error type used across editing and parsing APIs
 //! - `document`: arena-backed structured editing model
 //! - `patch`: span-based editing model
-//! - `wire`: protobuf tag primitives
+//! - `wire`: protobuf tag primitives and the zero-allocation `FieldCursor`
+//! - `encode`: borrowed message encoder with single-allocation output
 //! - `varint`: varint and zigzag codecs
 //! - `stream`: incremental wire parser
 //!
@@ -36,6 +37,7 @@ extern crate alloc;
 mod _macro;
 mod fx;
 pub mod buf;
+pub mod encode;
 pub mod error;
 pub mod varint;
 pub mod wire;
