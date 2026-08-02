@@ -147,6 +147,24 @@ mod tests {
     }
 
     #[test]
+    fn tag_envelope_boundaries() {
+        // Smallest valid tag: field 1, wire type 0.
+        assert!(Tag::new(8).is_some());
+        // Largest valid tag: max field number, wire type 5.
+        assert!(Tag::new(0xFFFF_FFFD).is_some());
+        // Below the envelope: field number 0.
+        for raw in 0..8 {
+            assert!(Tag::new(raw).is_none());
+        }
+        // Above the envelope: wire types 6/7 of the max field number.
+        assert!(Tag::new(0xFFFF_FFFE).is_none());
+        assert!(Tag::new(0xFFFF_FFFF).is_none());
+        // Inside the envelope but with an invalid wire type.
+        assert!(Tag::new((1 << 3) | 6).is_none());
+        assert!(Tag::new((1 << 3) | 7).is_none());
+    }
+
+    #[test]
     fn make_split_tag_roundtrip() {
         let tag = Tag::try_from_parts(15, WireType::Len).unwrap();
         let (field, wire) = tag.split();

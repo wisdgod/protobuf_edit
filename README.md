@@ -244,7 +244,8 @@ payloads flow through without ever being buffered whole.
 
 ## `wire`, `varint`, `buf`
 
-- `wire`: `Tag` (non-zero `(field_number << 3) | wire_type`), `FieldNumber` (niche-packed
+- `wire`: `Tag` (`(field_number << 3) | wire_type`, range-typed to its validity envelope
+  `8..=0xFFFF_FFFD` so nested `Option`s stay 4 bytes), `FieldNumber` (niche-packed
   `1..=2^29-1`), `WireType`, `encode_tag` / `encode_tag_value` / `decode_tag`, and the
   `FieldCursor` shown above.
 - Definition macros, compile-time checked and structure-preserving:
