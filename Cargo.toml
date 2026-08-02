@@ -23,3 +23,7 @@ __std = []
 [dependencies]
 hashbrown = { version = "0.17", default-features = false, features = ["inline-more"] }
 rustc-hash = { version = "2", default-features = false }
+
+[[bench]]
+name = "core"
+harness = false
