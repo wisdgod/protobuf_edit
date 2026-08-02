@@ -67,16 +67,14 @@ pub(crate) fn build_selection_path(patch: &Patch, selected: FieldId) -> Option<V
     for fid in chain_fields {
         let tag = patch.field_tag(fid).ok()?;
         let parent = patch.field_parent_message(fid).ok()?;
-        let fields = patch.message_fields(parent).ok()?;
 
+        // fields_by_number already skips deleted fields; occurrence counts
+        // per full tag, so same-number fields with another wire type are
+        // filtered out here.
         let mut occurrence: u32 = 0;
         let mut found = false;
-        for f in fields {
-            if matches!(patch.field_is_deleted(f), Ok(true)) {
-                continue;
-            }
-            let t = patch.field_tag(f).ok()?;
-            if t != tag {
+        for f in patch.fields_by_number(parent, tag.field_number()).ok()? {
+            if patch.field_tag(f).ok()? != tag {
                 continue;
             }
             if f == fid {
@@ -100,12 +98,8 @@ fn find_field_by_tag_occurrence(
     tag: Tag,
     occurrence: u32,
 ) -> Result<Option<FieldId>, TreeError> {
-    let fields = patch.message_fields(msg)?;
     let mut seen: u32 = 0;
-    for field in fields {
-        if patch.field_is_deleted(field)? {
-            continue;
-        }
+    for field in patch.fields_by_number(msg, tag.field_number())? {
         if patch.field_tag(field)? != tag {
             continue;
         }
@@ -211,22 +205,10 @@ fn find_field_by_number_occurrence(
     field_number: u32,
     occurrence: u32,
 ) -> Result<Option<FieldId>, TreeError> {
-    let fields = patch.message_fields(msg)?;
-    let mut seen: u32 = 0;
-    for field in fields {
-        if patch.field_is_deleted(field)? {
-            continue;
-        }
-        let tag = patch.field_tag(field)?;
-        if tag.field_number().as_inner() != field_number {
-            continue;
-        }
-        if seen == occurrence {
-            return Ok(Some(field));
-        }
-        seen = seen.saturating_add(1);
-    }
-    Ok(None)
+    let Some(number) = FieldNumber::new(field_number) else {
+        return Ok(None);
+    };
+    Ok(patch.fields_by_number(msg, number)?.nth(occurrence as usize))
 }
 
 /// Resolve a user path, auto-parsing child messages. For Len fields that
