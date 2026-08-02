@@ -4,6 +4,7 @@
 //! - Public entry points live in this module file; helpers are in `wire/*`.
 //! - `Tag`/`FieldNumber`/`WireType` model protobuf tag metadata.
 //! - `encode_tag*` and `decode_tag` only operate on tag prefixes.
+//! - `FieldCursor` walks one complete message with zero allocation.
 //! - Value encoding/decoding is handled by higher-level modules.
 //!
 //! Typical usage:
@@ -15,11 +16,13 @@
 //! ```
 
 mod codec;
+mod cursor;
 #[cfg(feature = "group")]
 mod group;
 mod tag;
 
 pub use codec::{decode_tag, encode_tag, encode_tag_value};
+pub use cursor::{CursorError, CursorErrorKind, FieldCursor, RawField, WireValue};
 #[cfg(feature = "group")]
 pub use group::find_group_end;
 pub use tag::{FieldNumber, Tag, WireType, MAX_FIELD_NUMBER};
