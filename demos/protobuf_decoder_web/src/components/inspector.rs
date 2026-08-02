@@ -581,17 +581,8 @@ pub(crate) fn InspectorDrawer() -> impl IntoView {
             return;
         }
 
-        let mut res: Option<Result<(), TreeError>> = None;
-        patch_state.update(|p| {
-            let Some(patch) = p.as_mut() else {
-                res = Some(Err(TreeError::InvalidId));
-                return;
-            };
-            res = Some(patch.parse_child_message(fid).map(|_| ()));
-        });
-
-        match res.unwrap_or(Err(TreeError::InvalidId)) {
-            Ok(()) => {
+        match crate::workspace::parse_child_untracked(patch_state, fid) {
+            Ok(_child) => {
                 expanded.update(|s| {
                     s.insert(fid);
                 });

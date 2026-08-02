@@ -4,7 +4,7 @@ use crate::fx::FxHashSet;
 use crate::hex_view::HexTextMode;
 use crate::messages::{MessageId, MessageMeta};
 use crate::toast::ToastManager;
-use crate::workspace::{compute_highlights, HighlightRange};
+use crate::workspace::{compute_hovered_range, compute_selected_highlights, HighlightRange};
 use leptos::prelude::*;
 use protobuf_edit::patch::FieldId;
 use protobuf_edit::Patch;
@@ -54,7 +54,8 @@ pub(crate) struct WorkspaceState {
     pub hex_text_mode: RwSignal<HexTextMode>,
     pub hex_selection: RwSignal<Option<(usize, usize)>>,
 
-    pub highlights: Memo<Vec<HighlightRange>>,
+    pub selected_highlights: Memo<Vec<HighlightRange>>,
+    pub hovered_range: Memo<Option<HighlightRange>>,
     pub highlight_range_count: Memo<usize>,
     pub read_only: Memo<bool>,
     pub bytes_count: Memo<Option<usize>>,
@@ -77,19 +78,28 @@ impl WorkspaceState {
         let hex_text_mode: RwSignal<HexTextMode> = RwSignal::new(HexTextMode::Ascii);
         let hex_selection: RwSignal<Option<(usize, usize)>> = RwSignal::new(None);
 
-        let highlights = Memo::new(move |_| {
+        // Hover changes at mouse frequency; keep it out of the (heavier)
+        // selection-derived ranges so hovering never recomputes them.
+        let selected_highlights = Memo::new(move |_| {
             patch_state.with(|p| {
                 let Some(patch) = p.as_ref() else {
                     return Vec::new();
                 };
-                compute_highlights(patch, selected.get(), hovered.get())
+                compute_selected_highlights(patch, selected.get())
             })
         });
-        let highlight_range_count = Memo::new(move |_| highlights.with(Vec::len));
+        let hovered_range = Memo::new(move |_| {
+            patch_state.with(|p| compute_hovered_range(p.as_ref()?, hovered.get()))
+        });
+        let highlight_range_count = Memo::new(move |_| {
+            selected_highlights.with(Vec::len) + usize::from(hovered_range.get().is_some())
+        });
         let read_only = Memo::new(move |_| envelope_view.with(Option::is_some));
         let bytes_count = Memo::new(move |_| {
-            patch_state
-                .with(|p| p.as_ref().map(|p| p.root_bytes().len()))
+            // patch_bytes mirrors the patch's root bytes; reading it keeps
+            // this memo off the patch_state invalidation path.
+            patch_bytes
+                .with(|b| b.as_ref().map(ByteView::len))
                 .or_else(|| raw_bytes.with(|b| b.as_ref().map(ByteView::len)))
         });
         let field_count = Memo::new(move |_| {
@@ -120,7 +130,8 @@ impl WorkspaceState {
             dirty_fields,
             hex_text_mode,
             hex_selection,
-            highlights,
+            selected_highlights,
+            hovered_range,
             highlight_range_count,
             read_only,
             bytes_count,

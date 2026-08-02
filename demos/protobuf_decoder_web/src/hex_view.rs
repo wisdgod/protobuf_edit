@@ -1,7 +1,6 @@
 use leptos::html;
 use leptos::prelude::*;
-use protobuf_edit::patch::FieldId;
-use protobuf_edit::{Patch, WireType};
+use protobuf_edit::WireType;
 use std::cmp::min;
 
 use crate::bytes::ByteView;
@@ -131,13 +130,25 @@ fn utf8_cell(bytes: &[u8], idx: usize) -> Utf8Cell {
     Utf8Cell::Static(ascii_cell(byte))
 }
 
+/// Byte index of the event target, if it is a hex cell.
+///
+/// Cells carry `data-i`; all mouse handling is delegated to the container so
+/// the grid does not allocate three closures per rendered byte span.
+fn cell_index_of(ev: &web_sys::MouseEvent) -> Option<usize> {
+    use wasm_bindgen::JsCast as _;
+    let el = ev.target()?.dyn_into::<web_sys::Element>().ok()?;
+    el.get_attribute("data-i")?.parse().ok()
+}
+
 #[component]
 pub fn HexGrid(container_ref: NodeRef<html::Div>) -> impl IntoView {
     let workspace = expect_context::<WorkspaceState>();
     let export_svc = expect_context::<ExportService>();
     let patch_state = workspace.patch_state;
+    let patch_bytes = workspace.patch_bytes;
     let raw_bytes = workspace.raw_bytes;
-    let highlights = workspace.highlights;
+    let selected_highlights = workspace.selected_highlights;
+    let hovered_range = workspace.hovered_range;
     let text_mode = workspace.hex_text_mode;
     let selected = workspace.selected;
     let expanded = workspace.expanded;
@@ -168,10 +179,19 @@ pub fn HexGrid(container_ref: NodeRef<html::Div>) -> impl IntoView {
         (clamped_row, target_scroll as i32)
     };
 
+    // The grid renders bytes, and patch_bytes mirrors the patch's root bytes,
+    // so nothing here needs to subscribe to patch_state mutations.
     let total_rows = move || {
-        patch_state
-            .with(|p| p.as_ref().map(|p| p.root_bytes().len()))
-            .or_else(|| raw_bytes.with(|b| b.as_ref().map(super::bytes::ByteView::len)))
+        patch_bytes
+            .with(|b| b.as_ref().map(ByteView::len))
+            .or_else(|| raw_bytes.with(|b| b.as_ref().map(ByteView::len)))
+            .map_or(0, |len| len.div_ceil(BYTES_PER_ROW))
+    };
+
+    let total_rows_untracked = move || {
+        patch_bytes
+            .with_untracked(|b| b.as_ref().map(ByteView::len))
+            .or_else(|| raw_bytes.with_untracked(|b| b.as_ref().map(ByteView::len)))
             .map_or(0, |len| len.div_ceil(BYTES_PER_ROW))
     };
 
@@ -192,19 +212,15 @@ pub fn HexGrid(container_ref: NodeRef<html::Div>) -> impl IntoView {
         })
     });
 
-    let on_byte_dblclick = Callback::new(move |idx: usize| {
-        if patch_state.with(std::option::Option::is_none) {
+    let on_grid_dblclick = move |ev: web_sys::MouseEvent| {
+        let Some(idx) = cell_index_of(&ev) else {
             return;
-        }
-        let mut outcome: Option<(Option<FieldId>, Vec<FieldId>)> = None;
-        patch_state.update(|p| {
-            let Some(patch) = p.as_mut() else {
-                outcome = Some((None, Vec::new()));
-                return;
-            };
-            outcome = Some(drilldown_byte(patch, idx));
-        });
-
+        };
+        // Drilldown only fills the lazy child-parse cache; visibility flows
+        // through `expanded`/`selected`, so skip the patch_state notification.
+        let outcome = patch_state
+            .try_update_untracked(|p| p.as_mut().map(|patch| drilldown_byte(patch, idx)))
+            .flatten();
         let Some((selected_field, to_expand)) = outcome else {
             return;
         };
@@ -214,11 +230,17 @@ pub fn HexGrid(container_ref: NodeRef<html::Div>) -> impl IntoView {
             }
         });
         selected.set(selected_field);
-    });
+    };
 
-    let on_byte_mousedown = Callback::new(move |(idx, shift): (usize, bool)| {
+    let on_grid_mousedown = move |ev: web_sys::MouseEvent| {
         ctx_menu_visible.set(false);
-        if shift {
+        if ev.button() != 0 {
+            return;
+        }
+        let Some(idx) = cell_index_of(&ev) else {
+            return;
+        };
+        if ev.shift_key() {
             if let Some(anchor) = selection_anchor.get_untracked() {
                 let start = anchor.min(idx);
                 let end = anchor.max(idx) + 1;
@@ -229,19 +251,22 @@ pub fn HexGrid(container_ref: NodeRef<html::Div>) -> impl IntoView {
             is_selecting.set(true);
             hex_selection.set(Some((idx, idx + 1)));
         }
-    });
+    };
 
-    let on_byte_mouseover = Callback::new(move |idx: usize| {
+    let on_grid_mouseover = move |ev: web_sys::MouseEvent| {
         if !is_selecting.get_untracked() {
             return;
         }
         let Some(anchor) = selection_anchor.get_untracked() else {
             return;
         };
+        let Some(idx) = cell_index_of(&ev) else {
+            return;
+        };
         let start = anchor.min(idx);
         let end = anchor.max(idx) + 1;
         hex_selection.set(Some((start, end)));
-    });
+    };
 
     let on_copy_format = Callback::new(move |fmt: CopyFormat| {
         let Some((start, end)) = hex_selection.get_untracked() else {
@@ -250,23 +275,26 @@ pub fn HexGrid(container_ref: NodeRef<html::Div>) -> impl IntoView {
         export_svc.copy_range_as(start, end, fmt);
     });
 
+    // Track only the selected span (and the container mounting): forcing
+    // layout + hijacking the scroll position on unrelated patch mutations was
+    // both wasted reflow and a UX bug.
     Effect::new(move |_| {
         let Some(span) = selected_root_span.get() else {
             return;
         };
         let row = span.start() as usize / BYTES_PER_ROW;
         if let Some(el) = container_ref.get() {
-            let (row, scroll_top) = clamp_scroll(row, total_rows(), &el);
+            let (row, scroll_top) = clamp_scroll(row, total_rows_untracked(), &el);
             el.set_scroll_top(scroll_top);
             first_row.set(row);
         }
     });
 
     let bytes_key = Memo::new(move |_| {
-        patch_state
-            .with(|p| {
-                p.as_ref().map(|patch| {
-                    let bytes = patch.root_bytes();
+        patch_bytes
+            .with(|b| {
+                b.as_ref().map(|view| {
+                    let bytes = view.as_slice();
                     (bytes.as_ptr() as usize, bytes.len())
                 })
             })
@@ -280,34 +308,13 @@ pub fn HexGrid(container_ref: NodeRef<html::Div>) -> impl IntoView {
             })
     });
 
+    // Byte content can only change together with `bytes_key`, so resetting
+    // the scroll here doubles as the clamp for shrinking content.
     Effect::new(move |_| {
         let _ = bytes_key.get();
         first_row.set(0);
         if let Some(el) = container_ref.get() {
             el.set_scroll_top(0);
-        }
-    });
-
-    Effect::new(move |_| {
-        let total = total_rows();
-        if total == 0 {
-            first_row.set(0);
-            if let Some(el) = container_ref.get() {
-                el.set_scroll_top(0);
-            }
-            return;
-        }
-
-        let current = first_row.get_untracked();
-        if let Some(el) = container_ref.get() {
-            let total_height = total as f64 * ROW_HEIGHT_PX;
-            let client_height = f64::from(el.client_height());
-            let max_scroll_top = (total_height - client_height).max(0.0);
-            let max_first_row = (max_scroll_top / ROW_HEIGHT_PX).floor() as usize;
-            if current > max_first_row {
-                first_row.set(max_first_row);
-                el.set_scroll_top(max_scroll_top as i32);
-            }
         }
     });
 
@@ -323,6 +330,9 @@ pub fn HexGrid(container_ref: NodeRef<html::Div>) -> impl IntoView {
                     first_row.set(new_first_row);
                 }
             }
+            on:mousedown=on_grid_mousedown
+            on:mouseover=on_grid_mouseover
+            on:dblclick=on_grid_dblclick
             on:mouseup=move |_| {
                 is_selecting.set(false);
             }
@@ -356,14 +366,12 @@ pub fn HexGrid(container_ref: NodeRef<html::Div>) -> impl IntoView {
                     children=move |row| view! {
                         <HexRow
                             row_index=row
-                            patch_state=patch_state
+                            patch_bytes=patch_bytes
                             raw_bytes=raw_bytes
-                            highlights=highlights
+                            selected_highlights=selected_highlights
+                            hovered_range=hovered_range
                             text_mode=text_mode
                             hex_selection=hex_selection
-                            on_byte_dblclick=on_byte_dblclick
-                            on_byte_mousedown=on_byte_mousedown
-                            on_byte_mouseover=on_byte_mouseover
                         />
                     }
                 />
@@ -384,14 +392,12 @@ pub fn HexGrid(container_ref: NodeRef<html::Div>) -> impl IntoView {
 #[component]
 fn HexRow(
     row_index: usize,
-    patch_state: RwSignal<Option<Patch>, LocalStorage>,
+    patch_bytes: RwSignal<Option<ByteView>, LocalStorage>,
     raw_bytes: RwSignal<Option<ByteView>, LocalStorage>,
-    highlights: Memo<Vec<HighlightRange>>,
+    selected_highlights: Memo<Vec<HighlightRange>>,
+    hovered_range: Memo<Option<HighlightRange>>,
     text_mode: RwSignal<HexTextMode>,
     hex_selection: RwSignal<Option<(usize, usize)>>,
-    on_byte_dblclick: Callback<usize>,
-    on_byte_mousedown: Callback<(usize, bool)>,
-    on_byte_mouseover: Callback<usize>,
 ) -> impl IntoView {
     const BYTES_PER_ROW: usize = 16;
 
@@ -399,9 +405,16 @@ fn HexRow(
     let row_end = row_start + BYTES_PER_ROW;
 
     let row_highlights = Memo::new(move |_| {
-        highlights.with(|ranges| {
+        selected_highlights.with(|ranges| {
             ranges.iter().copied().filter(|h| h.intersects(row_start, row_end)).collect::<Vec<_>>()
         })
+    });
+
+    // Hover moves at mouse frequency but only ever touches the rows the
+    // hovered field intersects; keeping it separate leaves all other rows'
+    // cells untouched.
+    let row_hover = Memo::new(move |_| {
+        hovered_range.get().filter(|h| h.intersects(row_start, row_end))
     });
 
     #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -413,21 +426,24 @@ fn HexRow(
         utf8: Utf8Cell,
     }
 
-    let highlight_kind_at = move |i: usize, spans: &[HighlightRange]| -> Option<HighlightKind> {
-        let mut best: Option<HighlightKind> = None;
-        for &h in spans {
-            if !h.contains(i) {
-                continue;
+    let highlight_kind_at =
+        move |i: usize, spans: &[HighlightRange], hover: Option<HighlightRange>| {
+            let mut best: Option<HighlightKind> = None;
+            for h in spans.iter().copied().chain(hover) {
+                if !h.contains(i) {
+                    continue;
+                }
+                best = best.map_or(Some(h.kind), |prev| {
+                    if h.kind.priority() > prev.priority() { Some(h.kind) } else { Some(prev) }
+                });
             }
-            best = best.map_or(Some(h.kind), |prev| {
-                if h.kind.priority() > prev.priority() { Some(h.kind) } else { Some(prev) }
-            });
-        }
-        best
-    };
+            best
+        };
 
     let row_cells: Memo<Vec<CellData>> = Memo::new(move |_| {
         let sel = hex_selection.get();
+        let hover = row_hover.get();
+        let mode = text_mode.get();
         row_highlights.with(|spans| {
             let build_cells = |bytes: &[u8]| {
                 let end = min(row_end, bytes.len());
@@ -440,22 +456,27 @@ fn HexRow(
                     out.push(CellData {
                         idx,
                         byte,
-                        kind: highlight_kind_at(idx, spans),
+                        kind: highlight_kind_at(idx, spans, hover),
                         range_selected: sel.is_some_and(|(a, b)| idx >= a && idx < b),
-                        utf8: utf8_cell(bytes, idx),
+                        // UTF-8 grouping is only rendered in Unicode mode;
+                        // skip the per-byte decode work otherwise.
+                        utf8: match mode {
+                            HexTextMode::Ascii => Utf8Cell::Static(ascii_cell(byte)),
+                            HexTextMode::Unicode => utf8_cell(bytes, idx),
+                        },
                     });
                 }
                 out
             };
 
-            patch_state.with(|p| {
-                p.as_ref().map_or_else(
+            patch_bytes.with(|b| {
+                b.as_ref().map_or_else(
                     || {
                         raw_bytes
                             .with(|b| b.as_ref().map(|view| build_cells(view.as_slice())))
                             .unwrap_or_default()
                     },
-                    |patch| build_cells(patch.root_bytes()),
+                    |view| build_cells(view.as_slice()),
                 )
             })
         })
@@ -487,27 +508,17 @@ fn HexRow(
     };
 
     view! {
-    <div class="hex-row">
-        <span class="hex-offset">{format!("{row_start:05X}")}</span>
+        <div class="hex-row">
+            <span class="hex-offset">{format!("{row_start:05X}")}</span>
             <span class="hex-bytes">
                 {move || {
                     row_cells.with(|cells| {
                         cells
                             .iter()
                             .map(|cell| {
-                                let idx = cell.idx;
                                 let cls = class_for(cell.kind, cell.range_selected);
                                 view! {
-                                    <span
-                                        class=cls
-                                        on:mousedown=move |ev: web_sys::MouseEvent| {
-                                            if ev.button() == 0 {
-                                                on_byte_mousedown.run((idx, ev.shift_key()));
-                                            }
-                                        }
-                                        on:mouseover=move |_| on_byte_mouseover.run(idx)
-                                        on:dblclick=move |_| on_byte_dblclick.run(idx)
-                                    >
+                                    <span class=cls data-i=cell.idx>
                                         {hex_cell(cell.byte)}
                                     </span>
                                 }
@@ -516,84 +527,41 @@ fn HexRow(
                             .collect::<Vec<_>>()
                     })
                 }}
-                </span>
-                <span class="hex-text">
-                    {move || {
-                        let mode = text_mode.get();
-                        row_cells.with(|cells| {
-                            cells
-                                .iter()
-                                .map(|cell| {
-                                    let idx = cell.idx;
-                                    let cls = class_for(cell.kind, cell.range_selected);
-                                    match mode {
-                                        HexTextMode::Ascii => view! {
-                                            <span
-                                                class=cls
-                                                on:mousedown=move |ev: web_sys::MouseEvent| {
-                                                    if ev.button() == 0 {
-                                                        on_byte_mousedown.run((idx, ev.shift_key()));
-                                                    }
-                                                }
-                                                on:mouseover=move |_| on_byte_mouseover.run(idx)
-                                                on:dblclick=move |_| on_byte_dblclick.run(idx)
-                                            >
-                                                {ascii_cell(cell.byte)}
-                                            </span>
-                                        }
-                                        .into_any(),
-                                        HexTextMode::Unicode => match cell.utf8 {
-                                            Utf8Cell::Static(text) => view! {
-                                                <span
-                                                    class=cls
-                                                    on:mousedown=move |ev: web_sys::MouseEvent| {
-                                                        if ev.button() == 0 {
-                                                            on_byte_mousedown.run((idx, ev.shift_key()));
-                                                        }
-                                                    }
-                                                    on:mouseover=move |_| on_byte_mouseover.run(idx)
-                                                    on:dblclick=move |_| on_byte_dblclick.run(idx)
-                                                >
-                                                    {text}
-                                                </span>
-                                            }
-                                            .into_any(),
-                                            Utf8Cell::Char(ch) => view! {
-                                                <span
-                                                    class=cls
-                                                    on:mousedown=move |ev: web_sys::MouseEvent| {
-                                                        if ev.button() == 0 {
-                                                            on_byte_mousedown.run((idx, ev.shift_key()));
-                                                        }
-                                                    }
-                                                    on:mouseover=move |_| on_byte_mouseover.run(idx)
-                                                    on:dblclick=move |_| on_byte_dblclick.run(idx)
-                                                >
-                                                    {ch.to_string()}
-                                                </span>
-                                            }
-                                            .into_any(),
-                                            Utf8Cell::Placeholder => view! {
-                                                <span
-                                                    class=cls
-                                                    class:hex-byte--placeholder=true
-                                                    on:mousedown=move |ev: web_sys::MouseEvent| {
-                                                        if ev.button() == 0 {
-                                                            on_byte_mousedown.run((idx, ev.shift_key()));
-                                                        }
-                                                    }
-                                                    on:mouseover=move |_| on_byte_mouseover.run(idx)
-                                                    on:dblclick=move |_| on_byte_dblclick.run(idx)
-                                                ></span>
-                                            }
-                                            .into_any(),
-                                        },
+            </span>
+            <span class="hex-text">
+                {move || {
+                    row_cells.with(|cells| {
+                        cells
+                            .iter()
+                            .map(|cell| {
+                                let cls = class_for(cell.kind, cell.range_selected);
+                                // Ascii mode resolves to `Static` cells inside
+                                // `row_cells`, so one match covers both modes.
+                                match cell.utf8 {
+                                    Utf8Cell::Static(text) => view! {
+                                        <span class=cls data-i=cell.idx>{text}</span>
                                     }
-                                })
-                                .collect::<Vec<_>>()
-                        })
-                    }}
-                </span>
+                                    .into_any(),
+                                    Utf8Cell::Char(ch) => view! {
+                                        <span class=cls data-i=cell.idx>
+                                            {ch.to_string()}
+                                        </span>
+                                    }
+                                    .into_any(),
+                                    Utf8Cell::Placeholder => view! {
+                                        <span
+                                            class=cls
+                                            class:hex-byte--placeholder=true
+                                            data-i=cell.idx
+                                        ></span>
+                                    }
+                                    .into_any(),
+                                }
+                            })
+                            .collect::<Vec<_>>()
+                    })
+                }}
+            </span>
         </div>
     }
 }

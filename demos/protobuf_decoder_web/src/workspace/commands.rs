@@ -36,6 +36,24 @@ fn patch_from_view(view: &ByteView) -> Result<Patch, TreeError> {
     Ok(patch)
 }
 
+/// Parses `field`'s child message without notifying `patch_state` subscribers.
+///
+/// `parse_child_message` only fills the lazy-parse cache; what becomes
+/// visible is driven by the `expanded`/`selected` signals. A tracked update
+/// here would recompute every patch-dependent memo in the app for a
+/// cache-only mutation.
+pub(crate) fn parse_child_untracked(
+    patch_state: RwSignal<Option<Patch>, LocalStorage>,
+    field: FieldId,
+) -> Result<protobuf_edit::patch::MessageId, TreeError> {
+    patch_state
+        .try_update_untracked(|p| {
+            let patch = p.as_mut().ok_or(TreeError::InvalidId)?;
+            patch.parse_child_message(field)
+        })
+        .unwrap_or(Err(TreeError::InvalidId))
+}
+
 pub(crate) fn confirm_discard_edits(ws: &WorkspaceState, action: &str) -> bool {
     let pending = ws.dirty_fields.with_untracked(FxHashSet::len);
     if pending == 0 {

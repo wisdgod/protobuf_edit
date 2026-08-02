@@ -7,7 +7,8 @@ mod tree;
 
 pub(crate) use commands::{
     close_envelope_browser, confirm_discard_edits, load_patch_from_view, open_envelope_frame,
-    revert_pending_edits, save_and_reparse, show_envelope_browser, visible_fields, SaveReparseInfo,
+    parse_child_untracked, revert_pending_edits, save_and_reparse, show_envelope_browser,
+    visible_fields, SaveReparseInfo,
 };
 pub(crate) use drilldown::drilldown_byte;
 pub(crate) use field_paths::{
@@ -15,5 +16,7 @@ pub(crate) use field_paths::{
     parse_user_path, resolve_selection_path, resolve_user_path,
 };
 pub(crate) use frame_name::format_frame_name_template;
-pub(crate) use highlight::{compute_highlights, HighlightKind, HighlightRange};
+pub(crate) use highlight::{
+    compute_hovered_range, compute_selected_highlights, HighlightKind, HighlightRange,
+};
 pub(crate) use tree::collect_visible_fields;

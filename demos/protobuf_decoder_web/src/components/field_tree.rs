@@ -131,16 +131,7 @@ fn FieldRow(field: FieldId, depth: usize) -> AnyView {
             return;
         }
 
-        let mut parsed: Option<Result<MessageId, TreeError>> = None;
-        patch_state.update(|p| {
-            let Some(patch) = p.as_mut() else {
-                parsed = Some(Err(TreeError::InvalidId));
-                return;
-            };
-            parsed = Some(patch.parse_child_message(field));
-        });
-
-        match parsed.unwrap_or(Err(TreeError::InvalidId)) {
+        match crate::workspace::parse_child_untracked(patch_state, field) {
             Ok(_child) => expanded.update(|s| {
                 s.insert(field);
             }),

@@ -11,7 +11,6 @@ use crate::workspace::visible_fields as visible_workspace_fields;
 use leptos::html;
 use leptos::prelude::*;
 use leptos_use::use_event_listener;
-use protobuf_edit::TreeError;
 use wasm_bindgen::JsCast;
 
 #[component]
@@ -211,16 +210,7 @@ pub fn App() -> impl IntoView {
                         return;
                     }
 
-                    let mut parsed: Option<Result<protobuf_edit::patch::MessageId, TreeError>> = None;
-                    patch_state.update(|p| {
-                        let Some(patch) = p.as_mut() else {
-                            parsed = Some(Err(TreeError::InvalidId));
-                            return;
-                        };
-                        parsed = Some(patch.parse_child_message(field));
-                    });
-
-                    match parsed.unwrap_or(Err(TreeError::InvalidId)) {
+                    match crate::workspace::parse_child_untracked(patch_state, field) {
                         Ok(_child) => expanded.update(|s| {
                             s.insert(field);
                         }),
