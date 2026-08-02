@@ -251,18 +251,6 @@ impl Document {
         self.bucket(tag).and_then(|bucket| bucket.tail)
     }
 
-    #[inline]
-    #[must_use]
-    pub const fn make_tag(field_number: FieldNumber, wire_type: WireType) -> Tag {
-        Tag::from_parts(field_number, wire_type)
-    }
-
-    #[inline]
-    #[must_use]
-    pub const fn make_tag_u32(field_number: u32, wire_type: WireType) -> Option<Tag> {
-        Tag::try_from_parts(field_number, wire_type)
-    }
-
     pub fn push_varint(&mut self, field_number: FieldNumber, value: u64) -> Result<Ix, TreeError> {
         self.push_varint_with_raw(field_number, value, RawVarint64::from_u64(value))
     }
@@ -287,11 +275,6 @@ impl Document {
         Ok(field_ix)
     }
 
-    pub fn push_varint_u32(&mut self, field_number: u32, value: u64) -> Result<Ix, TreeError> {
-        let field_number = FieldNumber::new(field_number).ok_or(TreeError::InvalidTag)?;
-        self.push_varint(field_number, value)
-    }
-
     pub fn push_fixed32(&mut self, field_number: FieldNumber, value: u32) -> Result<Ix, TreeError> {
         let (tag, slot, field_ix) =
             checked_push_plan(field_number, WireType::I32, self.fixed32s.len(), self.fields.len())?;
@@ -300,22 +283,12 @@ impl Document {
         Ok(field_ix)
     }
 
-    pub fn push_fixed32_u32(&mut self, field_number: u32, value: u32) -> Result<Ix, TreeError> {
-        let field_number = FieldNumber::new(field_number).ok_or(TreeError::InvalidTag)?;
-        self.push_fixed32(field_number, value)
-    }
-
     pub fn push_fixed64(&mut self, field_number: FieldNumber, value: u64) -> Result<Ix, TreeError> {
         let (tag, slot, field_ix) =
             checked_push_plan(field_number, WireType::I64, self.fixed64s.len(), self.fields.len())?;
         self.fixed64s.push(Fixed64 { value });
         self.push_field_with_ix(tag, slot, field_ix);
         Ok(field_ix)
-    }
-
-    pub fn push_fixed64_u32(&mut self, field_number: u32, value: u64) -> Result<Ix, TreeError> {
-        let field_number = FieldNumber::new(field_number).ok_or(TreeError::InvalidTag)?;
-        self.push_fixed64(field_number, value)
     }
 
     pub fn push_length_delimited(
@@ -343,15 +316,6 @@ impl Document {
         Ok(field_ix)
     }
 
-    pub fn push_length_delimited_u32(
-        &mut self,
-        field_number: u32,
-        buf: Buf,
-    ) -> Result<Ix, TreeError> {
-        let field_number = FieldNumber::new(field_number).ok_or(TreeError::InvalidTag)?;
-        self.push_length_delimited(field_number, buf)
-    }
-
     #[cfg(feature = "group")]
     pub fn push_group(&mut self, field_number: FieldNumber, buf: Buf) -> Result<Ix, TreeError> {
         let (tag, slot, field_ix) = checked_push_plan(
@@ -363,12 +327,6 @@ impl Document {
         self.groups.push(Group { buf });
         self.push_field_with_ix(tag, slot, field_ix);
         Ok(field_ix)
-    }
-
-    #[cfg(feature = "group")]
-    pub fn push_group_u32(&mut self, field_number: u32, buf: Buf) -> Result<Ix, TreeError> {
-        let field_number = FieldNumber::new(field_number).ok_or(TreeError::InvalidTag)?;
-        self.push_group(field_number, buf)
     }
 
     #[inline]

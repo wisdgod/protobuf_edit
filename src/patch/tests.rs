@@ -1,6 +1,6 @@
-use crate::{
-    BorrowedPatch, Buf, FieldNumber, Document, Patch, Span, TreeError, Txn, ValueSpans, WireType,
-};
+use super::{BorrowedPatch, Patch, Span, Txn, ValueSpans};
+use crate::wire::Tag;
+use crate::{Buf, Document, FieldNumber, TreeError, WireType};
 
 fn fnn(value: u32) -> FieldNumber {
     FieldNumber::new(value).unwrap()
@@ -21,7 +21,7 @@ fn does_not_parse_child_message_from_non_message_bytes() {
 
     let mut tree = Patch::from_bytes(bytes.as_slice()).unwrap();
     let root_msg = tree.root();
-    let outer = Document::make_tag(fnn(2), WireType::Len);
+    let outer = Tag::from_parts(fnn(2), WireType::Len);
 
     let mut outer_fields = tree.fields_by_tag(root_msg, outer).unwrap();
     let outer_field = outer_fields.next().unwrap();
@@ -47,8 +47,8 @@ fn parses_nested_messages_on_demand() {
     let mut tree = Patch::from_bytes(bytes.as_slice()).unwrap();
     let root_msg = tree.root();
 
-    let outer = Document::make_tag(fnn(10), WireType::Len);
-    let inner = Document::make_tag(fnn(2), WireType::Varint);
+    let outer = Tag::from_parts(fnn(10), WireType::Len);
+    let inner = Tag::from_parts(fnn(2), WireType::Varint);
 
     let outer_fields: alloc::vec::Vec<_> = tree.fields_by_tag(root_msg, outer).unwrap().collect();
     assert_eq!(outer_fields.len(), 2);
@@ -77,8 +77,8 @@ fn edits_child_payload_and_saves_lazily() {
     let _ = root.push_length_delimited(fnn(10), child_b.to_buf().unwrap()).unwrap();
     let bytes = root.to_buf().unwrap();
 
-    let outer = Document::make_tag(fnn(10), WireType::Len);
-    let inner = Document::make_tag(fnn(2), WireType::Varint);
+    let outer = Tag::from_parts(fnn(10), WireType::Len);
+    let inner = Tag::from_parts(fnn(2), WireType::Varint);
 
     let mut tree = Patch::from_bytes(bytes.as_slice()).unwrap();
     let root_msg = tree.root();
@@ -116,8 +116,8 @@ fn transaction_rolls_back_on_drop() {
     let _ = root.push_length_delimited(fnn(10), child_b.to_buf().unwrap()).unwrap();
     let bytes = root.to_buf().unwrap();
 
-    let outer = Document::make_tag(fnn(10), WireType::Len);
-    let inner = Document::make_tag(fnn(2), WireType::Varint);
+    let outer = Tag::from_parts(fnn(10), WireType::Len);
+    let inner = Tag::from_parts(fnn(2), WireType::Varint);
 
     let mut tree = Patch::from_bytes(bytes.as_slice()).unwrap();
     {
@@ -154,8 +154,8 @@ fn transaction_commits_on_commit() {
     let _ = root.push_length_delimited(fnn(10), child_b.to_buf().unwrap()).unwrap();
     let bytes = root.to_buf().unwrap();
 
-    let outer = Document::make_tag(fnn(10), WireType::Len);
-    let inner = Document::make_tag(fnn(2), WireType::Varint);
+    let outer = Tag::from_parts(fnn(10), WireType::Len);
+    let inner = Tag::from_parts(fnn(2), WireType::Varint);
 
     let mut tree = Patch::from_bytes(bytes.as_slice()).unwrap();
     {
@@ -191,8 +191,8 @@ fn insert_and_delete_fields_affect_save_output() {
     let mut patch = Patch::from_bytes(bytes.as_slice()).unwrap();
     let root = patch.root();
 
-    let tag1 = Document::make_tag(fnn(1), WireType::Varint);
-    let tag3 = Document::make_tag(fnn(3), WireType::Varint);
+    let tag1 = Tag::from_parts(fnn(1), WireType::Varint);
+    let tag3 = Tag::from_parts(fnn(3), WireType::Varint);
 
     let field1 = patch.fields_by_tag(root, tag1).unwrap().next().unwrap();
     patch.delete_field(field1).unwrap();
@@ -211,7 +211,7 @@ fn save_and_reparse_refreshes_spans_for_inserted_fields() {
     let mut patch = Patch::from_bytes(bytes.as_slice()).unwrap();
     let root = patch.root();
 
-    let tag1 = Document::make_tag(fnn(1), WireType::Varint);
+    let tag1 = Tag::from_parts(fnn(1), WireType::Varint);
     let inserted = patch.insert_varint(root, tag1, 1).unwrap();
     assert_eq!(patch.field_spans(inserted).unwrap(), None);
 
@@ -227,7 +227,7 @@ fn deleting_child_field_makes_parent_len_field_dirty() {
     let _ = child.push_varint(fnn(2), 1).unwrap();
 
     let mut root = Document::new();
-    let outer_tag = Document::make_tag(fnn(10), WireType::Len);
+    let outer_tag = Tag::from_parts(fnn(10), WireType::Len);
     let _ = root.push_length_delimited(fnn(10), child.to_buf().unwrap()).unwrap();
     let src = root.to_buf().unwrap();
 
@@ -236,7 +236,7 @@ fn deleting_child_field_makes_parent_len_field_dirty() {
     let outer_field_id = patch.fields_by_tag(root_msg, outer_tag).unwrap().next().unwrap();
     let child_msg = patch.parse_child_message(outer_field_id).unwrap();
 
-    let inner_tag = Document::make_tag(fnn(2), WireType::Varint);
+    let inner_tag = Tag::from_parts(fnn(2), WireType::Varint);
     let inner_field_id = patch.fields_by_tag(child_msg, inner_tag).unwrap().next().unwrap();
     patch.delete_field(inner_field_id).unwrap();
 
@@ -253,7 +253,7 @@ fn maps_child_message_spans_back_to_root() {
     let child_bytes = child.to_buf().unwrap();
 
     let mut root = Document::new();
-    let outer_tag = Document::make_tag(fnn(10), WireType::Len);
+    let outer_tag = Tag::from_parts(fnn(10), WireType::Len);
     let _ = root.push_length_delimited(fnn(10), child_bytes.clone()).unwrap();
     let root_bytes = root.to_buf().unwrap();
 
@@ -269,7 +269,7 @@ fn maps_child_message_spans_back_to_root() {
     let child_msg = patch.parse_child_message(outer_field_id).unwrap();
     assert_eq!(patch.message_root_span(child_msg).unwrap(), Some(outer_payload_span));
 
-    let inner_tag = Document::make_tag(fnn(2), WireType::Varint);
+    let inner_tag = Tag::from_parts(fnn(2), WireType::Varint);
     let inner_field_id = patch.fields_by_tag(child_msg, inner_tag).unwrap().next().unwrap();
     let inner_local = patch.field_spans(inner_field_id).unwrap().unwrap();
 
@@ -279,10 +279,6 @@ fn maps_child_message_spans_back_to_root() {
     )
     .unwrap();
 
-    assert_eq!(
-        patch.message_span_to_root(child_msg, inner_local.field).unwrap(),
-        Some(expected_field_span)
-    );
     assert_eq!(patch.field_root_spans(inner_field_id).unwrap().unwrap().field, expected_field_span);
 
     let root_field_bytes = &root_bytes.as_slice()
@@ -298,7 +294,7 @@ fn owned_child_message_has_no_root_span_mapping() {
     let _ = child.push_varint(fnn(2), 150).unwrap();
 
     let mut root = Document::new();
-    let outer_tag = Document::make_tag(fnn(10), WireType::Len);
+    let outer_tag = Tag::from_parts(fnn(10), WireType::Len);
     let _ = root.push_length_delimited(fnn(10), child.to_buf().unwrap()).unwrap();
     let root_bytes = root.to_buf().unwrap();
 
@@ -313,11 +309,10 @@ fn owned_child_message_has_no_root_span_mapping() {
     let child_msg = patch.parse_child_message(outer_field_id).unwrap();
     assert_eq!(patch.message_root_span(child_msg).unwrap(), None);
 
-    let inner_tag = Document::make_tag(fnn(2), WireType::Varint);
+    let inner_tag = Tag::from_parts(fnn(2), WireType::Varint);
     let inner_field_id = patch.fields_by_tag(child_msg, inner_tag).unwrap().next().unwrap();
-    let inner_local = patch.field_spans(inner_field_id).unwrap().unwrap();
+    let _inner_local = patch.field_spans(inner_field_id).unwrap().unwrap();
 
-    assert_eq!(patch.message_span_to_root(child_msg, inner_local.field).unwrap(), None);
     assert_eq!(patch.field_root_spans(inner_field_id).unwrap(), None);
 }
 
@@ -347,8 +342,8 @@ fn transaction_rolls_back_insertions_and_deletions() {
     let mut patch = Patch::from_bytes(bytes.as_slice()).unwrap();
     let root = patch.root();
 
-    let tag1 = Document::make_tag(fnn(1), WireType::Varint);
-    let tag2 = Document::make_tag(fnn(2), WireType::Varint);
+    let tag1 = Tag::from_parts(fnn(1), WireType::Varint);
+    let tag2 = Tag::from_parts(fnn(2), WireType::Varint);
 
     {
         let mut txn = Txn::begin(&mut patch);

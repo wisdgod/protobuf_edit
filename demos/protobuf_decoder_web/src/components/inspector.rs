@@ -3,7 +3,8 @@ use crate::state::{UiState, WorkspaceState};
 use crate::toast::{ToastManager, ToastKind};
 use base64::Engine as _;
 use leptos::prelude::*;
-use protobuf_edit::{Buf, FieldId, Patch, Tag, TreeError, WireType};
+use protobuf_edit::patch::FieldId;
+use protobuf_edit::{Buf, Patch, Tag, TreeError, WireType};
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum BytesView {
@@ -1472,7 +1473,11 @@ fn wire_type_from_value(value: &str) -> Option<WireType> {
     }
 }
 
-fn collect_reachable_fields(patch: &Patch, msg: protobuf_edit::MessageId, out: &mut Vec<FieldId>) {
+fn collect_reachable_fields(
+    patch: &Patch,
+    msg: protobuf_edit::patch::MessageId,
+    out: &mut Vec<FieldId>,
+) {
     let Ok(fields) = patch.message_fields(msg) else {
         return;
     };

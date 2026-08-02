@@ -211,7 +211,7 @@ pub fn App() -> impl IntoView {
                         return;
                     }
 
-                    let mut parsed: Option<Result<protobuf_edit::MessageId, TreeError>> = None;
+                    let mut parsed: Option<Result<protobuf_edit::patch::MessageId, TreeError>> = None;
                     patch_state.update(|p| {
                         let Some(patch) = p.as_mut() else {
                             parsed = Some(Err(TreeError::DecodeError));

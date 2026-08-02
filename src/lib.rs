@@ -26,9 +26,9 @@
 //! - `varint`: varint and zigzag codecs
 //! - `stream`: incremental wire parser
 //!
-//! Common entry types remain re-exported at the crate root as convenience aliases.
-//!
-//! `ArenaTree`/`SpanTree` aliases are provided as a shorter mental model.
+//! The crate root re-exports only the shared vocabulary (`Buf`, `TreeError`,
+//! tag primitives) and each model's entry type; everything else lives in its
+//! module.
 
 extern crate alloc;
 
@@ -44,20 +44,7 @@ pub mod document;
 pub mod patch;
 
 pub use buf::{Buf, BufAllocError};
-pub use document::{
-    BorrowedDocument, Bucket, Capacities, Document, Field, FieldMut, FieldRef, Fixed32, Fixed64,
-    Ix, LengthDelimited, Link, MessageGuard, RepeatedRefIter, Varint, MAX_FIELDS,
-};
+pub use document::{BorrowedDocument, Document};
 pub use error::TreeError;
-pub use patch::{
-    BorrowedPatch, FieldId, FieldSpans, FieldsByTag, MessageId, Patch, Span, Txn, ValueSpans,
-};
-
-/// Alias for `Document` emphasizing its arena-backed structure.
-pub type ArenaTree = Document;
-/// Alias for `Patch` emphasizing its span-based model.
-pub type SpanTree = Patch;
-
-#[cfg(feature = "group")]
-pub use document::Group;
-pub use wire::{Tag, WireType, FieldNumber};
+pub use patch::{BorrowedPatch, Patch};
+pub use wire::{FieldNumber, Tag, WireType};

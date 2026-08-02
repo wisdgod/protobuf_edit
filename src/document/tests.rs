@@ -60,7 +60,7 @@ fn removed_is_bool_and_skipped_by_encoder() {
     let roundtrip = Document::from_bytes(&encoded).unwrap();
 
     assert_eq!(roundtrip.fields.len(), 1);
-    assert_eq!(roundtrip.fields[0].tag, Document::make_tag(fnn(1), WireType::Varint));
+    assert_eq!(roundtrip.fields[0].tag, Tag::from_parts(fnn(1), WireType::Varint));
     assert_eq!(roundtrip.varints.len(), 1);
 }
 
@@ -169,7 +169,7 @@ fn query_key_is_tag() {
     let mut tree = Document::new();
     let _ = tree.push_varint(fnn(7), 1).unwrap();
 
-    let tag = Document::make_tag(fnn(7), WireType::Varint);
+    let tag = Tag::from_parts(fnn(7), WireType::Varint);
     assert!(tree.bucket(tag).is_some());
     assert!(tree.bucket_by_parts(7, WireType::Varint).is_some());
     assert!(tree.bucket_by_parts(7, WireType::I32).is_none());
@@ -178,7 +178,7 @@ fn query_key_is_tag() {
 #[test]
 fn push_does_not_pollute_typed_pool_when_fields_capacity_exceeded() {
     let mut tree = Document::new();
-    let tag = Document::make_tag(fnn(1), WireType::Varint);
+    let tag = Tag::from_parts(fnn(1), WireType::Varint);
     for _ in 0..MAX_FIELDS {
         tree.fields.push(Field {
             tag,
@@ -196,12 +196,12 @@ fn push_does_not_pollute_typed_pool_when_fields_capacity_exceeded() {
 }
 
 #[test]
-fn push_rejects_invalid_tag_before_pool_write() {
-    let mut tree = Document::new();
-    let ret = tree.push_varint_u32(0, 7);
-    assert!(matches!(ret, Err(TreeError::InvalidTag)));
-    assert!(tree.fields.is_empty());
-    assert!(tree.varints.is_empty());
+fn invalid_field_numbers_are_unrepresentable() {
+    // Field number validity is enforced at the type boundary; push APIs only
+    // accept an already-proven `FieldNumber`.
+    assert!(wire::FieldNumber::new(0).is_none());
+    assert!(wire::FieldNumber::new(crate::wire::MAX_FIELD_NUMBER + 1).is_none());
+    assert!(wire::FieldNumber::new(crate::wire::MAX_FIELD_NUMBER).is_some());
 }
 
 #[test]
@@ -233,12 +233,12 @@ fn field_mut_message_edits_nested_tree() {
     let mut root = Document::new();
     let _ = root.push_length_delimited(fnn(5), nested.to_buf().unwrap()).unwrap();
 
-    let msg_tag = Document::make_tag(fnn(5), WireType::Len);
+    let msg_tag = Tag::from_parts(fnn(5), WireType::Len);
     root.first_mut(msg_tag)
         .unwrap()
         .message_with_capacities(Capacities::default(), |inner| {
             let _ = inner.push_varint(fnn(2), 99).unwrap();
-            let v1_tag = Document::make_tag(fnn(1), WireType::Varint);
+            let v1_tag = Tag::from_parts(fnn(1), WireType::Varint);
             inner.first_mut(v1_tag).unwrap().int32(|v| *v += 1).unwrap();
             Ok(())
         })
@@ -246,8 +246,8 @@ fn field_mut_message_edits_nested_tree() {
 
     let nested_after =
         root.first_ref(msg_tag).unwrap().as_message_with_capacities(Capacities::default()).unwrap();
-    let f1_tag = Document::make_tag(fnn(1), WireType::Varint);
-    let f2_tag = Document::make_tag(fnn(2), WireType::Varint);
+    let f1_tag = Tag::from_parts(fnn(1), WireType::Varint);
+    let f2_tag = Tag::from_parts(fnn(2), WireType::Varint);
     assert_eq!(nested_after.first_ref(f1_tag).unwrap().as_uint64(), Some(11));
     assert_eq!(nested_after.first_ref(f2_tag).unwrap().as_uint64(), Some(99));
 }
@@ -259,7 +259,7 @@ fn first_ref_skips_removed_nodes() {
     let _ = tree.push_varint(fnn(9), 2).unwrap();
     tree.mark_removed(first);
 
-    let tag = Document::make_tag(fnn(9), WireType::Varint);
+    let tag = Tag::from_parts(fnn(9), WireType::Varint);
     let first_live = tree.first_ref(tag).unwrap();
     assert_eq!(first_live.as_uint64(), Some(2));
 }
@@ -360,7 +360,7 @@ fn repeated_refs_and_visit_mut_work() {
     let _ = tree.push_varint(fnn(11), 3).unwrap();
     tree.mark_removed(removed);
 
-    let tag = Document::make_tag(fnn(11), WireType::Varint);
+    let tag = Tag::from_parts(fnn(11), WireType::Varint);
     let mut values = alloc::vec::Vec::new();
     for r in tree.repeated_refs(tag) {
         values.push(r.as_uint64().unwrap());
@@ -465,8 +465,8 @@ fn edit_planned_mut_updates_only_selected_tag() {
     let _ = tree.push_varint(fnn(31), 9).unwrap();
 
     let src = tree.to_buf().unwrap();
-    let tag30 = Document::make_tag(fnn(30), WireType::Varint);
-    let tag31 = Document::make_tag(fnn(31), WireType::Varint);
+    let tag30 = Tag::from_parts(fnn(30), WireType::Varint);
+    let tag31 = Tag::from_parts(fnn(31), WireType::Varint);
 
     let plan = [(
         tag30,
@@ -508,7 +508,7 @@ fn visit_planned_refs_borrows_payload_for_read_only() {
     let src = tree.to_buf().unwrap();
     let src_slice = src.as_slice();
 
-    let tag = Document::make_tag(fnn(7), WireType::Len);
+    let tag = Tag::from_parts(fnn(7), WireType::Len);
     let (decoded_tag, tag_len) = wire::decode_tag(src_slice).unwrap();
     assert_eq!(decoded_tag, tag);
     let (len, len_len) = varint::decode32(&src_slice[tag_len as usize..]).unwrap();
@@ -547,8 +547,8 @@ fn from_bytes_with_capacities_decodes_owned_tree() {
     };
     let decoded = Document::from_bytes_with_capacities(src.as_slice(), capacities).unwrap();
 
-    let tag3 = Document::make_tag(fnn(3), WireType::Varint);
-    let tag4 = Document::make_tag(fnn(4), WireType::Len);
+    let tag3 = Tag::from_parts(fnn(3), WireType::Varint);
+    let tag4 = Tag::from_parts(fnn(4), WireType::Len);
     assert_eq!(decoded.first_ref(tag3).unwrap().as_uint64(), Some(123));
     assert_eq!(decoded.first_ref(tag4).unwrap().as_bytes(), Some(&b"ab"[..]));
 }
@@ -559,7 +559,7 @@ fn borrowed_lazy_tree_wrapper_is_lifetime_bound_and_supports_field_ref_mut() {
     let _ = src_tree.push_length_delimited(fnn(7), buf_from_slice(b"xyz")).unwrap();
     let src = src_tree.to_buf().unwrap();
     let src_slice = src.as_slice();
-    let tag7 = Document::make_tag(fnn(7), WireType::Len);
+    let tag7 = Tag::from_parts(fnn(7), WireType::Len);
 
     let (decoded_tag, tag_len) = wire::decode_tag(src_slice).unwrap();
     assert_eq!(decoded_tag, tag7);
@@ -593,8 +593,8 @@ fn field_ref_borrowed_message_with_capacities_works() {
     let mut root = Document::new();
     let _ = root.push_length_delimited(fnn(1), inner.to_buf().unwrap()).unwrap();
 
-    let outer = Document::make_tag(fnn(1), WireType::Len);
-    let inner_tag = Document::make_tag(fnn(2), WireType::Varint);
+    let outer = Tag::from_parts(fnn(1), WireType::Len);
+    let inner_tag = Tag::from_parts(fnn(2), WireType::Varint);
 
     let nested =
         root.first_ref(outer).unwrap().as_message_with_capacities(Capacities::default()).unwrap();
@@ -613,8 +613,8 @@ fn planned_path_descends_in_order_for_nested_edit() {
     let _ = root.push_length_delimited(fnn(10), child_b.to_buf().unwrap()).unwrap();
 
     let src = root.to_buf().unwrap();
-    let outer = Document::make_tag(fnn(10), WireType::Len);
-    let inner = Document::make_tag(fnn(2), WireType::Varint);
+    let outer = Tag::from_parts(fnn(10), WireType::Len);
+    let inner = Tag::from_parts(fnn(2), WireType::Varint);
     let plan = [
         (
             outer,
@@ -679,8 +679,8 @@ fn set_uint64_and_set_bytes_work() {
     tree.field_mut(vi).unwrap().set_uint64(42).unwrap();
     tree.field_mut(li).unwrap().set_bytes(buf_from_slice(b"new")).unwrap();
 
-    let tag1 = Document::make_tag(fnn(1), WireType::Varint);
-    let tag2 = Document::make_tag(fnn(2), WireType::Len);
+    let tag1 = Tag::from_parts(fnn(1), WireType::Varint);
+    let tag2 = Tag::from_parts(fnn(2), WireType::Len);
     assert_eq!(tree.first_ref(tag1).unwrap().as_uint64(), Some(42));
     assert_eq!(tree.first_ref(tag2).unwrap().as_bytes(), Some(&b"new"[..]));
 
@@ -698,8 +698,8 @@ fn set_fixed32_and_set_fixed64_work() {
     tree.field_mut(f32i).unwrap().set_fixed32(0xDEAD_BEEF).unwrap();
     tree.field_mut(f64i).unwrap().set_fixed64(0xCAFE_BABE_1234_5678).unwrap();
 
-    let tag1 = Document::make_tag(fnn(1), WireType::I32);
-    let tag2 = Document::make_tag(fnn(2), WireType::I64);
+    let tag1 = Tag::from_parts(fnn(1), WireType::I32);
+    let tag2 = Tag::from_parts(fnn(2), WireType::I64);
     assert_eq!(tree.first_ref(tag1).unwrap().as_fixed32(), Some(0xDEAD_BEEF));
     assert_eq!(tree.first_ref(tag2).unwrap().as_fixed64(), Some(0xCAFE_BABE_1234_5678));
 }
@@ -720,8 +720,8 @@ fn message_guard_finish_writes_back() {
     let mut root = Document::new();
     let _ = root.push_length_delimited(fnn(1), inner.to_buf().unwrap()).unwrap();
 
-    let outer = Document::make_tag(fnn(1), WireType::Len);
-    let inner_tag = Document::make_tag(fnn(2), WireType::Varint);
+    let outer = Tag::from_parts(fnn(1), WireType::Len);
+    let inner_tag = Tag::from_parts(fnn(2), WireType::Varint);
 
     let fm = root.first_mut(outer).unwrap();
     let mut guard = fm.decode_message().unwrap();
@@ -741,8 +741,8 @@ fn message_guard_drop_restores_original() {
     let mut root = Document::new();
     let _ = root.push_length_delimited(fnn(1), inner.to_buf().unwrap()).unwrap();
 
-    let outer = Document::make_tag(fnn(1), WireType::Len);
-    let inner_tag = Document::make_tag(fnn(2), WireType::Varint);
+    let outer = Tag::from_parts(fnn(1), WireType::Len);
+    let inner_tag = Tag::from_parts(fnn(2), WireType::Varint);
 
     {
         let fm = root.first_mut(outer).unwrap();
@@ -769,9 +769,9 @@ fn message_guard_nested_chain() {
     let mut root = Document::new();
     let _ = root.push_length_delimited(fnn(1), mid_buf).unwrap();
 
-    let tag1 = Document::make_tag(fnn(1), WireType::Len);
-    let tag2 = Document::make_tag(fnn(2), WireType::Len);
-    let tag3 = Document::make_tag(fnn(3), WireType::Varint);
+    let tag1 = Tag::from_parts(fnn(1), WireType::Len);
+    let tag2 = Tag::from_parts(fnn(2), WireType::Len);
+    let tag3 = Tag::from_parts(fnn(3), WireType::Varint);
 
     // Navigate two levels deep with guards
     let mut level1 = root.first_mut(tag1).unwrap().decode_message().unwrap();
@@ -795,8 +795,8 @@ fn message_guard_with_capacities() {
     let mut root = Document::new();
     let _ = root.push_length_delimited(fnn(1), inner.to_buf().unwrap()).unwrap();
 
-    let outer = Document::make_tag(fnn(1), WireType::Len);
-    let inner_tag = Document::make_tag(fnn(2), WireType::Varint);
+    let outer = Tag::from_parts(fnn(1), WireType::Len);
+    let inner_tag = Tag::from_parts(fnn(2), WireType::Varint);
     let cap = Capacities::new().fields(2).varints(1).query(1);
 
     let fm = root.first_mut(outer).unwrap();

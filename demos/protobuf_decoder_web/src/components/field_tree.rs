@@ -1,7 +1,8 @@
 use crate::state::{UiState, WorkspaceState};
 use crate::toast::ToastKind;
 use leptos::prelude::*;
-use protobuf_edit::{FieldId, MessageId, Patch, TreeError, WireType};
+use protobuf_edit::patch::{FieldId, MessageId};
+use protobuf_edit::{Patch, TreeError, WireType};
 
 #[component]
 pub(crate) fn FieldTree(msg: MessageId, depth: usize) -> AnyView {

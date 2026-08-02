@@ -1,4 +1,5 @@
-use protobuf_edit::{FieldId, Patch, ValueSpans, WireType};
+use protobuf_edit::patch::{FieldId, ValueSpans};
+use protobuf_edit::{Patch, WireType};
 
 pub(crate) fn drilldown_byte(patch: &mut Patch, idx: usize) -> (Option<FieldId>, Vec<FieldId>) {
     let mut msg = patch.root();
@@ -14,7 +15,7 @@ pub(crate) fn drilldown_byte(patch: &mut Patch, idx: usize) -> (Option<FieldId>,
 
         let Ok(fields) = patch.message_fields(msg) else { break };
 
-        let mut best: Option<(FieldId, protobuf_edit::Span)> = None;
+        let mut best: Option<(FieldId, protobuf_edit::patch::Span)> = None;
         for &fid in fields {
             if matches!(patch.field_is_deleted(fid), Ok(true)) {
                 continue;

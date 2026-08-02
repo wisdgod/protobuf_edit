@@ -56,29 +56,6 @@ impl Patch {
         }
     }
 
-    /// Maps a message-local `span` to an absolute span in the root source buffer.
-    ///
-    /// Returns `None` if `msg` is backed by owned bytes instead of the root source.
-    pub fn message_span_to_root(
-        &self,
-        msg: MessageId,
-        span: Span,
-    ) -> Result<Option<Span>, TreeError> {
-        let Some(msg_span) = self.message_root_span(msg)? else {
-            return Ok(None);
-        };
-        if span.end() > msg_span.len() {
-            return Err(TreeError::DecodeError);
-        }
-        let base = msg_span.start();
-        let start = base.checked_add(span.start()).ok_or(TreeError::CapacityExceeded)?;
-        let end = base.checked_add(span.end()).ok_or(TreeError::CapacityExceeded)?;
-        if end > msg_span.end() {
-            return Err(TreeError::DecodeError);
-        }
-        Ok(Span::new(start, end))
-    }
-
     pub fn message_parent_field(&self, msg: MessageId) -> Result<Option<FieldId>, TreeError> {
         Ok(self.message(msg)?.parent_field)
     }

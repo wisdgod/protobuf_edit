@@ -3,7 +3,7 @@ use crate::toast::ToastKind;
 use crate::workspace::{format_user_path, parse_user_path, resolve_user_path};
 use leptos::html;
 use leptos::prelude::*;
-use protobuf_edit::FieldId;
+use protobuf_edit::patch::FieldId;
 use std::sync::Arc;
 use wasm_bindgen::JsCast;
 

@@ -1,4 +1,5 @@
-use protobuf_edit::{FieldId, Patch, ValueSpans, WireType};
+use protobuf_edit::patch::{FieldId, ValueSpans};
+use protobuf_edit::{Patch, WireType};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum HighlightKind {

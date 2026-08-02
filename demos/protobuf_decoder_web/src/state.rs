@@ -6,7 +6,8 @@ use crate::messages::{MessageId, MessageMeta};
 use crate::toast::ToastManager;
 use crate::workspace::{compute_highlights, HighlightRange};
 use leptos::prelude::*;
-use protobuf_edit::{FieldId, Patch};
+use protobuf_edit::patch::FieldId;
+use protobuf_edit::Patch;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Theme {

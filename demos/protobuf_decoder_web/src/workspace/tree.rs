@@ -1,9 +1,10 @@
 use crate::fx::FxHashSet;
-use protobuf_edit::{FieldId, Patch};
+use protobuf_edit::patch::FieldId;
+use protobuf_edit::Patch;
 
 pub(crate) fn collect_visible_fields(
     patch: &Patch,
-    msg: protobuf_edit::MessageId,
+    msg: protobuf_edit::patch::MessageId,
     expanded: &FxHashSet<FieldId>,
     out: &mut Vec<FieldId>,
 ) {

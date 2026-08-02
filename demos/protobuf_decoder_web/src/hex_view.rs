@@ -1,6 +1,7 @@
 use leptos::html;
 use leptos::prelude::*;
-use protobuf_edit::{FieldId, Patch, WireType};
+use protobuf_edit::patch::FieldId;
+use protobuf_edit::{Patch, WireType};
 use std::cmp::min;
 
 use crate::bytes::ByteView;

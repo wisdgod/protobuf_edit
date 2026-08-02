@@ -1,5 +1,6 @@
 use crate::fx::FxHashSet;
-use protobuf_edit::{Buf, FieldId, FieldNumber, Patch, Tag, TreeError, WireType};
+use protobuf_edit::patch::FieldId;
+use protobuf_edit::{Buf, FieldNumber, Patch, Tag, TreeError, WireType};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct SelectionStep {
@@ -95,7 +96,7 @@ pub(crate) fn build_selection_path(patch: &Patch, selected: FieldId) -> Option<V
 
 fn find_field_by_tag_occurrence(
     patch: &Patch,
-    msg: protobuf_edit::MessageId,
+    msg: protobuf_edit::patch::MessageId,
     tag: Tag,
     occurrence: u32,
 ) -> Result<Option<FieldId>, TreeError> {
@@ -206,7 +207,7 @@ pub(crate) fn format_user_path(patch: &Patch, fid: FieldId) -> Option<String> {
 
 fn find_field_by_number_occurrence(
     patch: &Patch,
-    msg: protobuf_edit::MessageId,
+    msg: protobuf_edit::patch::MessageId,
     field_number: u32,
     occurrence: u32,
 ) -> Result<Option<FieldId>, TreeError> {
