@@ -61,7 +61,7 @@ web-sys = { version = "0.3", features = [
 ] }
 
 # Hex / Base64 input parsing
-base64 = "0.22"
+base64 = "0.23"
 hex = "0.4"
 
 [profile.release]
