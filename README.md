@@ -28,8 +28,6 @@ generated protobuf types, but still need to:
 | `Scanner` | extracting a few fields from one complete buffer | zero-copy, zero-alloc, single pass |
 | `ChunkStream` | the same extraction over data that arrives in pieces | buffers only boundary-straddling state |
 
-Short aliases: `ArenaTree` = `Document`, `SpanTree` = `Patch`.
-
 ## API layout
 
 Public modules are grouped by concern:
@@ -42,7 +40,9 @@ Public modules are grouped by concern:
 - `protobuf_edit::wire`: tag primitives (`Tag`, `FieldNumber`, `WireType`, `tag!`)
 - `protobuf_edit::varint`: varint and zigzag codecs
 
-Common entry types are re-exported at the crate root.
+The crate root re-exports only the shared vocabulary (`Buf`, `TreeError`, `Tag`,
+`FieldNumber`, `WireType`) and each model's entry type (`Document`, `BorrowedDocument`,
+`Patch`, `BorrowedPatch`); everything else lives in its module.
 
 ## `Document`: structured editing
 
@@ -62,11 +62,13 @@ Construction:
 Building and encoding:
 
 ```rust
-use protobuf_edit::{Buf, Document, tag, wire::WireType};
+use protobuf_edit::{Buf, Document, FieldNumber};
 
 let mut doc = Document::new();
-doc.push_varint_u32(1, 150)?;
-doc.push_length_delimited_u32(2, Buf::from_static(b"hello"))?;
+let f1 = FieldNumber::new(1).unwrap();
+let f2 = FieldNumber::new(2).unwrap();
+doc.push_varint(f1, 150)?;
+doc.push_length_delimited(f2, Buf::from_static(b"hello"))?;
 
 let bytes: Buf = doc.to_buf()?; // or encode_into(&mut buf) / encoded_len()
 ```
@@ -82,7 +84,7 @@ for field in doc.field_refs() {
 }
 
 // Look up by tag; interpret the wire value as a protobuf scalar type:
-let t = tag!(1, WireType::Varint);
+let t = tag!(1, Varint);
 let v: u64 = doc.first_ref(t).unwrap().as_uint64().unwrap();
 ```
 
@@ -95,17 +97,17 @@ Editing with `FieldMut`:
 ```rust
 let mut doc = Document::from_bytes(bytes.as_slice())?;
 
-let mut f = doc.first_mut(tag!(1, WireType::Varint)).unwrap();
+let mut f = doc.first_mut(tag!(1, Varint)).unwrap();
 f.set_uint64(151)?;                 // or f.uint64(|v| *v += 1)?
 f.mark_removed();                   // tombstone; skipped by encoding
 
 // Nested messages, closure style:
-doc.first_mut(tag!(2, WireType::Len)).unwrap()
-    .message(|nested| nested.push_varint_u32(3, 7).map(|_| ()))?;
+doc.first_mut(tag!(2, Len)).unwrap()
+    .message(|nested| nested.push_varint(field_number!(3), 7).map(|_| ()))?;
 
 // Or RAII style — MessageGuard derefs to Document, finish() re-encodes:
-let mut guard = doc.first_mut(tag!(2, WireType::Len)).unwrap().decode_message()?;
-guard.push_varint_u32(4, 8)?;
+let mut guard = doc.first_mut(tag!(2, Len)).unwrap().decode_message()?;
+guard.push_varint(field_number!(4), 8)?;
 guard.finish()?;
 ```
 
@@ -127,8 +129,7 @@ bytes survive byte-for-byte.
 - Reads: `varint(field)`, `i32_bits` / `i64_bits`, `bytes`; `enable_read_cache()` memoizes
   repeated varint reads
 - Spans: `field_spans(field)` (tag / len-prefix / payload sub-spans),
-  `field_root_spans` and `message_span_to_root` map into absolute root coordinates —
-  useful for hex-view UIs
+  `field_root_spans` maps into absolute root coordinates — useful for hex-view UIs
 - Edits: `set_varint` / `set_i32_bits` / `set_i64_bits` / `set_bytes`,
   `insert_*(msg, tag, ...)`, `delete_field`, `clear_field_edit`
 - Output: `save()` → `Buf`, `save_and_reparse()` refreshes spans after heavy editing
@@ -136,16 +137,16 @@ bytes survive byte-for-byte.
   `Txn::begin(&mut patch)` guard (rolls back on drop)
 
 ```rust
-use protobuf_edit::{Patch, tag, wire::WireType};
+use protobuf_edit::{Patch, tag};
 
 let mut patch = Patch::from_bytes(&[0x08, 0x96, 0x01])?; // field 1 = 150
 let root = patch.root();
-let t = tag!(1, WireType::Varint);
+let t = tag!(1, Varint);
 
 let field = patch.fields_by_tag(root, t)?.next().unwrap();
 let before = patch.varint(field)?;
 patch.set_varint(field, before + 1)?;
-patch.insert_varint(root, tag!(2, WireType::Varint), 7)?;
+patch.insert_varint(root, tag!(2, Varint), 7)?;
 
 let out = patch.save()?;
 ```
@@ -158,9 +159,9 @@ byte stream; nothing is decoded for subtrees that cannot match.
 
 ```rust
 use protobuf_edit::stream::{Scanner, ChunkStream, WireHandler};
-use protobuf_edit::{const_trie, tag, wire::{Tag, WireType}};
+use protobuf_edit::{const_trie, tag, wire::Tag};
 
-const PATH: [Tag; 2] = [tag!(3, WireType::Len), tag!(1, WireType::Varint)];
+const PATH: [Tag; 2] = tag!([(3, Len), (1, Varint)]);
 let trie = const_trie!(3, 2, [&PATH]); // MAX_NODES, MAX_EDGES, paths
 
 struct Sum(u64);
@@ -194,8 +195,14 @@ payloads flow through without ever being buffered whole.
 ## `wire`, `varint`, `buf`
 
 - `wire`: `Tag` (non-zero `(field_number << 3) | wire_type`), `FieldNumber` (niche-packed
-  `1..=2^29-1`), `WireType`, `encode_tag` / `encode_tag_value` / `decode_tag`, and the
-  compile-time-checked `tag!(field_number, wire_type)` macro.
+  `1..=2^29-1`), `WireType`, `encode_tag` / `encode_tag_value` / `decode_tag`, and
+  `FieldCursor` — a zero-allocation iterator over one complete message that yields each
+  field's decoded value, exact raw span, and offset (`Result<RawField, CursorError>`,
+  errors carry offset + kind).
+- Definition macros, compile-time checked and structure-preserving:
+  `tag!(1, Len)` / `tag!(1, 2)` → `Tag` (no `WireType` import needed),
+  `tag!([(1, Len), (3, Varint)])` → `[Tag; 2]`;
+  `field_number!(5)` → `FieldNumber`, `field_number!([[1], [2]])` → `[[FieldNumber; 1]; 2]`.
 - `varint`: `encode32/64`, `decode32/64` (branchless single-byte fast path, overlong-encoding
   rejection), `encoded_len32/64`, and `zigzag_encode32/64` / `zigzag_decode32/64` for `sint*`.
 - `buf::Buf`: the crate-wide byte container — 16 bytes on the stack with three backing modes:
