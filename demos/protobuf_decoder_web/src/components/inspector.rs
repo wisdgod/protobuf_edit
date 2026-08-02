@@ -932,15 +932,16 @@ pub(crate) fn InspectorDrawer() -> impl IntoView {
     };
 
     let selected_field_view = move || {
-        let (fid, tag, parent, spans, root_spans, payload_len) =
-            meta.get().expect("Show ensures meta is Some");
+        // `Show` gates on `meta.is_some()`, but re-evaluation order between
+        // `when` and children is not guaranteed; never panic here.
+        let (fid, tag, parent, spans, root_spans, payload_len) = meta.get()?;
 
         let wt = tag.wire_type();
 
         let local_span = spans.map(|s| s.field);
         let root_span = root_spans.map(|s| s.field);
 
-        view! {
+        Some(view! {
             <>
                 <details class="inspector-section inspector-section--meta">
                     <summary class="inspector-summary">"Meta"</summary>
@@ -1108,7 +1109,7 @@ pub(crate) fn InspectorDrawer() -> impl IntoView {
                     </Show>
                 </div>
             </>
-        }
+        })
     };
 
     let insert_section = view! {

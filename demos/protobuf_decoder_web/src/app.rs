@@ -265,14 +265,11 @@ pub fn App() -> impl IntoView {
     };
 
     let field_tree_view = move || {
-        let root =
-            patch_state.with(|p| p.as_ref().expect("Show ensures patch_state is Some").root());
-        view! {
-            <FieldTree
-                msg=root
-                depth=0
-            />
-        }
+        // `Show` gates on patch presence, but never panic if the value went
+        // away between `when` and children evaluation.
+        patch_state
+            .with(|p| p.as_ref().map(protobuf_edit::Patch::root))
+            .map(|root| view! { <FieldTree msg=root depth=0 /> })
     };
 
     let on_toggle_theme = UnsyncCallback::new(move |()| {

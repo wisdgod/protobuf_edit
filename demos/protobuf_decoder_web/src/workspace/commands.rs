@@ -20,6 +20,22 @@ pub(crate) struct SaveReparseInfo {
     pub elapsed_ms: f64,
 }
 
+/// Parses a `Patch` borrowing `view`'s backing bytes, with the read cache on.
+///
+/// SAFETY contract (single point for the whole demo): the returned `Patch`
+/// must only be stored together with a clone of `view` keeping the backing
+/// `Rc<Vec<u8>>` alive, and must be replaced before that clone drops.
+/// `WorkspaceState::show_root_patch` / `show_envelope_frame_patch` maintain
+/// this by setting `patch_state` before `patch_bytes`.
+fn patch_from_view(view: &ByteView) -> Result<Patch, TreeError> {
+    // SAFETY: see the function contract above; callers keep `view` alive for
+    // the patch's whole lifetime.
+    let source = unsafe { protobuf_edit::Buf::from_borrowed_slice(view.as_slice()) };
+    let mut patch = Patch::from_buf(source)?;
+    let _ = patch.enable_read_cache();
+    Ok(patch)
+}
+
 pub(crate) fn confirm_discard_edits(ws: &WorkspaceState, action: &str) -> bool {
     let pending = ws.dirty_fields.with_untracked(FxHashSet::len);
     if pending == 0 {
@@ -40,10 +56,8 @@ pub(crate) fn load_patch_from_view(
     auto_expand_paths: Vec<String>,
     toast: &ToastManager,
 ) {
-    let source = unsafe { protobuf_edit::Buf::from_borrowed_slice(bytes.as_slice()) };
-    match Patch::from_buf(source) {
+    match patch_from_view(&bytes) {
         Ok(mut patch) => {
-            let _ = patch.enable_read_cache();
             let bytes_len = bytes.len();
             let field_count = patch.message_fields(patch.root()).map_or(0, |fields| fields.len());
 
@@ -114,10 +128,8 @@ pub(crate) fn open_envelope_frame(ws: &WorkspaceState, idx: usize, toast: &Toast
         return;
     }
 
-    let source = unsafe { protobuf_edit::Buf::from_borrowed_slice(view.as_slice()) };
-    match Patch::from_buf(source) {
-        Ok(mut patch) => {
-            let _ = patch.enable_read_cache();
+    match patch_from_view(&view) {
+        Ok(patch) => {
             ws.show_envelope_frame_patch(patch, view, idx);
         }
         Err(err) => {
@@ -170,7 +182,7 @@ pub(crate) fn visible_fields(ws: &WorkspaceState) -> Vec<FieldId> {
 pub(crate) fn revert_pending_edits(ws: &WorkspaceState) -> Result<(), TreeError> {
     let bytes_view = ws.patch_bytes.get_untracked();
     let prev_selected = ws.selected.get_untracked();
-    let prev_path = ws.patch_state.with(|state| {
+    let prev_path = ws.patch_state.with_untracked(|state| {
         let patch = state.as_ref()?;
         let fid = prev_selected?;
         build_selection_path(patch, fid)
@@ -193,8 +205,7 @@ pub(crate) fn revert_pending_edits(ws: &WorkspaceState) -> Result<(), TreeError>
                 *state = Some(patch);
                 return;
             };
-            let source = unsafe { protobuf_edit::Buf::from_borrowed_slice(bytes_view.as_slice()) };
-            match Patch::from_buf(source) {
+            match patch_from_view(bytes_view) {
                 Ok(value) => patch = value,
                 Err(err) => {
                     result = Err(err);
@@ -204,7 +215,6 @@ pub(crate) fn revert_pending_edits(ws: &WorkspaceState) -> Result<(), TreeError>
             }
         }
 
-        let _ = patch.enable_read_cache();
         if let Some(path) = prev_path.as_ref() {
             match resolve_selection_path(&mut patch, path, false) {
                 Ok(Some((fid, expanded))) => {
@@ -229,26 +239,24 @@ pub(crate) fn revert_pending_edits(ws: &WorkspaceState) -> Result<(), TreeError>
 
 pub(crate) fn save_and_reparse(ws: &WorkspaceState) -> Result<SaveReparseInfo, TreeError> {
     let prev_selected = ws.selected.get_untracked();
-    let prev_path = ws.patch_state.with(|state| {
+    let prev_path = ws.patch_state.with_untracked(|state| {
         let patch = state.as_ref()?;
         let fid = prev_selected?;
         build_selection_path(patch, fid)
     });
 
     let t0 = js_sys::Date::now();
-    let (mut patch, bytes_view) = ws.patch_state.with(|state| {
+    let (mut patch, bytes_view) = ws.patch_state.with_untracked(|state| {
         let Some(patch) = state.as_ref() else {
             return Err(TreeError::InvalidId);
         };
         let bytes = patch.save()?;
         let bytes = ByteView::from_vec(bytes.into_vec());
-        let source = unsafe { protobuf_edit::Buf::from_borrowed_slice(bytes.as_slice()) };
-        let patch = Patch::from_buf(source)?;
+        let patch = patch_from_view(&bytes)?;
         Ok((patch, bytes))
     })?;
     let elapsed_ms = (js_sys::Date::now() - t0).max(0.0);
 
-    let _ = patch.enable_read_cache();
     let field_count = patch.message_fields(patch.root()).map_or(0, |fields| fields.len());
     let bytes_len = patch.root_bytes().len();
 

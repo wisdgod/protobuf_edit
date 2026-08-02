@@ -187,21 +187,22 @@ async fn open_db() -> UiResult<IdbDatabase> {
 }
 
 async fn await_request(request: IdbRequest) -> Result<JsValue, JsValue> {
-    let request_success = request.clone();
-    let request_error = request.clone();
-    let promise = js_sys::Promise::new(&mut move |resolve, reject| {
-        let resolve = resolve;
-        let reject = reject;
+    // Hold both callbacks across the await instead of `forget()`ing them:
+    // only one of success/error ever fires, and a forgotten closure (plus its
+    // JS shim) leaks per request.
+    let mut success_slot = None;
+    let mut error_slot = None;
 
-        let request_success = request_success.clone();
+    let promise = js_sys::Promise::new(&mut |resolve, reject| {
+        let request_success = request.clone();
         let success = Closure::once(move |_event: web_sys::Event| {
             let value = request_success.result().unwrap_or_else(|err| err);
             let _ = resolve.call1(&JsValue::UNDEFINED, &value);
         });
         request.set_onsuccess(Some(success.as_ref().unchecked_ref()));
-        success.forget();
+        success_slot = Some(success);
 
-        let request_error = request_error.clone();
+        let request_error = request.clone();
         let error = Closure::once(move |_event: web_sys::Event| {
             let err = match request_error.error() {
                 Ok(Some(err)) => JsValue::from(err),
@@ -211,10 +212,18 @@ async fn await_request(request: IdbRequest) -> Result<JsValue, JsValue> {
             let _ = reject.call1(&JsValue::UNDEFINED, &err);
         });
         request.set_onerror(Some(error.as_ref().unchecked_ref()));
-        error.forget();
+        error_slot = Some(error);
     });
 
-    JsFuture::from(promise).await
+    let result = JsFuture::from(promise).await;
+
+    // Detach handlers before the closures drop.
+    request.set_onsuccess(None);
+    request.set_onerror(None);
+    drop(success_slot);
+    drop(error_slot);
+
+    result
 }
 
 fn js_value_to_bytes(value: JsValue) -> Result<Vec<u8>, &'static str> {

@@ -85,7 +85,7 @@ impl WorkspaceState {
                 compute_highlights(patch, selected.get(), hovered.get())
             })
         });
-        let highlight_range_count = Memo::new(move |_| highlights.get().len());
+        let highlight_range_count = Memo::new(move |_| highlights.with(Vec::len));
         let read_only = Memo::new(move |_| envelope_view.with(Option::is_some));
         let bytes_count = Memo::new(move |_| {
             patch_state
@@ -167,8 +167,10 @@ impl WorkspaceState {
     ) {
         self.envelope_view.set(None);
         self.envelope_selected.set(0);
-        self.patch_bytes.set(Some(bytes));
+        // Order matters: the old Patch borrows the old ByteView's backing
+        // bytes, so the borrower must be replaced before its backing drops.
         self.patch_state.set(Some(patch));
+        self.patch_bytes.set(Some(bytes));
         self.raw_bytes.set(None);
         self.reset_ui_state_keep_selected(new_selected, new_expanded);
     }
@@ -193,8 +195,10 @@ impl WorkspaceState {
 
     pub(crate) fn show_envelope_frame_patch(&self, patch: Patch, bytes: ByteView, idx: usize) {
         self.envelope_selected.set(idx);
-        self.patch_bytes.set(Some(bytes));
+        // Same ordering contract as `show_root_patch`: replace the borrowing
+        // Patch before dropping the ByteView that backs it.
         self.patch_state.set(Some(patch));
+        self.patch_bytes.set(Some(bytes));
         self.raw_bytes.set(None);
         self.reset_ui_state();
     }

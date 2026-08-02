@@ -172,12 +172,9 @@ fn FieldRow(field: FieldId, depth: usize) -> AnyView {
                 <span class="payload-summary">{move || payload_summary.get()}</span>
             </div>
 
-            <Show when=move || child_msg.get().is_some() fallback=|| ()>
-                {move || {
-                    let child = child_msg.get().expect("Show ensures child_msg is Some");
-                    view! { <FieldTree msg=child depth=depth + 1 /> }
-                }}
-            </Show>
+            {move || {
+                child_msg.get().map(|child| view! { <FieldTree msg=child depth=depth + 1 /> })
+            }}
         </>
     }
     .into_any()

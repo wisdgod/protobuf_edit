@@ -262,13 +262,14 @@ pub(crate) fn resolve_user_path(
 }
 
 fn try_decode_and_parse(patch: &mut Patch, field: FieldId) -> Result<bool, TreeError> {
+    // The copy is required: `set_bytes` below needs `&mut patch` while the
+    // original payload borrows it.
     let bytes = patch.bytes(field)?.to_vec();
-    let text = match core::str::from_utf8(&bytes) {
-        Ok(s) => s.to_string(),
-        Err(_) => return Ok(false),
+    let Ok(text) = core::str::from_utf8(&bytes) else {
+        return Ok(false);
     };
 
-    let Ok(decoded) = crate::decode::decode_user_input(&text) else { return Ok(false) };
+    let Ok(decoded) = crate::decode::decode_user_input(text) else { return Ok(false) };
 
     if decoded == bytes {
         return Ok(false);

@@ -7,8 +7,6 @@ use crate::toast::{ToastKind, ToastManager};
 use crate::web::get_url_hash;
 use leptos::prelude::*;
 use std::sync::Arc;
-use wasm_bindgen::closure::Closure;
-use wasm_bindgen::JsCast;
 use wasm_bindgen_futures::spawn_local;
 
 /// Manages the message catalog: creating, deleting, renaming, switching,
@@ -383,15 +381,12 @@ impl MessageService {
         };
         let filename = file.name();
 
-        let Ok(reader) = web_sys::FileReader::new() else {
-            self.toast.show(ToastKind::Error, "Failed to create FileReader.");
-            return;
-        };
-        let reader_for_cb = reader.clone();
+        // Blob::array_buffer is promise-based, so no FileReader callback (and
+        // no leaked Closure) is needed.
         let this = self.clone();
-
-        let onload = Closure::<dyn FnMut(web_sys::ProgressEvent)>::new(move |_| {
-            let Ok(result) = reader_for_cb.result() else {
+        spawn_local(async move {
+            let Ok(result) = wasm_bindgen_futures::JsFuture::from(file.array_buffer()).await
+            else {
                 this.toast.show(ToastKind::Error, "Failed to read file contents.");
                 return;
             };
@@ -411,33 +406,24 @@ impl MessageService {
             };
             let bytes_len = bytes.len();
             let bytes_value = js_sys::Uint8Array::from(bytes.as_slice());
-            let inner = this.clone();
-            spawn_local(async move {
-                match messages::create_message(&name, bytes_len, bytes_value).await {
-                    Ok(id) => {
-                        inner.refresh_inner().await;
-                        current_message_id.set(Some(id));
-                        inner.ws_svc.load_patch(
-                            &format!("upload \u{2192} message \"{name}\""),
-                            ByteView::from_vec(bytes),
-                            Vec::new(),
-                        );
-                        message_name_text.update(|s| {
-                            s.clear();
-                            s.push_str(name.as_ref());
-                        });
-                    }
-                    Err(msg) => toast.show(ToastKind::Error, msg),
+
+            match messages::create_message(&name, bytes_len, bytes_value).await {
+                Ok(id) => {
+                    this.refresh_inner().await;
+                    current_message_id.set(Some(id));
+                    this.ws_svc.load_patch(
+                        &format!("upload \u{2192} message \"{name}\""),
+                        ByteView::from_vec(bytes),
+                        Vec::new(),
+                    );
+                    message_name_text.update(|s| {
+                        s.clear();
+                        s.push_str(name.as_ref());
+                    });
                 }
-            });
+                Err(msg) => toast.show(ToastKind::Error, msg),
+            }
         });
-
-        reader.set_onload(Some(onload.as_ref().unchecked_ref()));
-        onload.forget();
-
-        if reader.read_as_array_buffer(&file).is_err() {
-            self.toast.show(ToastKind::Error, "Failed to start reading file.");
-        }
     }
 
     // ------------------------------------------------------------------
