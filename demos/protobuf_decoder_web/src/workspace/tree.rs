@@ -11,7 +11,7 @@ pub(crate) fn collect_visible_fields(
     let Ok(fields) = patch.message_fields(msg) else {
         return;
     };
-    for &field in fields {
+    for field in fields {
         if matches!(patch.field_is_deleted(field), Ok(true)) {
             continue;
         }

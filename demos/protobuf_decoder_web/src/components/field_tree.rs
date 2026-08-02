@@ -18,7 +18,7 @@ pub(crate) fn FieldTree(msg: MessageId, depth: usize) -> AnyView {
                 return Vec::new();
             };
             let mut out = Vec::with_capacity(fields.len());
-            for &fid in fields {
+            for fid in fields {
                 if matches!(patch.field_is_deleted(fid), Ok(true)) {
                     continue;
                 }

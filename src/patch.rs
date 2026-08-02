@@ -15,6 +15,7 @@ mod save;
 mod spans;
 mod txn;
 
+pub use access::MessageFields;
 pub use ids::{FieldId, MessageId};
 pub use model::{BorrowedPatch, Patch};
 pub use query::FieldsByNumber;
@@ -22,7 +23,8 @@ pub use spans::{FieldSpans, Span, ValueSpans};
 pub use txn::Txn;
 
 pub(crate) use model::{
-    FieldNode, MessageNode, MessageSource, PayloadEdit, ReadCache, TxnState, UndoAction, VarintEdit,
+    FieldNode, FieldRange, MessageNode, MessageSource, PayloadEdit, ReadCache, TxnState,
+    UndoAction, VarintEdit,
 };
 pub(crate) use spans::{slice_span, span_offset_by, value_spans_offset_by, StoredSpans};
 

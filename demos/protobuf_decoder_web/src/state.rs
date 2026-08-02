@@ -97,7 +97,7 @@ impl WorkspaceState {
                 let patch = p.as_ref()?;
                 let fields = patch.message_fields(patch.root()).ok()?;
                 let mut live: usize = 0;
-                for &fid in fields {
+                for fid in fields {
                     if matches!(patch.field_is_deleted(fid), Ok(true)) {
                         continue;
                     }

@@ -123,7 +123,7 @@ impl Patch {
                         continue;
                     };
 
-                    let popped = msg_node.fields_in_order.pop();
+                    let popped = msg_node.inserted.pop();
                     debug_assert_eq!(popped, Some(field), "txn undo insert order mismatch");
 
                     let should_remove = if let Some(bucket) = self.query.get_mut(&(msg, number)) {

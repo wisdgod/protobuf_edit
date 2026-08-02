@@ -7,8 +7,8 @@ use crate::error::TreeError;
 use crate::wire::WireType;
 
 use super::{
-    slice_span, FieldId, FieldNode, MessageId, MessageNode, MessageSource, Patch, PayloadEdit,
-    Span, StoredSpans, UndoAction,
+    slice_span, FieldId, FieldNode, FieldRange, MessageId, MessageNode, MessageSource, Patch,
+    PayloadEdit, Span, StoredSpans, UndoAction,
 };
 
 impl Patch {
@@ -114,7 +114,8 @@ impl Patch {
 
             let bytes = source.bytes(self.source.as_slice());
 
-            let mut fields_in_order = Vec::new();
+            let fields_start =
+                u32::try_from(self.fields.len()).map_err(|_| TreeError::CapacityExceeded)?;
 
             let mut offset = 0usize;
             while offset < bytes.len() {
@@ -226,11 +227,6 @@ impl Patch {
                     prev_node.next_by_num = Some(field_id);
                 }
 
-                if fields_in_order.len() == fields_in_order.capacity() {
-                    fields_in_order.try_reserve(1).map_err(|_| TreeError::CapacityExceeded)?;
-                }
-                fields_in_order.push(field_id);
-
                 let bucket = self.query.entry((msg_id, number)).or_default();
                 debug_assert_eq!(bucket.tail, prev_by_num);
                 debug_assert_eq!(bucket.head.is_none(), bucket.len == 0);
@@ -241,8 +237,15 @@ impl Patch {
                 bucket.len = bucket.len.checked_add(1).ok_or(TreeError::CapacityExceeded)?;
             }
 
+            let fields_end =
+                u32::try_from(self.fields.len()).map_err(|_| TreeError::CapacityExceeded)?;
             self.messages.try_reserve(1).map_err(|_| TreeError::CapacityExceeded)?;
-            self.messages.push(MessageNode { source, parent_field, fields_in_order });
+            self.messages.push(MessageNode {
+                source,
+                parent_field,
+                parsed: FieldRange { start: fields_start, end: fields_end },
+                inserted: Vec::new(),
+            });
             Ok(msg_id)
         })();
 

@@ -45,8 +45,7 @@ pub(crate) fn load_patch_from_view(
         Ok(mut patch) => {
             let _ = patch.enable_read_cache();
             let bytes_len = bytes.len();
-            let field_count =
-                patch.message_fields(patch.root()).map_or(0, <[FieldId]>::len);
+            let field_count = patch.message_fields(patch.root()).map_or(0, |fields| fields.len());
 
             let mut expanded_by_default: FxHashSet<FieldId> = FxHashSet::default();
             for raw in auto_expand_paths {
@@ -250,7 +249,7 @@ pub(crate) fn save_and_reparse(ws: &WorkspaceState) -> Result<SaveReparseInfo, T
     let elapsed_ms = (js_sys::Date::now() - t0).max(0.0);
 
     let _ = patch.enable_read_cache();
-    let field_count = patch.message_fields(patch.root()).map_or(0, <[FieldId]>::len);
+    let field_count = patch.message_fields(patch.root()).map_or(0, |fields| fields.len());
     let bytes_len = patch.root_bytes().len();
 
     let (new_selected, new_expanded) = prev_path.map_or_else(

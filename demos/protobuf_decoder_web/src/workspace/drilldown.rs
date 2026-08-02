@@ -16,7 +16,7 @@ pub(crate) fn drilldown_byte(patch: &mut Patch, idx: usize) -> (Option<FieldId>,
         let Ok(fields) = patch.message_fields(msg) else { break };
 
         let mut best: Option<(FieldId, protobuf_edit::patch::Span)> = None;
-        for &fid in fields {
+        for fid in fields {
             if matches!(patch.field_is_deleted(fid), Ok(true)) {
                 continue;
             }

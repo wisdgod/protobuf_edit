@@ -127,11 +127,25 @@ impl ReadCache {
     }
 }
 
+/// Contiguous arena id range `[start, end)` of one message's parsed fields.
+///
+/// Valid because `parse_message_node` allocates a message's fields
+/// consecutively in the shared arena.
+#[derive(Clone, Copy)]
+pub(crate) struct FieldRange {
+    pub(crate) start: u32,
+    pub(crate) end: u32,
+}
+
 #[derive(Clone)]
 pub struct MessageNode {
     pub(crate) source: MessageSource,
     pub(crate) parent_field: Option<FieldId>,
-    pub(crate) fields_in_order: Vec<FieldId>,
+    /// Fields created by the parse pass.
+    pub(crate) parsed: FieldRange,
+    /// Fields inserted after parse, in insertion order. `Vec::new()` never
+    /// allocates, so only messages that actually receive inserts pay for one.
+    pub(crate) inserted: Vec<FieldId>,
 }
 
 /// Head/tail links and length of one same-field-number chain.

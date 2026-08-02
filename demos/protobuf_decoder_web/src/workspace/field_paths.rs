@@ -71,7 +71,7 @@ pub(crate) fn build_selection_path(patch: &Patch, selected: FieldId) -> Option<V
 
         let mut occurrence: u32 = 0;
         let mut found = false;
-        for &f in fields {
+        for f in fields {
             if matches!(patch.field_is_deleted(f), Ok(true)) {
                 continue;
             }
@@ -102,7 +102,7 @@ fn find_field_by_tag_occurrence(
 ) -> Result<Option<FieldId>, TreeError> {
     let fields = patch.message_fields(msg)?;
     let mut seen: u32 = 0;
-    for &field in fields {
+    for field in fields {
         if patch.field_is_deleted(field)? {
             continue;
         }
@@ -213,7 +213,7 @@ fn find_field_by_number_occurrence(
 ) -> Result<Option<FieldId>, TreeError> {
     let fields = patch.message_fields(msg)?;
     let mut seen: u32 = 0;
-    for &field in fields {
+    for field in fields {
         if patch.field_is_deleted(field)? {
             continue;
         }

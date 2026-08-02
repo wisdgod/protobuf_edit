@@ -64,7 +64,7 @@ impl Patch {
         let mut len: u32 = 0;
         let mut dirty = false;
 
-        for &field_id in &msg_node.fields_in_order {
+        for field_id in msg_node.field_ids() {
             let field = self.field(field_id)?;
             if field.deleted {
                 dirty = true;
@@ -181,7 +181,7 @@ impl Patch {
 
         let mut pending_copy: Option<super::Span> = None;
 
-        for &field_id in &msg_node.fields_in_order {
+        for field_id in msg_node.field_ids() {
             let field = self.field(field_id)?;
             if field.deleted {
                 if let Some(span) = pending_copy.take() {

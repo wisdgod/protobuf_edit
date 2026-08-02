@@ -1,3 +1,5 @@
+use core::iter::FusedIterator;
+
 use crate::error::TreeError;
 use crate::wire::{Tag, WireType};
 
@@ -5,6 +7,53 @@ use super::{
     slice_span, span_offset_by, value_spans_offset_by, FieldId, FieldNode, FieldSpans, MessageId,
     MessageNode, MessageSource, Patch, PayloadEdit, Span, ValueSpans,
 };
+
+/// Iterates one message's field ids: the parsed arena range, then inserts.
+///
+/// Includes fields marked deleted, mirroring arena order; filter with
+/// `Patch::field_is_deleted` or use `Patch::fields_by_number` for live-only
+/// iteration.
+#[derive(Clone)]
+pub struct MessageFields<'a> {
+    parsed: core::ops::Range<u32>,
+    inserted: core::slice::Iter<'a, FieldId>,
+}
+
+impl MessageNode {
+    #[inline]
+    pub(crate) fn field_ids(&self) -> MessageFields<'_> {
+        MessageFields { parsed: self.parsed.start..self.parsed.end, inserted: self.inserted.iter() }
+    }
+}
+
+impl Iterator for MessageFields<'_> {
+    type Item = FieldId;
+
+    #[inline]
+    fn next(&mut self) -> Option<Self::Item> {
+        if let Some(raw) = self.parsed.next() {
+            // SAFETY: parsed-range ids come from `alloc_field`, which rejects
+            // indices at `FieldId::MAX`.
+            return Some(unsafe { FieldId::new_unchecked(raw) });
+        }
+        self.inserted.next().copied()
+    }
+
+    #[inline]
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        let len = self.len();
+        (len, Some(len))
+    }
+}
+
+impl ExactSizeIterator for MessageFields<'_> {
+    #[inline]
+    fn len(&self) -> usize {
+        self.parsed.len() + self.inserted.len()
+    }
+}
+
+impl FusedIterator for MessageFields<'_> {}
 
 impl Patch {
     /// Enables per-field caches for read APIs.
@@ -60,8 +109,10 @@ impl Patch {
         Ok(self.message(msg)?.parent_field)
     }
 
-    pub fn message_fields(&self, msg: MessageId) -> Result<&[FieldId], TreeError> {
-        Ok(self.message(msg)?.fields_in_order.as_slice())
+    /// All fields of `msg` in arena order (parsed fields first, then
+    /// inserted ones), including fields marked deleted.
+    pub fn message_fields(&self, msg: MessageId) -> Result<MessageFields<'_>, TreeError> {
+        Ok(self.message(msg)?.field_ids())
     }
 
     pub fn field_tag(&self, field: FieldId) -> Result<Tag, TreeError> {

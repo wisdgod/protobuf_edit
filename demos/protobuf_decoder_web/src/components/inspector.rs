@@ -1481,7 +1481,7 @@ fn collect_reachable_fields(
     let Ok(fields) = patch.message_fields(msg) else {
         return;
     };
-    for &fid in fields {
+    for fid in fields {
         out.push(fid);
         let Ok(Some(child)) = patch.field_child_message(fid) else {
             continue;

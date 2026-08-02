@@ -197,8 +197,8 @@ impl Patch {
         }
 
         let msg_node = self.message_mut(msg)?;
-        msg_node.fields_in_order.try_reserve(1).map_err(|_| TreeError::CapacityExceeded)?;
-        msg_node.fields_in_order.push(field_id);
+        msg_node.inserted.try_reserve(1).map_err(|_| TreeError::CapacityExceeded)?;
+        msg_node.inserted.push(field_id);
 
         let bucket = self.query.entry((msg, number)).or_default();
         debug_assert_eq!(bucket.tail, prev_by_num);
