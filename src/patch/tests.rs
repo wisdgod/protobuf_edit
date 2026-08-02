@@ -23,7 +23,7 @@ fn does_not_parse_child_message_from_non_message_bytes() {
     let root_msg = tree.root();
     let outer = Tag::from_parts(fnn(2), WireType::Len);
 
-    let mut outer_fields = tree.fields_by_tag(root_msg, outer).unwrap();
+    let mut outer_fields = tree.fields_by_number(root_msg, outer.field_number()).unwrap();
     let outer_field = outer_fields.next().unwrap();
     assert!(outer_fields.next().is_none());
     assert_eq!(tree.field_child_message(outer_field).unwrap(), None);
@@ -50,13 +50,14 @@ fn parses_nested_messages_on_demand() {
     let outer = Tag::from_parts(fnn(10), WireType::Len);
     let inner = Tag::from_parts(fnn(2), WireType::Varint);
 
-    let outer_fields: alloc::vec::Vec<_> = tree.fields_by_tag(root_msg, outer).unwrap().collect();
+    let outer_fields: alloc::vec::Vec<_> =
+        tree.fields_by_number(root_msg, outer.field_number()).unwrap().collect();
     assert_eq!(outer_fields.len(), 2);
 
     let mut got = alloc::vec::Vec::new();
     for field_id in outer_fields {
         let child_msg = tree.parse_child_message(field_id).unwrap();
-        let mut inner_fields = tree.fields_by_tag(child_msg, inner).unwrap();
+        let mut inner_fields = tree.fields_by_number(child_msg, inner.field_number()).unwrap();
         let inner_field = inner_fields.next().unwrap();
         assert!(inner_fields.next().is_none());
         got.push(tree.varint(inner_field).unwrap());
@@ -82,11 +83,13 @@ fn edits_child_payload_and_saves_lazily() {
 
     let mut tree = Patch::from_bytes(bytes.as_slice()).unwrap();
     let root_msg = tree.root();
-    let outer_fields: alloc::vec::Vec<_> = tree.fields_by_tag(root_msg, outer).unwrap().collect();
+    let outer_fields: alloc::vec::Vec<_> =
+        tree.fields_by_number(root_msg, outer.field_number()).unwrap().collect();
 
     for outer_field_id in outer_fields {
         let child_msg = tree.parse_child_message(outer_field_id).unwrap();
-        let inner_field_id = tree.fields_by_tag(child_msg, inner).unwrap().next().unwrap();
+        let inner_field_id =
+            tree.fields_by_number(child_msg, inner.field_number()).unwrap().next().unwrap();
         let before = tree.varint(inner_field_id).unwrap();
         tree.set_varint(inner_field_id, before + 100).unwrap();
     }
@@ -123,9 +126,11 @@ fn transaction_rolls_back_on_drop() {
     {
         let mut txn = Txn::begin(&mut tree);
         let root_msg = txn.tree().root();
-        let outer_field_id = txn.tree().fields_by_tag(root_msg, outer).unwrap().next().unwrap();
+        let outer_field_id =
+            txn.tree().fields_by_number(root_msg, outer.field_number()).unwrap().next().unwrap();
         let child_msg = txn.tree().parse_child_message(outer_field_id).unwrap();
-        let inner_field_id = txn.tree().fields_by_tag(child_msg, inner).unwrap().next().unwrap();
+        let inner_field_id =
+            txn.tree().fields_by_number(child_msg, inner.field_number()).unwrap().next().unwrap();
         let before = txn.tree().varint(inner_field_id).unwrap();
         txn.tree().set_varint(inner_field_id, before + 100).unwrap();
     }
@@ -161,9 +166,11 @@ fn transaction_commits_on_commit() {
     {
         let mut txn = Txn::begin(&mut tree);
         let root_msg = txn.tree().root();
-        let outer_field_id = txn.tree().fields_by_tag(root_msg, outer).unwrap().next().unwrap();
+        let outer_field_id =
+            txn.tree().fields_by_number(root_msg, outer.field_number()).unwrap().next().unwrap();
         let child_msg = txn.tree().parse_child_message(outer_field_id).unwrap();
-        let inner_field_id = txn.tree().fields_by_tag(child_msg, inner).unwrap().next().unwrap();
+        let inner_field_id =
+            txn.tree().fields_by_number(child_msg, inner.field_number()).unwrap().next().unwrap();
         let before = txn.tree().varint(inner_field_id).unwrap();
         txn.tree().set_varint(inner_field_id, before + 100).unwrap();
         txn.commit();
@@ -194,7 +201,7 @@ fn insert_and_delete_fields_affect_save_output() {
     let tag1 = Tag::from_parts(fnn(1), WireType::Varint);
     let tag3 = Tag::from_parts(fnn(3), WireType::Varint);
 
-    let field1 = patch.fields_by_tag(root, tag1).unwrap().next().unwrap();
+    let field1 = patch.fields_by_number(root, tag1.field_number()).unwrap().next().unwrap();
     patch.delete_field(field1).unwrap();
     let _inserted = patch.insert_varint(root, tag3, 999).unwrap();
 
@@ -216,7 +223,8 @@ fn save_and_reparse_refreshes_spans_for_inserted_fields() {
     assert_eq!(patch.field_spans(inserted).unwrap(), None);
 
     let reparsed = patch.save_and_reparse().unwrap();
-    let ids: alloc::vec::Vec<_> = reparsed.fields_by_tag(reparsed.root(), tag1).unwrap().collect();
+    let ids: alloc::vec::Vec<_> =
+        reparsed.fields_by_number(reparsed.root(), tag1.field_number()).unwrap().collect();
     assert_eq!(ids.len(), 1);
     assert!(reparsed.field_spans(ids[0]).unwrap().is_some());
 }
@@ -233,11 +241,13 @@ fn deleting_child_field_makes_parent_len_field_dirty() {
 
     let mut patch = Patch::from_bytes(src.as_slice()).unwrap();
     let root_msg = patch.root();
-    let outer_field_id = patch.fields_by_tag(root_msg, outer_tag).unwrap().next().unwrap();
+    let outer_field_id =
+        patch.fields_by_number(root_msg, outer_tag.field_number()).unwrap().next().unwrap();
     let child_msg = patch.parse_child_message(outer_field_id).unwrap();
 
     let inner_tag = Tag::from_parts(fnn(2), WireType::Varint);
-    let inner_field_id = patch.fields_by_tag(child_msg, inner_tag).unwrap().next().unwrap();
+    let inner_field_id =
+        patch.fields_by_number(child_msg, inner_tag.field_number()).unwrap().next().unwrap();
     patch.delete_field(inner_field_id).unwrap();
 
     let out = patch.save().unwrap();
@@ -259,7 +269,8 @@ fn maps_child_message_spans_back_to_root() {
 
     let mut patch = Patch::from_bytes(root_bytes.as_slice()).unwrap();
     let root_msg = patch.root();
-    let outer_field_id = patch.fields_by_tag(root_msg, outer_tag).unwrap().next().unwrap();
+    let outer_field_id =
+        patch.fields_by_number(root_msg, outer_tag.field_number()).unwrap().next().unwrap();
     let outer_spans = patch.field_spans(outer_field_id).unwrap().unwrap();
     let outer_payload_span = match outer_spans.value {
         ValueSpans::Len { payload, .. } => payload,
@@ -270,7 +281,8 @@ fn maps_child_message_spans_back_to_root() {
     assert_eq!(patch.message_root_span(child_msg).unwrap(), Some(outer_payload_span));
 
     let inner_tag = Tag::from_parts(fnn(2), WireType::Varint);
-    let inner_field_id = patch.fields_by_tag(child_msg, inner_tag).unwrap().next().unwrap();
+    let inner_field_id =
+        patch.fields_by_number(child_msg, inner_tag.field_number()).unwrap().next().unwrap();
     let inner_local = patch.field_spans(inner_field_id).unwrap().unwrap();
 
     let expected_field_span = Span::new(
@@ -300,7 +312,8 @@ fn owned_child_message_has_no_root_span_mapping() {
 
     let mut patch = Patch::from_bytes(root_bytes.as_slice()).unwrap();
     let root_msg = patch.root();
-    let outer_field_id = patch.fields_by_tag(root_msg, outer_tag).unwrap().next().unwrap();
+    let outer_field_id =
+        patch.fields_by_number(root_msg, outer_tag.field_number()).unwrap().next().unwrap();
 
     let mut edited_child = Document::new();
     let _ = edited_child.push_varint(fnn(2), 999).unwrap();
@@ -310,7 +323,8 @@ fn owned_child_message_has_no_root_span_mapping() {
     assert_eq!(patch.message_root_span(child_msg).unwrap(), None);
 
     let inner_tag = Tag::from_parts(fnn(2), WireType::Varint);
-    let inner_field_id = patch.fields_by_tag(child_msg, inner_tag).unwrap().next().unwrap();
+    let inner_field_id =
+        patch.fields_by_number(child_msg, inner_tag.field_number()).unwrap().next().unwrap();
     let _inner_local = patch.field_spans(inner_field_id).unwrap().unwrap();
 
     assert_eq!(patch.field_root_spans(inner_field_id).unwrap(), None);
@@ -347,7 +361,8 @@ fn transaction_rolls_back_insertions_and_deletions() {
 
     {
         let mut txn = Txn::begin(&mut patch);
-        let field1 = txn.tree().fields_by_tag(root, tag1).unwrap().next().unwrap();
+        let field1 =
+            txn.tree().fields_by_number(root, tag1.field_number()).unwrap().next().unwrap();
         txn.tree().delete_field(field1).unwrap();
         let _ = txn.tree().insert_varint(root, tag2, 999).unwrap();
     }
@@ -360,6 +375,34 @@ fn transaction_rolls_back_insertions_and_deletions() {
 }
 
 #[test]
+fn fields_by_number_chains_wire_types_and_skips_deleted() {
+    // Same field number with two wire types: varint then fixed32.
+    let mut doc = Document::new();
+    let _ = doc.push_varint(fnn(1), 7).unwrap();
+    let _ = doc.push_fixed32(fnn(1), 42).unwrap();
+    let _ = doc.push_varint(fnn(2), 9).unwrap();
+    let bytes = doc.to_buf().unwrap();
+
+    let mut patch = Patch::from_bytes(bytes.as_slice()).unwrap();
+    let root = patch.root();
+
+    // The number is the identity: both occurrences share one chain.
+    let chain: alloc::vec::Vec<_> = patch.fields_by_number(root, fnn(1)).unwrap().collect();
+    assert_eq!(chain.len(), 2);
+    assert_eq!(patch.field_tag(chain[0]).unwrap().wire_type(), WireType::Varint);
+    assert_eq!(patch.field_tag(chain[1]).unwrap().wire_type(), WireType::I32);
+
+    // Deleted fields disappear from iteration without reparse.
+    patch.delete_field(chain[0]).unwrap();
+    let live: alloc::vec::Vec<_> = patch.fields_by_number(root, fnn(1)).unwrap().collect();
+    assert_eq!(live, &chain[1..]);
+
+    let (lo, hi) = patch.fields_by_number(root, fnn(1)).unwrap().size_hint();
+    assert_eq!(lo, 0, "deleted fields make the length an upper bound only");
+    assert_eq!(hi, Some(2));
+}
+
+#[test]
 fn rollback_restores_pre_transaction_edit_values() {
     let mut doc = Document::new();
     let _ = doc.push_varint(fnn(1), 7).unwrap();
@@ -368,7 +411,7 @@ fn rollback_restores_pre_transaction_edit_values() {
     let mut patch = Patch::from_bytes(bytes.as_slice()).unwrap();
     let root = patch.root();
     let tag1 = Tag::from_parts(fnn(1), WireType::Varint);
-    let field = patch.fields_by_tag(root, tag1).unwrap().next().unwrap();
+    let field = patch.fields_by_number(root, tag1.field_number()).unwrap().next().unwrap();
 
     // Pre-transaction edit occupies a pool slot.
     patch.set_varint(field, 10).unwrap();

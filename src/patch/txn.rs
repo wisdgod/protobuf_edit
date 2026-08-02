@@ -114,8 +114,8 @@ impl Patch {
                         debug_assert!(false, "txn undo insert field out of bounds");
                         continue;
                     };
-                    let tag = field_node.tag;
-                    let prev_by_tag = field_node.prev_by_tag;
+                    let number = field_node.tag.field_number();
+                    let prev_by_num = field_node.prev_by_num;
 
                     let msg_idx = msg.as_inner() as usize;
                     let Some(msg_node) = self.messages.get_mut(msg_idx) else {
@@ -126,21 +126,21 @@ impl Patch {
                     let popped = msg_node.fields_in_order.pop();
                     debug_assert_eq!(popped, Some(field), "txn undo insert order mismatch");
 
-                    let should_remove = if let Some(bucket) = msg_node.query.get_mut(&tag) {
+                    let should_remove = if let Some(bucket) = self.query.get_mut(&(msg, number)) {
                         debug_assert_eq!(bucket.tail, Some(field), "txn undo query tail mismatch");
                         debug_assert!(bucket.len > 0, "txn undo query len underflow");
 
-                        if let Some(prev) = prev_by_tag {
+                        if let Some(prev) = prev_by_num {
                             let prev_idx = prev.as_inner() as usize;
                             if let Some(prev_node) = self.fields.get_mut(prev_idx) {
-                                prev_node.next_by_tag = None;
+                                prev_node.next_by_num = None;
                             } else {
-                                debug_assert!(false, "txn undo prev_by_tag out of bounds");
+                                debug_assert!(false, "txn undo prev_by_num out of bounds");
                             }
                         } else {
                             bucket.head = None;
                         }
-                        bucket.tail = prev_by_tag;
+                        bucket.tail = prev_by_num;
                         bucket.len -= 1;
                         bucket.len == 0
                     } else {
@@ -148,7 +148,7 @@ impl Patch {
                         false
                     };
                     if should_remove {
-                        let _ = msg_node.query.remove(&tag);
+                        let _ = self.query.remove(&(msg, number));
                     }
                 }
             }
@@ -160,6 +160,11 @@ impl Patch {
         // `Patch::store_edit`), so restored `edit` indices still hold their
         // original values; transaction-era slots are reclaimed here.
         self.edits.truncate(state.orig_edits_len);
+        // Index entries for child messages parsed during the transaction die
+        // with their messages; surviving messages' buckets were already
+        // restored by the undo log above. Cold path.
+        let orig_messages_len = state.orig_messages_len;
+        self.query.retain(|(msg, _), _| (msg.as_inner() as usize) < orig_messages_len);
         self.read_cache.truncate_fields(state.orig_fields_len);
     }
 }

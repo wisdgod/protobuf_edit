@@ -1,15 +1,14 @@
 use alloc::vec::Vec;
 use core::cell::Cell;
 
-use crate::document::RawVarint32;
-use crate::fx::FxHashMap;
 use crate::buf::Buf;
+use crate::document::RawVarint32;
 use crate::error::TreeError;
 use crate::wire::WireType;
 
 use super::{
     slice_span, FieldId, FieldNode, MessageId, MessageNode, MessageSource, Patch, PayloadEdit,
-    Span, StoredSpans, TagBucket, UndoAction,
+    Span, StoredSpans, UndoAction,
 };
 
 impl Patch {
@@ -31,6 +30,7 @@ impl Patch {
             messages: Vec::new(),
             fields: Vec::new(),
             edits: Vec::new(),
+            query: crate::fx::FxHashMap::default(),
             read_cache: super::ReadCache::default(),
             txn: None,
         };
@@ -115,7 +115,6 @@ impl Patch {
             let bytes = source.bytes(self.source.as_slice());
 
             let mut fields_in_order = Vec::new();
-            let mut query = FxHashMap::default();
 
             let mut offset = 0usize;
             while offset < bytes.len() {
@@ -202,15 +201,16 @@ impl Patch {
                     }
                 };
 
-                let prev_by_tag = query.get(&tag).and_then(|bucket: &TagBucket| bucket.tail);
+                let number = tag.field_number();
+                let prev_by_num = self.query.get(&(msg_id, number)).and_then(|bucket| bucket.tail);
                 let field_id = Self::alloc_field(
                     &mut self.fields,
                     &mut self.read_cache,
                     FieldNode {
                         msg: msg_id,
                         tag,
-                        prev_by_tag,
-                        next_by_tag: None,
+                        prev_by_num,
+                        next_by_num: None,
                         raw_tag: RawVarint32::default(),
                         spans,
                         edit: None,
@@ -219,11 +219,11 @@ impl Patch {
                     },
                 )?;
 
-                if let Some(prev) = prev_by_tag {
+                if let Some(prev) = prev_by_num {
                     let prev_idx = prev.as_inner() as usize;
                     let prev_node = self.fields.get_mut(prev_idx).ok_or(TreeError::Corrupted)?;
-                    debug_assert_eq!(prev_node.next_by_tag, None);
-                    prev_node.next_by_tag = Some(field_id);
+                    debug_assert_eq!(prev_node.next_by_num, None);
+                    prev_node.next_by_num = Some(field_id);
                 }
 
                 if fields_in_order.len() == fields_in_order.capacity() {
@@ -231,8 +231,8 @@ impl Patch {
                 }
                 fields_in_order.push(field_id);
 
-                let bucket = query.entry(tag).or_insert_with(TagBucket::default);
-                debug_assert_eq!(bucket.tail, prev_by_tag);
+                let bucket = self.query.entry((msg_id, number)).or_default();
+                debug_assert_eq!(bucket.tail, prev_by_num);
                 debug_assert_eq!(bucket.head.is_none(), bucket.len == 0);
                 if bucket.len == 0 {
                     bucket.head = Some(field_id);
@@ -242,7 +242,7 @@ impl Patch {
             }
 
             self.messages.try_reserve(1).map_err(|_| TreeError::CapacityExceeded)?;
-            self.messages.push(MessageNode { source, parent_field, fields_in_order, query });
+            self.messages.push(MessageNode { source, parent_field, fields_in_order });
             Ok(msg_id)
         })();
 
@@ -252,6 +252,8 @@ impl Patch {
                 self.messages.truncate(orig_messages_len);
                 self.fields.truncate(orig_fields_len);
                 self.read_cache.truncate_fields(orig_fields_len);
+                // Cold path: drop the failed message's index entries.
+                self.query.retain(|(msg, _), _| (msg.as_inner() as usize) < orig_messages_len);
                 Err(err)
             }
         }

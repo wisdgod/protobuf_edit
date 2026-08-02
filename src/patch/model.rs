@@ -6,7 +6,7 @@ use core::ops::{Deref, DerefMut};
 use crate::document::{RawVarint32, RawVarint64};
 use crate::error::TreeError;
 use crate::fx::FxHashMap;
-use crate::wire::Tag;
+use crate::wire::{FieldNumber, Tag};
 use crate::Buf;
 
 use super::{FieldId, MessageId, StoredSpans};
@@ -32,6 +32,11 @@ pub struct Patch {
     /// Slots orphaned by replaced or cleared edits stay allocated until the
     /// `Patch` drops; they are 32-byte values bounded by user edit actions.
     pub(crate) edits: Vec<PayloadEdit>,
+    /// Shared field-number index: one map per `Patch` instead of one per
+    /// message. Chains link fields with the same number regardless of wire
+    /// type (the number is the field's identity; the wire type is its
+    /// representation).
+    pub(crate) query: FxHashMap<(MessageId, FieldNumber), NumBucket>,
     pub(crate) read_cache: ReadCache,
     pub(crate) txn: Option<TxnState>,
 }
@@ -127,11 +132,11 @@ pub struct MessageNode {
     pub(crate) source: MessageSource,
     pub(crate) parent_field: Option<FieldId>,
     pub(crate) fields_in_order: Vec<FieldId>,
-    pub(crate) query: FxHashMap<Tag, TagBucket>,
 }
 
+/// Head/tail links and length of one same-field-number chain.
 #[derive(Clone, Copy, Default)]
-pub struct TagBucket {
+pub struct NumBucket {
     pub(crate) head: Option<FieldId>,
     pub(crate) tail: Option<FieldId>,
     pub(crate) len: u32,
@@ -160,8 +165,10 @@ impl MessageSource {
 pub struct FieldNode {
     pub(crate) msg: MessageId,
     pub(crate) tag: Tag,
-    pub(crate) prev_by_tag: Option<FieldId>,
-    pub(crate) next_by_tag: Option<FieldId>,
+    /// Previous field with the same field number in the same message.
+    pub(crate) prev_by_num: Option<FieldId>,
+    /// Next field with the same field number in the same message.
+    pub(crate) next_by_num: Option<FieldId>,
     pub(crate) raw_tag: RawVarint32,
     /// Recorded wire spans; `StoredSpans::EMPTY` for inserted fields.
     pub(crate) spans: StoredSpans,
@@ -269,6 +276,7 @@ impl Clone for Patch {
             messages: self.messages.clone(),
             fields: self.fields.clone(),
             edits: self.edits.clone(),
+            query: self.query.clone(),
             read_cache: self.read_cache.clone(),
             txn: None,
         }

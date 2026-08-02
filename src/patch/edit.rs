@@ -3,7 +3,7 @@ use crate::error::TreeError;
 use crate::wire::{Tag, WireType};
 use crate::Buf;
 
-use super::{FieldId, FieldNode, MessageId, Patch, PayloadEdit, TagBucket, UndoAction, VarintEdit};
+use super::{FieldId, FieldNode, MessageId, Patch, PayloadEdit, UndoAction, VarintEdit};
 
 impl Patch {
     pub fn clear_field_edit(&mut self, field: FieldId) -> Result<(), TreeError> {
@@ -170,7 +170,9 @@ impl Patch {
         tag: Tag,
         edit: PayloadEdit,
     ) -> Result<FieldId, TreeError> {
-        let prev_by_tag = self.message(msg)?.query.get(&tag).and_then(|bucket| bucket.tail);
+        let _ = self.message(msg)?;
+        let number = tag.field_number();
+        let prev_by_num = self.query.get(&(msg, number)).and_then(|bucket| bucket.tail);
         let edit_ix = Self::store_edit(&mut self.edits, self.txn.as_ref(), None, edit)?;
         let field_id = Self::alloc_field(
             &mut self.fields,
@@ -178,8 +180,8 @@ impl Patch {
             FieldNode {
                 msg,
                 tag,
-                prev_by_tag,
-                next_by_tag: None,
+                prev_by_num,
+                next_by_num: None,
                 raw_tag: RawVarint32::from_u32(tag.get()),
                 spans: super::StoredSpans::EMPTY,
                 edit: Some(edit_ix),
@@ -188,18 +190,18 @@ impl Patch {
             },
         )?;
 
-        if let Some(prev) = prev_by_tag {
+        if let Some(prev) = prev_by_num {
             let prev_idx = prev.as_inner() as usize;
             let prev_node = self.fields.get_mut(prev_idx).ok_or(TreeError::InvalidId)?;
-            prev_node.next_by_tag = Some(field_id);
+            prev_node.next_by_num = Some(field_id);
         }
 
         let msg_node = self.message_mut(msg)?;
         msg_node.fields_in_order.try_reserve(1).map_err(|_| TreeError::CapacityExceeded)?;
         msg_node.fields_in_order.push(field_id);
 
-        let bucket = msg_node.query.entry(tag).or_insert_with(TagBucket::default);
-        debug_assert_eq!(bucket.tail, prev_by_tag);
+        let bucket = self.query.entry((msg, number)).or_default();
+        debug_assert_eq!(bucket.tail, prev_by_num);
         debug_assert_eq!(bucket.head.is_none(), bucket.len == 0);
         if bucket.len == 0 {
             bucket.head = Some(field_id);
