@@ -72,6 +72,16 @@ pub(crate) fn clipboard_write_text(text: &str) -> UiResult<js_sys::Promise> {
     Ok(clipboard.write_text(text))
 }
 
+/// Awaits the clipboard write so a rejected promise surfaces as an error
+/// instead of a silent no-op behind a success toast.
+pub(crate) async fn clipboard_write_text_async(text: String) -> UiResult<()> {
+    let promise = clipboard_write_text(&text)?;
+    wasm_bindgen_futures::JsFuture::from(promise)
+        .await
+        .map(|_| ())
+        .map_err(|err| UiError::from(format!("Clipboard write failed: {err:?}")))
+}
+
 pub(crate) fn download_bytes(filename: &str, bytes: &[u8]) -> UiResult<()> {
     let window = web_sys::window().ok_or("Window is not available.")?;
     let document = window.document().ok_or("Document is not available.")?;

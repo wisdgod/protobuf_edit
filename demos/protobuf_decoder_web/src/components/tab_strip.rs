@@ -1,5 +1,5 @@
 use crate::services::MessageService;
-use crate::state::{MessageCatalogState, Tab, TabsState};
+use crate::state::{MessageCatalogState, Tab, TabsState, UiState};
 use leptos::prelude::*;
 
 /// The resident tab strip: a pinned Library entry plus one tab per open
@@ -7,6 +7,7 @@ use leptos::prelude::*;
 #[component]
 pub(crate) fn TabStrip() -> impl IntoView {
     let tabs = expect_context::<TabsState>();
+    let locale = expect_context::<UiState>().locale;
     let tabs_for_start = tabs.clone();
 
     let is_start = {
@@ -21,7 +22,7 @@ pub(crate) fn TabStrip() -> impl IntoView {
                 class:tab--active=is_start
                 on:click=move |_| tabs_for_start.show_start()
             >
-                "Library"
+                {move || locale.get().t().library}
             </button>
             <For
                 each={
@@ -39,6 +40,7 @@ fn tab_view(tab: &Tab) -> impl IntoView + use<> {
     let tabs = expect_context::<TabsState>();
     let msg_svc = expect_context::<MessageService>();
     let catalog = expect_context::<MessageCatalogState>();
+    let locale = expect_context::<UiState>().locale;
     let messages_list = catalog.messages_list;
 
     let tab_id = tab.id;
@@ -47,12 +49,13 @@ fn tab_view(tab: &Tab) -> impl IntoView + use<> {
     let dirty_count = tab.message_ws().map(|ws| ws.dirty_count);
 
     let title = Memo::new(move |_| {
+        let t = locale.get().t();
         let name = messages_list.with(|list| {
             list.iter()
                 .find(|m| m.id == mid)
-                .map_or_else(|| format!("Message {mid}"), |m| m.name.to_string())
+                .map_or_else(|| format!("{} {mid}", t.message_fallback), |m| m.name.to_string())
         });
-        if is_envelope { format!("{name} \u{00B7} frames") } else { name }
+        if is_envelope { format!("{name} \u{00B7} {}", t.frames_tab_suffix) } else { name }
     });
 
     let is_active = {
@@ -98,7 +101,7 @@ fn tab_view(tab: &Tab) -> impl IntoView + use<> {
             <span class="tab-title">{move || title.get()}</span>
             <button
                 class="tab-close"
-                title="Close tab"
+                title=move || locale.get().t().close_tab
                 on:click=move |ev: web_sys::MouseEvent| {
                     ev.stop_propagation();
                     close_svc.close_tab(tab_id);

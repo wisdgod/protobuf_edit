@@ -1,7 +1,7 @@
-use crate::components::{EnvelopeFramesPanel, FieldTree};
+use crate::components::{EnvelopeFramesPanel, FieldTree, PreviewStatusBar};
 use crate::hex_view::HexGrid;
 use crate::services::EnvelopeService;
-use crate::state::EnvelopeTabState;
+use crate::state::{EnvelopeTabState, UiState};
 use leptos::html;
 use leptos::prelude::*;
 use leptos_use::use_event_listener;
@@ -22,10 +22,10 @@ pub(crate) fn EnvelopeTabView(env: EnvelopeTabState, split_px: RwSignal<f64>) ->
         Effect::new(move |_| env_svc.ensure_active_loaded());
     }
 
+    let locale = expect_context::<UiState>().locale;
     let preview = env.preview.clone();
     let patch_state = preview.patch_state;
     let raw_bytes = preview.raw_bytes;
-    let hex_text_mode = preview.hex_text_mode;
 
     let split_ref = NodeRef::<html::Div>::new();
     let hex_container_ref = NodeRef::<html::Div>::new();
@@ -63,10 +63,11 @@ pub(crate) fn EnvelopeTabView(env: EnvelopeTabState, split_px: RwSignal<f64>) ->
     );
 
     let preview_fallback = move || {
+        let t = locale.get().t();
         if raw_bytes.with(std::option::Option::is_some) {
-            view! { <div class="panel-header">"No protobuf structure."</div> }.into_any()
+            view! { <div class="panel-header">{t.no_protobuf_structure}</div> }.into_any()
         } else {
-            view! { <div class="panel-header">"No frame selected."</div> }.into_any()
+            view! { <div class="panel-header">{t.no_frame_selected}</div> }.into_any()
         }
     };
 
@@ -88,13 +89,7 @@ pub(crate) fn EnvelopeTabView(env: EnvelopeTabState, split_px: RwSignal<f64>) ->
                     >
                         <div class="panel">
                             <div class="panel-header">
-                                <span>"Frame Preview (read-only)"</span>
-                                <button
-                                    class="btn btn--secondary btn--small"
-                                    on:click=move |_| hex_text_mode.update(|m| *m = m.toggle())
-                                >
-                                    {move || hex_text_mode.get().label()}
-                                </button>
+                                <span>{move || locale.get().t().frame_preview}</span>
                             </div>
                             <HexGrid container_ref=hex_container_ref />
                         </div>
@@ -104,6 +99,16 @@ pub(crate) fn EnvelopeTabView(env: EnvelopeTabState, split_px: RwSignal<f64>) ->
                         on:mousedown=move |ev: leptos::ev::MouseEvent| {
                             ev.prevent_default();
                             split_dragging.set(true);
+                        }
+                        // Double-click: snap the hex pane to the narrowest
+                        // width without a horizontal scrollbar.
+                        on:dblclick=move |_| {
+                            let Some(el) = hex_container_ref.get() else {
+                                return;
+                            };
+                            if let Some(w) = crate::hex_view::hex_fit_width(&el) {
+                                split_px.set(w);
+                            }
                         }
                     ></div>
                     <div class="split-right" style:flex="1 1 0">
@@ -122,6 +127,8 @@ pub(crate) fn EnvelopeTabView(env: EnvelopeTabState, split_px: RwSignal<f64>) ->
                     </div>
                 </div>
             </div>
+
+            <PreviewStatusBar />
         </div>
     }
 }

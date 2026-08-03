@@ -1,4 +1,5 @@
 use crate::components::{DocumentView, EnvelopeTabView, StartPage, TabStrip, ThemeSwitcher};
+use crate::i18n::Locale;
 use crate::messages::{self, MessageId, MessageMeta};
 use crate::services::{EnvelopeService, ExportService, MessageService, WorkspaceService};
 use crate::state::{parse_theme, MessageCatalogState, TabsState, Theme, UiState};
@@ -26,6 +27,11 @@ pub fn App() -> impl IntoView {
     let theme: RwSignal<Theme> = RwSignal::new(initial_theme);
     let theme_is_dark = Memo::new(move |_| theme.get() == Theme::Dark);
 
+    let initial_locale =
+        messages::load_locale().as_deref().and_then(Locale::parse).unwrap_or(Locale::En);
+    let locale: RwSignal<Locale> = RwSignal::new(initial_locale);
+    let read_only: RwSignal<bool> = RwSignal::new(messages::load_read_only());
+
     let catalog = MessageCatalogState {
         raw_input,
         import_name_text,
@@ -34,7 +40,7 @@ pub fn App() -> impl IntoView {
         message_name_text,
         frame_name_template_text,
     };
-    let ui = UiState { toast };
+    let ui = UiState { toast, locale, read_only };
 
     let tabs = TabsState::new(current_message_id);
 
@@ -127,10 +133,35 @@ pub fn App() -> impl IntoView {
         }
     };
 
+    let t = move || locale.get().t();
+
     view! {
         <div class="app">
             <div class="shell-bar">
                 <TabStrip />
+                <button
+                    class="btn btn--secondary btn--small"
+                    class:btn--active=move || read_only.get()
+                    title=move || t().read_only_title
+                    on:click=move |_| {
+                        let next = !read_only.get_untracked();
+                        read_only.set(next);
+                        let _ = messages::store_read_only(next);
+                    }
+                >
+                    {move || t().read_only}
+                </button>
+                <button
+                    class="btn btn--secondary btn--small"
+                    title=move || t().locale_title
+                    on:click=move |_| {
+                        let next = locale.get_untracked().toggle();
+                        locale.set(next);
+                        let _ = messages::store_locale(next.as_str());
+                    }
+                >
+                    {move || locale.get().label()}
+                </button>
                 <ThemeSwitcher is_night=theme_is_dark on_toggle=on_toggle_theme />
             </div>
 

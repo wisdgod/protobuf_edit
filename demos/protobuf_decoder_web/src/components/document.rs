@@ -17,14 +17,16 @@ pub(crate) fn DocumentView(ws: WorkspaceState, split_px: RwSignal<f64>) -> impl 
     provide_context(ws.clone());
 
     let ws_svc = expect_context::<WorkspaceService>();
-    let toast = expect_context::<UiState>().toast;
+    let ui = expect_context::<UiState>();
+    let toast = ui.toast;
+    let locale = ui.locale;
+    let read_only = ui.read_only;
 
     let patch_state = ws.patch_state;
     let raw_bytes = ws.raw_bytes;
     let selected = ws.selected;
     let expanded = ws.expanded;
     let dirty_count = ws.dirty_count;
-    let hex_text_mode = ws.hex_text_mode;
     let hex_selection = ws.hex_selection;
     let visible_fields = ws.visible_fields;
 
@@ -74,7 +76,8 @@ pub(crate) fn DocumentView(ws: WorkspaceState, split_px: RwSignal<f64>) -> impl 
             }
 
             if (ev.ctrl_key() || ev.meta_key()) && key.eq_ignore_ascii_case("z") {
-                if patch_state.with_untracked(std::option::Option::is_some)
+                if !read_only.get_untracked()
+                    && patch_state.with_untracked(std::option::Option::is_some)
                     && dirty_count.get_untracked() > 0
                 {
                     ev.prevent_default();
@@ -85,7 +88,8 @@ pub(crate) fn DocumentView(ws: WorkspaceState, split_px: RwSignal<f64>) -> impl 
 
             if (ev.ctrl_key() || ev.meta_key()) && key.eq_ignore_ascii_case("s") {
                 ev.prevent_default();
-                if patch_state.with_untracked(std::option::Option::is_some)
+                if !read_only.get_untracked()
+                    && patch_state.with_untracked(std::option::Option::is_some)
                     && dirty_count.get_untracked() > 0
                 {
                     let _ = ws_svc.save_reparse();
@@ -212,10 +216,11 @@ pub(crate) fn DocumentView(ws: WorkspaceState, split_px: RwSignal<f64>) -> impl 
     );
 
     let structure_tree_fallback = move || {
+        let t = locale.get().t();
         if raw_bytes.with(std::option::Option::is_some) {
-            view! { <div class="panel-header">"No protobuf structure."</div> }.into_any()
+            view! { <div class="panel-header">{t.no_protobuf_structure}</div> }.into_any()
         } else {
-            view! { <div class="panel-header">"No data loaded."</div> }.into_any()
+            view! { <div class="panel-header">{t.no_data_loaded}</div> }.into_any()
         }
     };
 
@@ -236,15 +241,6 @@ pub(crate) fn DocumentView(ws: WorkspaceState, split_px: RwSignal<f64>) -> impl 
                         style:flex=move || format!("0 1 {:.0}px", split_px.get())
                     >
                         <div class="panel">
-                            <div class="panel-header">
-                                <span>"Hex View"</span>
-                                <button
-                                    class="btn btn--secondary btn--small"
-                                    on:click=move |_| hex_text_mode.update(|m| *m = m.toggle())
-                                >
-                                    {move || hex_text_mode.get().label()}
-                                </button>
-                            </div>
                             <HexGrid container_ref=hex_container_ref />
                         </div>
                     </div>
@@ -253,6 +249,16 @@ pub(crate) fn DocumentView(ws: WorkspaceState, split_px: RwSignal<f64>) -> impl 
                         on:mousedown=move |ev: leptos::ev::MouseEvent| {
                             ev.prevent_default();
                             split_dragging.set(true);
+                        }
+                        // Double-click: snap the hex pane to the narrowest
+                        // width without a horizontal scrollbar.
+                        on:dblclick=move |_| {
+                            let Some(el) = hex_container_ref.get() else {
+                                return;
+                            };
+                            if let Some(w) = crate::hex_view::hex_fit_width(&el) {
+                                split_px.set(w);
+                            }
                         }
                     ></div>
                     <div class="split-right" style:flex="1 1 0">

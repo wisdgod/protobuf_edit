@@ -2,7 +2,7 @@ use crate::hex_copy::CopyFormat;
 use crate::messages;
 use crate::state::{MessageCatalogState, TabsState, WorkspaceState};
 use crate::toast::{ToastKind, ToastManager};
-use crate::web::{build_share_url, clipboard_write_text, download_bytes};
+use crate::web::{build_share_url, clipboard_write_text_async, download_bytes};
 use leptos::prelude::*;
 use wasm_bindgen_futures::spawn_local;
 
@@ -55,11 +55,19 @@ impl ExportService {
         toast.show(ToastKind::Success, msg);
     }
 
-    fn copy_and_toast(toast: ToastManager, pending: usize, label: &str, len: usize, text: &str) {
-        match clipboard_write_text(text) {
-            Ok(_) => Self::show_copied(toast, pending, label, len),
-            Err(msg) => toast.show(ToastKind::Error, msg),
-        }
+    fn copy_and_toast(
+        toast: ToastManager,
+        pending: usize,
+        label: &'static str,
+        len: usize,
+        text: String,
+    ) {
+        spawn_local(async move {
+            match clipboard_write_text_async(text).await {
+                Ok(()) => Self::show_copied(toast, pending, label, len),
+                Err(msg) => toast.show(ToastKind::Error, msg),
+            }
+        });
     }
 
     fn copy_share_url_text(toast: ToastManager, b64: &str, len: usize) {
@@ -71,10 +79,14 @@ impl ExportService {
                 return;
             }
         };
-        match clipboard_write_text(&url) {
-            Ok(_) => toast.show(ToastKind::Success, format!("Copy URL requested: {len} bytes.")),
-            Err(msg) => toast.show(ToastKind::Error, msg),
-        }
+        spawn_local(async move {
+            match clipboard_write_text_async(url).await {
+                Ok(()) => {
+                    toast.show(ToastKind::Success, format!("Copied share URL: {len} bytes."));
+                }
+                Err(msg) => toast.show(ToastKind::Error, msg),
+            }
+        });
     }
 
     fn show_download_result(
@@ -105,7 +117,7 @@ impl ExportService {
 
         if let Some((text, len)) = self.with_current_bytes(|bytes| (fmt.format(bytes), bytes.len()))
         {
-            Self::copy_and_toast(toast, dirty, fmt.label(), len, &text);
+            Self::copy_and_toast(toast, dirty, fmt.label(), len, text);
             return;
         }
 
@@ -123,7 +135,7 @@ impl ExportService {
             };
             let bytes = loaded.bytes.as_slice();
             let text = fmt.format(bytes);
-            Self::copy_and_toast(toast, dirty, fmt.label(), bytes.len(), &text);
+            Self::copy_and_toast(toast, dirty, fmt.label(), bytes.len(), text);
         });
     }
 
@@ -148,12 +160,17 @@ impl ExportService {
             return;
         };
 
-        match clipboard_write_text(&text) {
-            Ok(_) => {
-                toast.show(ToastKind::Success, format!("Copied {}: {len} byte(s).", fmt.label()));
+        spawn_local(async move {
+            match clipboard_write_text_async(text).await {
+                Ok(()) => {
+                    toast.show(
+                        ToastKind::Success,
+                        format!("Copied {}: {len} byte(s).", fmt.label()),
+                    );
+                }
+                Err(msg) => toast.show(ToastKind::Error, msg),
             }
-            Err(msg) => toast.show(ToastKind::Error, msg),
-        }
+        });
     }
 
     pub(crate) fn copy_share_url(&self) {

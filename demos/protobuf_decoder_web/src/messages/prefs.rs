@@ -7,6 +7,8 @@ const KEY_ACTIVE_TAB: &str = "protobuf_decoder_web.v1.active_tab";
 const KEY_NEXT_ID: &str = "protobuf_decoder_web.v1.next_message_id";
 const KEY_FRAME_NAME_TEMPLATE: &str = "protobuf_decoder_web.v1.frame_name_template";
 const KEY_THEME_PREF: &str = "protobuf_decoder_web.v1.theme";
+const KEY_LOCALE: &str = "protobuf_decoder_web.v1.locale";
+const KEY_READ_ONLY: &str = "protobuf_decoder_web.v1.read_only";
 
 pub(crate) fn store_theme_pref(pref: &str) -> UiResult<()> {
     let pref = match pref.trim() {
@@ -21,6 +23,22 @@ pub(crate) fn store_theme_pref(pref: &str) -> UiResult<()> {
         }
     };
     storage_set(KEY_THEME_PREF, pref)
+}
+
+pub(crate) fn load_locale() -> Option<String> {
+    storage_get(KEY_LOCALE).ok().flatten()
+}
+
+pub(crate) fn store_locale(locale: &str) -> UiResult<()> {
+    storage_set(KEY_LOCALE, locale)
+}
+
+pub(crate) fn load_read_only() -> bool {
+    storage_get(KEY_READ_ONLY).ok().flatten().is_some_and(|v| v == "1")
+}
+
+pub(crate) fn store_read_only(read_only: bool) -> UiResult<()> {
+    if read_only { storage_set(KEY_READ_ONLY, "1") } else { storage_remove(KEY_READ_ONLY) }
 }
 
 pub(crate) fn load_frame_name_template() -> UiResult<String> {

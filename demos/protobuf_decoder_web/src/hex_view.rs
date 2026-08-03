@@ -7,27 +7,26 @@ use crate::bytes::ByteView;
 use crate::components::HexContextMenu;
 use crate::hex_copy::CopyFormat;
 use crate::services::ExportService;
-use crate::state::WorkspaceState;
+use crate::state::{UiState, WorkspaceState};
 use crate::workspace::{drilldown_byte, HighlightKind, HighlightRange};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum HexTextMode {
     Ascii,
     Unicode,
+    /// Text column hidden entirely.
+    Off,
 }
 
 impl HexTextMode {
+    pub const ALL: &[Self] = &[Self::Ascii, Self::Unicode, Self::Off];
+
+    /// Menu label; `Off` is localized by the caller instead.
     pub const fn label(self) -> &'static str {
         match self {
             Self::Ascii => "ASCII",
             Self::Unicode => "Unicode",
-        }
-    }
-
-    pub const fn toggle(self) -> Self {
-        match self {
-            Self::Ascii => Self::Unicode,
-            Self::Unicode => Self::Ascii,
+            Self::Off => "Off",
         }
     }
 }
@@ -130,6 +129,39 @@ fn utf8_cell(bytes: &[u8], idx: usize) -> Utf8Cell {
     Utf8Cell::Static(ascii_cell(byte))
 }
 
+/// Pane width at which a full hex row fits without a horizontal scrollbar.
+///
+/// Measures the first rendered row (grid columns are fixed-width, so any row
+/// works) and adds the container's scrollbar chrome plus the panel's 1px
+/// border. `None` when no row is rendered.
+pub fn hex_fit_width(container: &web_sys::HtmlElement) -> Option<f64> {
+    let row = container.query_selector(".hex-row").ok().flatten()?;
+    let row_left = row.get_bounding_client_rect().left();
+    let mut right = row_left;
+    let mut pad_left = 0.0;
+    for sel in [".hex-offset", ".hex-bytes", ".hex-text"] {
+        let Ok(Some(cell)) = row.query_selector(sel) else {
+            continue;
+        };
+        let rect = cell.get_bounding_client_rect();
+        // Skip the text column while it is `display: none`.
+        if rect.width() <= 0.0 {
+            continue;
+        }
+        right = right.max(rect.right());
+        if sel == ".hex-offset" {
+            pad_left = rect.left() - row_left;
+        }
+    }
+    if right <= row_left {
+        return None;
+    }
+    let chrome = f64::from(container.offset_width() - container.client_width());
+    // The row's horizontal padding is symmetric: reuse the left inset for
+    // the right side.
+    Some(right - row_left + pad_left + chrome + 1.0)
+}
+
 /// Byte index of the event target, if it is a hex cell.
 ///
 /// Cells carry `data-i`; all mouse handling is delegated to the container so
@@ -144,6 +176,7 @@ fn cell_index_of(ev: &web_sys::MouseEvent) -> Option<usize> {
 pub fn HexGrid(container_ref: NodeRef<html::Div>) -> impl IntoView {
     let workspace = expect_context::<WorkspaceState>();
     let export_svc = expect_context::<ExportService>();
+    let locale = expect_context::<UiState>().locale;
     let patch_state = workspace.patch_state;
     let patch_bytes = workspace.patch_bytes;
     let raw_bytes = workspace.raw_bytes;
@@ -278,6 +311,8 @@ pub fn HexGrid(container_ref: NodeRef<html::Div>) -> impl IntoView {
         })
     };
 
+    let has_selection = Memo::new(move |_| hex_selection.get().is_some());
+
     // Track only the selected span (and the container mounting): forcing
     // layout + hijacking the scroll position on unrelated patch mutations was
     // both wasted reflow and a UX bug.
@@ -325,6 +360,7 @@ pub fn HexGrid(container_ref: NodeRef<html::Div>) -> impl IntoView {
         <div
             node_ref=container_ref
             class="hex-container"
+            class:hex-container--no-text=move || text_mode.get() == HexTextMode::Off
             tabindex="0"
             on:scroll=move |ev| {
                 let el: web_sys::HtmlElement = event_target(&ev);
@@ -342,17 +378,19 @@ pub fn HexGrid(container_ref: NodeRef<html::Div>) -> impl IntoView {
             on:mouseleave=move |_| {
                 is_selecting.set(false);
             }
+            // Always open the custom menu: the text-column switch is useful
+            // even without a byte selection.
             on:contextmenu=move |ev: web_sys::MouseEvent| {
-                if hex_selection.with_untracked(std::option::Option::is_some) {
-                    ev.prevent_default();
-                    ctx_menu_pos.set((ev.client_x(), ev.client_y()));
-                    ctx_menu_visible.set(true);
-                }
+                ev.prevent_default();
+                ctx_menu_pos.set((ev.client_x(), ev.client_y()));
+                ctx_menu_visible.set(true);
             }
         >
             <Show
                 when=move || { total_rows() > 0 }
-                fallback=move || view! { <div class="panel-header">"No data loaded."</div> }
+                fallback=move || view! {
+                    <div class="panel-header">{move || locale.get().t().no_data_loaded}</div>
+                }
             >
                 <div
                     style:height=move || {
@@ -387,7 +425,13 @@ pub fn HexGrid(container_ref: NodeRef<html::Div>) -> impl IntoView {
                 ></div>
             </Show>
 
-            <HexContextMenu visible=ctx_menu_visible position=ctx_menu_pos on_select=on_copy_format />
+            <HexContextMenu
+                visible=ctx_menu_visible
+                position=ctx_menu_pos
+                text_mode=text_mode
+                has_selection=has_selection
+                on_select=on_copy_format
+            />
         </div>
     }
 }
@@ -461,10 +505,12 @@ fn HexRow(
                         kind: highlight_kind_at(idx, spans, hover),
                         range_selected: sel.is_some_and(|(a, b)| idx >= a && idx < b),
                         // UTF-8 grouping is only rendered in Unicode mode;
-                        // skip the per-byte decode work otherwise.
+                        // skip the per-byte decode work otherwise. `Off`
+                        // never renders text cells at all.
                         utf8: match mode {
                             HexTextMode::Ascii => Utf8Cell::Static(ascii_cell(byte)),
                             HexTextMode::Unicode => utf8_cell(bytes, idx),
+                            HexTextMode::Off => Utf8Cell::Static(""),
                         },
                     });
                 }
@@ -530,6 +576,9 @@ fn HexRow(
             </span>
             <span class="hex-text">
                 {move || {
+                    if text_mode.get() == HexTextMode::Off {
+                        return Vec::new();
+                    }
                     row_cells.with(|cells| {
                         cells
                             .iter()

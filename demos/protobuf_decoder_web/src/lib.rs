@@ -6,6 +6,7 @@ mod envelope;
 mod error;
 mod hex_copy;
 mod hex_view;
+mod i18n;
 mod idb;
 mod messages;
 mod page_cache;

@@ -42,6 +42,7 @@ pub(crate) fn StartPage(on_open: UnsyncCallback<MessageId>) -> impl IntoView {
     let raw_input = messages_state.raw_input;
     let frame_name_template_text = messages_state.frame_name_template_text;
     let toast = ui.toast;
+    let locale = ui.locale;
 
     let selected_for_delete: RwSignal<FxHashSet<MessageId>> = RwSignal::new(FxHashSet::default());
     let collapsed_classes: RwSignal<FxHashSet<MessageId>> = RwSignal::new(FxHashSet::default());
@@ -210,12 +211,12 @@ pub(crate) fn StartPage(on_open: UnsyncCallback<MessageId>) -> impl IntoView {
                     on:dragleave=move |_| drag_over.set(false)
                     on:drop=on_drop
                 >
-                    <div class="start-card-title">"Drop a file or paste data"</div>
-                    <div class="start-card-hint">"Base64 · Hex · binary file"</div>
+                    <div class="start-card-title">{move || locale.get().t().drop_title}</div>
+                    <div class="start-card-hint">{move || locale.get().t().drop_hint}</div>
 
                     <textarea
                         class="input start-textarea"
-                        placeholder="Paste hex/base64…"
+                        placeholder=move || locale.get().t().paste_placeholder
                         prop:value=move || raw_input.get()
                         on:input=move |ev| raw_input.set(event_target_value(&ev))
                     />
@@ -223,7 +224,7 @@ pub(crate) fn StartPage(on_open: UnsyncCallback<MessageId>) -> impl IntoView {
                     <div class="start-card-row">
                         <input
                             class="input start-name-input"
-                            placeholder="New message name (optional)"
+                            placeholder=move || locale.get().t().import_name_placeholder
                             prop:value=move || import_name_text.get()
                             on:input=move |ev| import_name_text.set(event_target_value(&ev))
                         />
@@ -245,19 +246,21 @@ pub(crate) fn StartPage(on_open: UnsyncCallback<MessageId>) -> impl IntoView {
                             on:click=move |_| on_import_click.run(())
                             disabled=move || raw_input.with(|s| s.trim().is_empty())
                         >
-                            "Import"
+                            {move || locale.get().t().import}
                         </button>
                         <label class="btn btn--secondary">
-                            "Upload"
+                            {move || locale.get().t().upload}
                             <input class="file-input" type="file" on:change=on_upload />
                         </label>
                     </div>
 
                     <details class="start-options">
-                        <summary class="start-options-summary">"Options"</summary>
+                        <summary class="start-options-summary">
+                            {move || locale.get().t().options}
+                        </summary>
                         <input
                             class="input start-name-input"
-                            placeholder="Frame name template ({source} {idx} {idx1} {len})"
+                            placeholder=move || locale.get().t().frame_template_placeholder
                             prop:value=move || frame_name_template_text.get()
                             on:input=move |ev| {
                                 frame_name_template_text.set(event_target_value(&ev))
@@ -271,19 +274,19 @@ pub(crate) fn StartPage(on_open: UnsyncCallback<MessageId>) -> impl IntoView {
                     <div class="start-library-toolbar">
                         <input
                             class="input start-search"
-                            placeholder="Search…"
+                            placeholder=move || locale.get().t().search_placeholder
                             prop:value=move || filter_text.get()
                             on:input=move |ev| filter_text.set(event_target_value(&ev))
                         />
                         <button class="btn btn--secondary btn--small" on:click=on_new_message>
-                            "New"
+                            {move || locale.get().t().new_message}
                         </button>
                         <button
                             class="btn btn--secondary btn--small"
                             on:click=move |_| on_select_all_visible.run(())
                             disabled=move || messages_list.with(std::vec::Vec::is_empty)
                         >
-                            "All"
+                            {move || locale.get().t().select_all}
                         </button>
                         <button
                             class="btn btn--secondary btn--small"
@@ -292,21 +295,31 @@ pub(crate) fn StartPage(on_open: UnsyncCallback<MessageId>) -> impl IntoView {
                                 selected_for_delete.with(std::collections::HashSet::is_empty)
                             }
                         >
-                            "None"
+                            {move || locale.get().t().select_none}
                         </button>
                         <button
                             class="btn btn--danger btn--small"
                             on:click=move |_| on_delete_selected.run(())
                             disabled=move || !delete_selected_enabled.get()
                         >
-                            {move || format!("Delete ({})", delete_selected_count.get())}
+                            {move || {
+                                format!(
+                                    "{} ({})",
+                                    locale.get().t().delete,
+                                    delete_selected_count.get(),
+                                )
+                            }}
                         </button>
                     </div>
 
                     <div class="message-list">
                         <Show
                             when=move || messages_list.with(|list| !list.is_empty())
-                            fallback=|| view! { <div class="message-empty">"No messages yet."</div> }
+                            fallback=move || view! {
+                                <div class="message-empty">
+                                    {move || locale.get().t().no_messages}
+                                </div>
+                            }
                         >
                             <For
                                 each=move || row_specs.get()
@@ -508,6 +521,7 @@ fn class_row_view(
 ) -> AnyView {
     let MessageRowCtx { selected_for_delete, renaming_id, rename_text, msg_svc, on_open, .. } =
         ctx.clone();
+    let locale = expect_context::<UiState>().locale;
 
     // Caret and checkbox state are reactive, so collapsing a class or
     // toggling a selection never rebuilds the row list.
@@ -609,7 +623,7 @@ fn class_row_view(
             </div>
             <button
                 class="btn btn--secondary message-rename-btn"
-                title="Rename"
+                title=move || locale.get().t().rename
                 on:click=move |ev: leptos::ev::MouseEvent| {
                     ev.stop_propagation();
                     renaming_id.set(Some(class_id));
@@ -635,6 +649,7 @@ fn message_row_view(meta: &MessageMeta, indent: usize, ctx: &MessageRowCtx) -> A
         msg_svc,
         on_open,
     } = ctx.clone();
+    let locale = expect_context::<UiState>().locale;
     let id = meta.id;
     let name = meta.name.clone();
     let name_for_display = name.clone();
@@ -698,7 +713,7 @@ fn message_row_view(meta: &MessageMeta, indent: usize, ctx: &MessageRowCtx) -> A
             <div class="message-bytes">{format!("{bytes_len}B")}</div>
             <button
                 class="btn btn--secondary message-rename-btn"
-                title="Rename"
+                title=move || locale.get().t().rename
                 on:click=move |ev| {
                     ev.stop_propagation();
                     renaming_id.set(Some(id));

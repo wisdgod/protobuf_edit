@@ -2,6 +2,7 @@ use crate::bytes::ByteView;
 use crate::envelope::EnvelopeView;
 use rustc_hash::FxHashSet;
 use crate::hex_view::HexTextMode;
+use crate::i18n::Locale;
 use crate::messages::{MessageId, MessageMeta, PersistedTab};
 use crate::toast::ToastManager;
 use crate::workspace::{
@@ -53,8 +54,8 @@ pub(crate) struct WorkspaceState {
     pub dirty_fields: RwSignal<FxHashSet<FieldId>>,
     pub hex_text_mode: RwSignal<HexTextMode>,
     pub hex_selection: RwSignal<Option<(usize, usize)>>,
-    /// Whether the insert-field form is open in the inspector drawer.
-    pub insert_open: RwSignal<bool>,
+    /// Whether the inspector drawer was opened manually (without selection).
+    pub inspector_open: RwSignal<bool>,
     /// Inspector drawer height in px (per-document UI preference).
     pub inspector_height: RwSignal<f64>,
 
@@ -82,7 +83,7 @@ impl WorkspaceState {
         let dirty_fields: RwSignal<FxHashSet<FieldId>> = RwSignal::new(FxHashSet::default());
         let hex_text_mode: RwSignal<HexTextMode> = RwSignal::new(HexTextMode::Ascii);
         let hex_selection: RwSignal<Option<(usize, usize)>> = RwSignal::new(None);
-        let insert_open: RwSignal<bool> = RwSignal::new(false);
+        let inspector_open: RwSignal<bool> = RwSignal::new(false);
         let inspector_height: RwSignal<f64> = RwSignal::new(280.0);
 
         // Hover changes at mouse frequency; keep it out of the (heavier)
@@ -146,7 +147,7 @@ impl WorkspaceState {
             dirty_fields,
             hex_text_mode,
             hex_selection,
-            insert_open,
+            inspector_open,
             inspector_height,
             selected_highlights,
             hovered_range,
@@ -164,7 +165,7 @@ impl WorkspaceState {
         self.expanded.set(FxHashSet::default());
         self.dirty_fields.set(FxHashSet::default());
         self.hex_selection.set(None);
-        self.insert_open.set(false);
+        self.inspector_open.set(false);
     }
 
     pub(crate) fn reset_ui_state_keep_selected(
@@ -463,4 +464,7 @@ pub(crate) struct MessageCatalogState {
 #[derive(Clone)]
 pub(crate) struct UiState {
     pub toast: ToastManager,
+    pub locale: RwSignal<Locale>,
+    /// Hides all editing UI (inspector, save, insert) when set.
+    pub read_only: RwSignal<bool>,
 }

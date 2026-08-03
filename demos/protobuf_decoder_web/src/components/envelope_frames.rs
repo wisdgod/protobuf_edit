@@ -1,11 +1,12 @@
 use crate::services::EnvelopeService;
-use crate::state::EnvelopeTabState;
+use crate::state::{EnvelopeTabState, UiState};
 use leptos::prelude::*;
 use std::sync::Arc;
 
 #[component]
 pub(crate) fn EnvelopeFramesPanel(env: EnvelopeTabState) -> impl IntoView {
     let env_svc = expect_context::<EnvelopeService>();
+    let locale = expect_context::<UiState>().locale;
     let envelope_view = env.view;
     let selected = env.selected;
 
@@ -49,33 +50,36 @@ pub(crate) fn EnvelopeFramesPanel(env: EnvelopeTabState) -> impl IntoView {
         <div class="envelope-frames">
             <div class="envelope-frames-header">
                 <div class="envelope-frames-title">
-                    {move || format!("Envelope frames: {}", frames_len())}
+                    {move || format!("{}: {}", locale.get().t().envelope_frames, frames_len())}
                 </div>
                 <div class="envelope-frames-controls">
                     <button
                         class="btn btn--secondary btn--small"
                         on:click=move |_| list_collapsed.update(|v| *v = !*v)
                     >
-                        {move || if list_collapsed.get() { "Show list" } else { "Hide list" }}
+                        {move || {
+                            let t = locale.get().t();
+                            if list_collapsed.get() { t.show_list } else { t.hide_list }
+                        }}
                     </button>
                     <Show when=move || !list_collapsed.get() fallback=|| ()>
                         <button
                             class="btn btn--secondary btn--small"
                             on:click=move |_| on_extract_all.run(())
                         >
-                            "Extract all"
+                            {move || locale.get().t().extract_all}
                         </button>
                         <Show when=show_decompress_controls fallback=|| ()>
                             <button
                                 class="btn btn--secondary btn--small"
                                 on:click=move |_| on_decompress.run(())
                             >
-                                "Auto-decompress → Message"
+                                {move || locale.get().t().auto_decompress}
                             </button>
                         </Show>
                     </Show>
                     <button class="btn btn--secondary btn--small" on:click=move |_| on_close.run(())>
-                        "Close"
+                        {move || locale.get().t().close}
                     </button>
                 </div>
             </div>
@@ -102,6 +106,7 @@ fn frame_row_view(
     on_open: UnsyncCallback<usize>,
     on_extract: UnsyncCallback<usize>,
 ) -> AnyView {
+    let locale = expect_context::<UiState>().locale;
     let frame = envelope_view.with(|s| s.as_ref().and_then(|view| view.frames.get(idx).copied()));
     let Some(frame) = frame else {
         return view! { <div></div> }.into_any();
@@ -183,7 +188,7 @@ fn frame_row_view(
                         on_extract.run(idx);
                     }
                 >
-                    "Extract"
+                    {move || locale.get().t().extract}
                 </button>
             </div>
         </div>

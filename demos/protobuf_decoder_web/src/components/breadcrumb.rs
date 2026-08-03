@@ -16,11 +16,14 @@ struct Crumb {
 #[component]
 pub(crate) fn Breadcrumb() -> impl IntoView {
     let workspace = expect_context::<WorkspaceState>();
-    let toast = expect_context::<crate::state::UiState>().toast;
+    let ui = expect_context::<crate::state::UiState>();
+    let toast = ui.toast;
+    let locale = ui.locale;
+    let read_only = ui.read_only;
     let patch_state = workspace.patch_state;
     let selected = workspace.selected;
     let expanded = workspace.expanded;
-    let insert_open = workspace.insert_open;
+    let inspector_open = workspace.inspector_open;
 
     let editing = RwSignal::new(false);
     let edit_text = RwSignal::new(String::new());
@@ -198,14 +201,16 @@ pub(crate) fn Breadcrumb() -> impl IntoView {
                     "\u{00D7}"
                 </button>
             </Show>
-            <button
-                class="btn btn--secondary btn--small breadcrumb-insert"
-                class:btn--active=move || insert_open.get()
-                title="Insert a field"
-                on:click=move |_| insert_open.update(|v| *v = !*v)
-            >
-                "Insert"
-            </button>
+            <Show when=move || !read_only.get() fallback=|| ()>
+                <button
+                    class="btn btn--secondary btn--small breadcrumb-insert"
+                    class:btn--active=move || inspector_open.get()
+                    title=move || locale.get().t().inspector_open_title
+                    on:click=move |_| inspector_open.update(|v| *v = !*v)
+                >
+                    {move || locale.get().t().inspector}
+                </button>
+            </Show>
         </div>
     }
 }

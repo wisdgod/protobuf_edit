@@ -36,6 +36,15 @@
   text-overflow: ellipsis;
 }
 
+/* Text column switched off: drop the third grid column entirely. */
+.hex-container--no-text .hex-row {
+  grid-template-columns: 5ch calc(48ch + 32px);
+}
+
+.hex-container--no-text .hex-text {
+  display: none;
+}
+
 .hex-byte {
   padding: 0 1px;
   border-radius: 2px;
@@ -127,4 +136,23 @@
 
 .hex-context-menu__item:hover {
   background: var(--color-hl-hovered);
+}
+
+.hex-context-menu__item--active {
+  font-weight: 600;
+  color: var(--color-info);
+}
+
+.hex-context-menu__label {
+  padding: var(--spacing-xs) var(--spacing-md);
+  color: var(--color-text-tertiary);
+  font-size: var(--font-size-xs);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.hex-context-menu__separator {
+  height: 1px;
+  margin: var(--spacing-xs) 0;
+  background: var(--color-border);
 }

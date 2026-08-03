@@ -18,6 +18,6 @@ pub(crate) use field_tree::FieldTree;
 pub(crate) use hex_context_menu::HexContextMenu;
 pub(crate) use inspector::InspectorDrawer;
 pub(crate) use start_page::StartPage;
-pub(crate) use status_bar::StatusBar;
+pub(crate) use status_bar::{PreviewStatusBar, StatusBar};
 pub(crate) use tab_strip::TabStrip;
 pub(crate) use theme_switcher::ThemeSwitcher;

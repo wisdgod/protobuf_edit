@@ -113,8 +113,10 @@ pub(crate) fn InspectorDrawer() -> impl IntoView {
     let selected = workspace.selected;
     let expanded = workspace.expanded;
     let dirty_fields = workspace.dirty_fields;
-    let insert_open = workspace.insert_open;
+    let inspector_open = workspace.inspector_open;
     let toast = ui.toast;
+    let locale = ui.locale;
+    let read_only = ui.read_only;
 
     let panel_ref = NodeRef::<html::Div>::new();
     let panel_height = workspace.inspector_height;
@@ -528,28 +530,6 @@ pub(crate) fn InspectorDrawer() -> impl IntoView {
         }
     };
 
-    let on_parse_child = move |_| {
-        let Some(fid) = selected.get_untracked() else {
-            return;
-        };
-
-        let Some(wt) = selected_wire.get_untracked() else {
-            return;
-        };
-        if wt != WireType::Len {
-            return;
-        }
-
-        match crate::workspace::parse_child_untracked(patch_state, fid) {
-            Ok(_child) => {
-                expanded.update(|s| {
-                    s.insert(fid);
-                });
-            }
-            Err(e) => toast.show(ToastKind::Error, format!("Failed to parse as message: {e:?}")),
-        }
-    };
-
     let insert_target = Memo::new(move |_| {
         patch_state.with(|p| {
             let patch = p.as_ref()?;
@@ -725,38 +705,26 @@ pub(crate) fn InspectorDrawer() -> impl IntoView {
 
     let meta = Memo::new(move |_| {
         let fid = selected.get()?;
-
         patch_state.with(|p| {
             let patch = p.as_ref()?;
-
             let tag = patch.field_tag(fid).ok()?;
-            let parent = patch.field_parent_message(fid).ok()?;
-            let spans = patch.field_spans(fid).ok().flatten();
-            let root_spans = patch.field_root_spans(fid).ok().flatten();
-
-            let payload_len = match tag.wire_type() {
-                WireType::Varint => patch.varint(fid).ok().map(|v| encoded_len_varint(v) as u32),
-                WireType::Len => patch.bytes(fid).ok().map(|b| b.len() as u32),
-                WireType::I32 => Some(4),
-                WireType::I64 => Some(8),
-            };
-
-            Some((fid, tag, parent, spans, root_spans, payload_len))
+            Some((fid, tag))
         })
     });
 
     let header_title = Memo::new(move |_| {
-        if let Some((_fid, tag, _parent, _spans, _root_spans, _payload_len)) = meta.get() {
+        let t = locale.get().t();
+        if let Some((_fid, tag)) = meta.get() {
             let field_number = tag.field_number().as_inner();
             let wt = tag.wire_type();
-            return format!("Inspector: Field {field_number} ({wt:?})");
+            return format!("{}: {} {field_number} ({wt:?})", t.inspector, t.field);
         }
-        "Insert Field".to_string()
+        t.inspector.to_string()
     });
 
     let on_close = UnsyncCallback::new(move |()| {
         selected.set(None);
-        insert_open.set(false);
+        inspector_open.set(false);
     });
 
     let on_bytes_view_change = bytes_view_change_handler(bytes_view, bytes_text, toast);
@@ -777,26 +745,26 @@ pub(crate) fn InspectorDrawer() -> impl IntoView {
                 <div class="inspector-panel-actions">
                     <Show when=move || meta.get().is_some() fallback=|| ()>
                         <button class="btn btn--danger btn--small" on:click=on_delete>
-                            "Delete"
+                            {move || locale.get().t().delete_field}
                         </button>
                         <button
                             class="btn btn--secondary btn--small"
                             on:click=on_clear
                             disabled=move || !clear_enabled.get()
                         >
-                            "Clear"
+                            {move || locale.get().t().clear}
                         </button>
                         <button
                             class="btn btn--primary btn--small"
                             on:click=on_apply
                             disabled=move || !apply_enabled.get()
                         >
-                            "Apply"
+                            {move || locale.get().t().apply}
                         </button>
                     </Show>
                     <button
                         class="btn btn--secondary btn--small"
-                        title="Close (deselect)"
+                        title=move || locale.get().t().close_deselect_title
                         on:click=move |_| on_close.run(())
                     >
                         "\u{00D7}"
@@ -809,41 +777,12 @@ pub(crate) fn InspectorDrawer() -> impl IntoView {
     let selected_field_view = move || {
         // `Show` gates on `meta.is_some()`, but re-evaluation order between
         // `when` and children is not guaranteed; never panic here.
-        let (fid, tag, parent, spans, root_spans, payload_len) = meta.get()?;
+        let (_fid, tag) = meta.get()?;
 
         let wt = tag.wire_type();
 
-        let local_span = spans.map(|s| s.field);
-        let root_span = root_spans.map(|s| s.field);
-
         Some(view! {
             <>
-                <details class="inspector-section inspector-section--meta">
-                    <summary class="inspector-summary">"Meta"</summary>
-                    <div class="inspector-meta">
-                        <div>{format!("FieldId: {fid:?}")}</div>
-                        <div>{format!("Parent MessageId: {parent:?}")}</div>
-                        <div>
-                            {format!(
-                                "Span (local): {}",
-                                local_span.map_or_else(|| "—".to_string(), |s| format!("{}..{}", s.start(), s.end()))
-                            )}
-                        </div>
-                        <div>
-                            {format!(
-                                "Span (root): {}",
-                                root_span.map_or_else(|| "—".to_string(), |s| format!("{}..{}", s.start(), s.end()))
-                            )}
-                        </div>
-                        <div>
-                            {format!(
-                                "Payload: {}",
-                                payload_len.map_or_else(|| "—".to_string(), |n| format!("{n} byte(s)"))
-                            )}
-                        </div>
-                    </div>
-                </details>
-
                 <div class="inspector-editor">
                     <Show when=move || wt == WireType::Varint fallback=|| ()>
                         <label class="inspector-label">"Varint"</label>
@@ -897,9 +836,6 @@ pub(crate) fn InspectorDrawer() -> impl IntoView {
                                 }}
                             </div>
                         </Show>
-                        <button class="btn btn--secondary inspector-btn" on:click=on_parse_child>
-                            "Parse as Message"
-                        </button>
                     </Show>
 
                     <Show when=move || matches!(wt, WireType::I32 | WireType::I64) fallback=|| ()>
@@ -941,17 +877,16 @@ pub(crate) fn InspectorDrawer() -> impl IntoView {
 
     let insert_section = move || {
         view! {
-            <Show when=move || insert_open.get() fallback=|| ()>
             <div class="inspector-section">
                 <div class="inspector-header">
-                    <div class="inspector-title">"Insert Field"</div>
+                    <div class="inspector-title">{move || locale.get().t().insert_field}</div>
                     <div class="inspector-actions">
                         <button
                             class="btn btn--primary"
                             on:click=on_insert
                             disabled=move || !insert_enabled.get()
                         >
-                            "Insert"
+                            {move || locale.get().t().insert}
                         </button>
                     </div>
                 </div>
@@ -959,15 +894,20 @@ pub(crate) fn InspectorDrawer() -> impl IntoView {
                 <div class="inspector-meta">
                     <div>
                         {move || {
+                            let t = locale.get().t();
                             insert_target
-                                .get().map_or_else(|| "Target: —".to_string(), |(msg, label)| format!("Target: {label} ({msg:?})"))
+                                .get()
+                                .map_or_else(
+                                    || format!("{}: —", t.target),
+                                    |(msg, label)| format!("{}: {label} ({msg:?})", t.target),
+                                )
                         }}
                     </div>
-                    <div>"Inserted fields have no spans until Save & Reparse."</div>
+                    <div>{move || locale.get().t().insert_span_note}</div>
                 </div>
 
                 <div class="inspector-editor">
-                    <label class="inspector-label">"Field number"</label>
+                    <label class="inspector-label">{move || locale.get().t().field_number}</label>
                     <input
                         class="input inspector-input"
                         placeholder="1"
@@ -976,7 +916,7 @@ pub(crate) fn InspectorDrawer() -> impl IntoView {
                     />
                     {validation_error(insert_tag_validation)}
 
-                    <label class="inspector-label">"Wire type"</label>
+                    <label class="inspector-label">{move || locale.get().t().wire_type}</label>
                     <select
                         class="select inspector-select"
                         prop:value=move || wire_type_value(insert_wire.get())
@@ -989,7 +929,7 @@ pub(crate) fn InspectorDrawer() -> impl IntoView {
                     </select>
 
                     <Show when=move || insert_wire.get() == WireType::Varint fallback=|| ()>
-                        <label class="inspector-label">"Value"</label>
+                        <label class="inspector-label">{move || locale.get().t().value}</label>
                         <input
                             class="input inspector-input"
                             placeholder="0"
@@ -1054,7 +994,7 @@ pub(crate) fn InspectorDrawer() -> impl IntoView {
                         when=move || matches!(insert_wire.get(), WireType::I32 | WireType::I64)
                         fallback=|| ()
                     >
-                        <label class="inspector-label">"Bits"</label>
+                        <label class="inspector-label">{move || locale.get().t().bits}</label>
                         <input
                             class="input inspector-input"
                             placeholder="0x0"
@@ -1085,7 +1025,6 @@ pub(crate) fn InspectorDrawer() -> impl IntoView {
                     </Show>
                 </div>
             </div>
-            </Show>
         }
     };
 
@@ -1101,9 +1040,15 @@ pub(crate) fn InspectorDrawer() -> impl IntoView {
     };
 
     // The drawer only exists while there is something to show: a selected
-    // field or the insert form. Otherwise the tree gets the full height.
+    // field or the manually opened inspector. Read-only mode hides all
+    // editing UI, so the drawer never mounts there.
     view! {
-        <Show when=move || selected.get().is_some() || insert_open.get() fallback=|| ()>
+        <Show
+            when=move || {
+                !read_only.get() && (selected.get().is_some() || inspector_open.get())
+            }
+            fallback=|| ()
+        >
             <div
                 node_ref=panel_ref
                 class="inspector-panel"
@@ -1272,10 +1217,6 @@ fn truncate_for_hint(text: &str, max_chars: usize) -> String {
         out.push('…');
     }
     out
-}
-
-const fn encoded_len_varint(v: u64) -> usize {
-    protobuf_edit::varint::encoded_len64(v) as usize
 }
 
 const fn wire_type_value(wt: WireType) -> &'static str {

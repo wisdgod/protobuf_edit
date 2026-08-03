@@ -1,10 +1,118 @@
+use std::fmt::Write as _;
+
 use crate::hex_copy::CopyFormat;
 use crate::services::{EnvelopeService, ExportService, MessageService, WorkspaceService};
-use crate::state::{MessageCatalogState, WorkspaceState};
+use crate::state::{MessageCatalogState, UiState, WorkspaceState};
 use leptos::html;
 use leptos::oco::Oco;
 use leptos::prelude::*;
+use protobuf_edit::WireType;
 use wasm_bindgen::JsCast;
+
+/// Byte/row/field/highlight counts for the workspace in context.
+#[component]
+pub(crate) fn StatusCounts() -> impl IntoView {
+    let workspace = expect_context::<WorkspaceState>();
+    let locale = expect_context::<UiState>().locale;
+    let bytes_count = workspace.bytes_count;
+    let root_field_count = workspace.root_field_count;
+    let highlight_range_count = workspace.highlight_range_count;
+
+    view! {
+        <div>
+            {move || {
+                let t = locale.get().t();
+                let Some(bytes) = bytes_count.get() else {
+                    return Oco::Borrowed(t.no_data);
+                };
+                let rows = bytes.div_ceil(16);
+                let fields = root_field_count.get().unwrap_or(0);
+                let highlights = highlight_range_count.get();
+                Oco::from(format!(
+                    "{bytes} {} | {rows} {} | {fields} {} | {highlights} {}",
+                    t.bytes_unit, t.rows_unit, t.root_fields_unit, t.highlights_unit,
+                ))
+            }}
+        </div>
+    }
+}
+
+/// One-line meta for the selected field: number, wire type, spans, payload.
+///
+/// Lives in the status bar (not the inspector) so it stays visible in
+/// read-only mode and in the envelope preview.
+#[component]
+pub(crate) fn SelectionMeta() -> impl IntoView {
+    let workspace = expect_context::<WorkspaceState>();
+    let locale = expect_context::<UiState>().locale;
+    let patch_state = workspace.patch_state;
+    let selected = workspace.selected;
+
+    let meta = Memo::new(move |_| {
+        let fid = selected.get()?;
+        patch_state.with(|p| {
+            let patch = p.as_ref()?;
+            let tag = patch.field_tag(fid).ok()?;
+            let local = patch.field_spans(fid).ok().flatten().map(|s| s.field);
+            let root = patch.field_root_spans(fid).ok().flatten().map(|s| s.field);
+            let payload_len = match tag.wire_type() {
+                WireType::Varint => {
+                    patch.varint(fid).ok().map(|v| protobuf_edit::varint::encoded_len64(v) as u32)
+                }
+                WireType::Len => patch.bytes(fid).ok().map(|b| b.len() as u32),
+                WireType::I32 => Some(4),
+                WireType::I64 => Some(8),
+            };
+            Some((tag.field_number().as_inner(), tag.wire_type(), local, root, payload_len))
+        })
+    });
+
+    view! {
+        <div>
+            {move || {
+                let t = locale.get().t();
+                let Some((n, wt, local, root, payload)) = meta.get() else {
+                    return Oco::Borrowed(t.no_selection);
+                };
+                let mut out = format!("{} {n} ({wt:?})", t.field);
+                for (label, span) in [(t.span, local), (t.root_span, root)] {
+                    match span {
+                        Some(s) => {
+                            let _ = write!(out, " | {label} {}..{}", s.start(), s.end());
+                        }
+                        None => {
+                            let _ = write!(out, " | {label} \u{2014}");
+                        }
+                    }
+                }
+                match payload {
+                    Some(len) => {
+                        let _ = write!(out, " | {} {len} {}", t.payload, t.bytes_unit);
+                    }
+                    None => {
+                        let _ = write!(out, " | {} \u{2014}", t.payload);
+                    }
+                }
+                Oco::from(out)
+            }}
+        </div>
+    }
+}
+
+/// Slim status bar for read-only previews: counts + selection meta only.
+#[component]
+pub(crate) fn PreviewStatusBar() -> impl IntoView {
+    view! {
+        <div class="status-bar">
+            <div class="status-left">
+                <StatusCounts />
+            </div>
+            <div class="status-center">
+                <SelectionMeta />
+            </div>
+        </div>
+    }
+}
 
 #[component]
 pub(crate) fn StatusBar() -> impl IntoView {
@@ -14,54 +122,41 @@ pub(crate) fn StatusBar() -> impl IntoView {
     let env_svc = expect_context::<EnvelopeService>();
     let workspace = expect_context::<WorkspaceState>();
     let messages = expect_context::<MessageCatalogState>();
+    let ui = expect_context::<UiState>();
+    let locale = ui.locale;
+    let read_only = ui.read_only;
 
     let has_current_message = move || messages.current_message_id.get().is_some();
 
     let export_open = RwSignal::new(false);
     let menu_ref = NodeRef::<html::Div>::new();
 
-    let save_ws_svc = ws_svc.clone();
-    let save_msg_svc = msg_svc;
+    // `Show` re-runs its children, so the save handler must be constructible
+    // more than once; Copy handles avoid moving the services out.
+    let save_ws_svc = StoredValue::new_local(ws_svc.clone());
+    let save_msg_svc = StoredValue::new_local(msg_svc);
     let on_view_frames = move |_| env_svc.view_frames();
 
     view! {
         <div class="status-bar">
             <div class="status-left">
-                <div>
-                    {move || {
-                        let Some(bytes) = workspace.bytes_count.get() else {
-                            return Oco::Borrowed("no data");
-                        };
-                        let rows = bytes.div_ceil(16);
-                        let fields = workspace.root_field_count.get().unwrap_or(0);
-                        let highlights = workspace.highlight_range_count.get();
-                        Oco::from(format!(
-                            "{bytes} bytes | {rows} rows | {fields} root field(s) | \
-                             {highlights} highlight(s)"
-                        ))
-                    }}
-                </div>
+                <StatusCounts />
             </div>
 
             <div class="status-center">
-                <div>
-                    {move || {
-                        workspace.selected.get().map_or(Oco::Borrowed("No selection"), |fid| {
-                            Oco::from(format!("FieldId={fid:?} selected"))
-                        })
-                    }}
-                </div>
+                <SelectionMeta />
 
                 <div class="status-dirty">
                     <span class="status-dirty-dot" class:hidden=move || workspace.dirty_count.get() == 0>
                         "●"
                     </span>
                     {move || {
+                        let t = locale.get().t();
                         let n = workspace.dirty_count.get();
                         if n == 0 {
-                            Oco::Borrowed("0 edits")
+                            Oco::Borrowed(t.zero_edits)
                         } else {
-                            Oco::from(format!("{n} edit(s) pending"))
+                            Oco::from(format!("{n} {}", t.edits_pending))
                         }
                     }}
                 </div>
@@ -73,7 +168,7 @@ pub(crate) fn StatusBar() -> impl IntoView {
                     on:click=on_view_frames
                     disabled=move || !has_current_message()
                 >
-                    "Frames"
+                    {move || locale.get().t().frames}
                 </button>
                 <div class="dropdown" node_ref=menu_ref>
                     <button
@@ -81,7 +176,11 @@ pub(crate) fn StatusBar() -> impl IntoView {
                         on:click=move |_| export_open.update(|v| *v = !*v)
                         disabled=move || !has_current_message()
                     >
-                        {move || if export_open.get() { "Export \u{25B4}" } else { "Export \u{25BE}" }}
+                        {move || {
+                            let t = locale.get().t();
+                            let arrow = if export_open.get() { '\u{25B4}' } else { '\u{25BE}' };
+                            format!("{} {arrow}", t.export)
+                        }}
                     </button>
                     <Show when=move || export_open.get() fallback=|| ()>
                         <ExportDropdown
@@ -92,31 +191,34 @@ pub(crate) fn StatusBar() -> impl IntoView {
                         />
                     </Show>
                 </div>
-                <button
-                    class="btn btn--primary btn--small"
-                    on:click=move |_| {
-                        if workspace.dirty_count.get() != 0 {
-                            let _ = save_ws_svc.save_reparse();
-                        } else {
-                            save_msg_svc.bump_modified();
+                <Show when=move || !read_only.get() fallback=|| ()>
+                    <button
+                        class="btn btn--primary btn--small"
+                        on:click=move |_| {
+                            if workspace.dirty_count.get() != 0 {
+                                let _ = save_ws_svc.with_value(WorkspaceService::save_reparse);
+                            } else {
+                                save_msg_svc.with_value(MessageService::bump_modified);
+                            }
                         }
-                    }
-                    disabled=move || {
-                        if workspace.dirty_count.get() == 0 {
-                            !has_current_message()
-                        } else {
-                            workspace.patch_state.with(std::option::Option::is_none)
+                        disabled=move || {
+                            if workspace.dirty_count.get() == 0 {
+                                !has_current_message()
+                            } else {
+                                workspace.patch_state.with(std::option::Option::is_none)
+                            }
                         }
-                    }
-                >
-                    {move || {
-                        if workspace.dirty_count.get() == 0 {
-                            "Bump (reorder)"
-                        } else {
-                            "Save & Reparse"
-                        }
-                    }}
-                </button>
+                    >
+                        {move || {
+                            let t = locale.get().t();
+                            if workspace.dirty_count.get() == 0 {
+                                t.bump_reorder
+                            } else {
+                                t.save_reparse
+                            }
+                        }}
+                    </button>
+                </Show>
             </div>
         </div>
     }
@@ -130,6 +232,8 @@ fn ExportDropdown(
     on_close: Callback<()>,
     menu_ref: NodeRef<html::Div>,
 ) -> impl IntoView {
+    let locale = expect_context::<UiState>().locale;
+
     let _dismiss = leptos_use::use_event_listener(
         web_sys::window().expect("window"),
         leptos::ev::mousedown,
@@ -159,7 +263,7 @@ fn ExportDropdown(
 
     view! {
         <div class="dropdown__menu">
-            <div class="dropdown__group-label">"Copy as"</div>
+            <div class="dropdown__group-label">{move || locale.get().t().copy_as}</div>
             {CopyFormat::ALL.iter().map(|&fmt| {
                 let svc = export_svc.clone();
                 view! {
@@ -182,7 +286,7 @@ fn ExportDropdown(
                     on_close.run(());
                 }
             >
-                "Copy share URL"
+                {move || locale.get().t().copy_share_url}
             </button>
             <button
                 class="dropdown__item"
@@ -191,7 +295,7 @@ fn ExportDropdown(
                     on_close.run(());
                 }
             >
-                "Download .bin"
+                {move || locale.get().t().download_bin}
             </button>
             <div class="dropdown__separator"></div>
             <button
@@ -201,7 +305,7 @@ fn ExportDropdown(
                     on_close.run(());
                 }
             >
-                "Save expand defaults"
+                {move || locale.get().t().save_expand_defaults}
             </button>
         </div>
     }
