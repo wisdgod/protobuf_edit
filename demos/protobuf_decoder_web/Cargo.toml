@@ -49,6 +49,8 @@ web-sys = { version = "0.3", features = [
   "ReadableStream",
   "ReadableWritablePair",
   "Response",
+  "ScrollIntoViewOptions",
+  "ScrollLogicalPosition",
   "Storage",
   "Url",
   "Window",

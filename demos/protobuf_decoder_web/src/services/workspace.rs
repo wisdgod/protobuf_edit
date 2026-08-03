@@ -71,7 +71,7 @@ impl WorkspaceService {
 
     /// Revert all pending field edits, restoring the patch to its last saved state.
     pub(crate) fn revert_edits(&self) {
-        let pending = self.ws.dirty_fields.with_untracked(crate::fx::FxHashSet::len);
+        let pending = self.ws.dirty_fields.with_untracked(rustc_hash::FxHashSet::len);
         if pending == 0 {
             return;
         }

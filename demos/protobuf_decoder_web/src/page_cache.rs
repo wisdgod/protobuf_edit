@@ -1,5 +1,5 @@
 use crate::error::{shared_error, UiError};
-use crate::fx::FxHashMap;
+use rustc_hash::FxHashMap;
 use crate::messages::MessageId;
 use std::cell::RefCell;
 use std::rc::Rc;

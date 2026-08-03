@@ -1,10 +1,12 @@
 use crate::bytes::ByteView;
 use crate::envelope::EnvelopeView;
-use crate::fx::FxHashSet;
+use rustc_hash::FxHashSet;
 use crate::hex_view::HexTextMode;
 use crate::messages::{MessageId, MessageMeta};
 use crate::toast::ToastManager;
-use crate::workspace::{compute_hovered_range, compute_selected_highlights, HighlightRange};
+use crate::workspace::{
+    collect_visible_fields, compute_hovered_range, compute_selected_highlights, HighlightRange,
+};
 use leptos::prelude::*;
 use protobuf_edit::patch::FieldId;
 use protobuf_edit::Patch;
@@ -57,6 +59,9 @@ pub(crate) struct WorkspaceState {
     pub selected_highlights: Memo<Vec<HighlightRange>>,
     pub hovered_range: Memo<Option<HighlightRange>>,
     pub highlight_range_count: Memo<usize>,
+    /// Fields in tree display order (expanded subtrees inlined), for
+    /// keyboard navigation.
+    pub visible_fields: Memo<Vec<FieldId>>,
     pub read_only: Memo<bool>,
     pub bytes_count: Memo<Option<usize>>,
     /// Live fields of the root message only; nested fields are not counted.
@@ -94,6 +99,18 @@ impl WorkspaceState {
         });
         let highlight_range_count = Memo::new(move |_| {
             selected_highlights.with(Vec::len) + usize::from(hovered_range.get().is_some())
+        });
+        let visible_fields = Memo::new(move |_| {
+            patch_state.with(|p| {
+                let Some(patch) = p.as_ref() else {
+                    return Vec::new();
+                };
+                expanded.with(|exp| {
+                    let mut out = Vec::new();
+                    collect_visible_fields(patch, patch.root(), exp, &mut out);
+                    out
+                })
+            })
         });
         let read_only = Memo::new(move |_| envelope_view.with(Option::is_some));
         let bytes_count = Memo::new(move |_| {
@@ -134,6 +151,7 @@ impl WorkspaceState {
             selected_highlights,
             hovered_range,
             highlight_range_count,
+            visible_fields,
             read_only,
             bytes_count,
             root_field_count,

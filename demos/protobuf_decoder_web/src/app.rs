@@ -7,7 +7,6 @@ use crate::services::{EnvelopeService, ExportService, MessageService, WorkspaceS
 use crate::state::{parse_theme, MessageCatalogState, Theme, UiState, WorkspaceState};
 use crate::toast::{ToastContainer, ToastKind, ToastManager};
 use crate::web::{get_document_theme, set_document_theme, start_theme_transition};
-use crate::workspace::visible_fields as visible_workspace_fields;
 use leptos::html;
 use leptos::prelude::*;
 use leptos_use::use_event_listener;
@@ -147,43 +146,41 @@ pub fn App() -> impl IntoView {
                 }
                 "ArrowDown" => {
                     ev.prevent_default();
-                    let visible = visible_workspace_fields(&ws);
-                    if visible.is_empty() {
-                        return;
+                    let next = ws.visible_fields.with_untracked(|visible| {
+                        selected.get_untracked().map_or_else(
+                            || visible.first().copied(),
+                            |cur| {
+                                visible
+                                    .iter()
+                                    .position(|&f| f == cur)
+                                    .and_then(|i| visible.get(i + 1))
+                                    .copied()
+                                    .or(Some(cur))
+                            },
+                        )
+                    });
+                    if next.is_some() {
+                        selected.set(next);
                     }
-
-                    let next = selected.get_untracked().map_or_else(
-                        || visible.first().copied(),
-                        |cur| {
-                            visible
-                                .iter()
-                                .position(|&f| f == cur)
-                                .and_then(|i| visible.get(i + 1))
-                                .copied()
-                                .or(Some(cur))
-                        },
-                    );
-                    selected.set(next);
                 }
                 "ArrowUp" => {
                     ev.prevent_default();
-                    let visible = visible_workspace_fields(&ws);
-                    if visible.is_empty() {
-                        return;
+                    let prev = ws.visible_fields.with_untracked(|visible| {
+                        selected.get_untracked().map_or_else(
+                            || visible.last().copied(),
+                            |cur| {
+                                visible
+                                    .iter()
+                                    .position(|&f| f == cur)
+                                    .and_then(|i| i.checked_sub(1).and_then(|j| visible.get(j)))
+                                    .copied()
+                                    .or(Some(cur))
+                            },
+                        )
+                    });
+                    if prev.is_some() {
+                        selected.set(prev);
                     }
-
-                    let prev = selected.get_untracked().map_or_else(
-                        || visible.last().copied(),
-                        |cur| {
-                            visible
-                                .iter()
-                                .position(|&f| f == cur)
-                                .and_then(|i| i.checked_sub(1).and_then(|j| visible.get(j)))
-                                .copied()
-                                .or(Some(cur))
-                        },
-                    );
-                    selected.set(prev);
                 }
                 "Enter" => {
                     let Some(field) = selected.get_untracked() else {

@@ -1,4 +1,4 @@
-use crate::fx::{FxHashMap, FxHashSet};
+use rustc_hash::{FxHashMap, FxHashSet};
 use crate::messages::{self, MessageId, MessageMeta};
 use crate::services::{EnvelopeService, MessageService};
 use crate::state::{MessageCatalogState, UiState};

@@ -1,5 +1,6 @@
 use crate::state::{UiState, WorkspaceState};
 use crate::toast::ToastKind;
+use leptos::html;
 use leptos::prelude::*;
 use protobuf_edit::patch::{FieldId, MessageId};
 use protobuf_edit::{Patch, TreeError, WireType};
@@ -118,6 +119,20 @@ fn FieldRow(field: FieldId, depth: usize) -> AnyView {
 
     let indent_px = (depth as i32).saturating_mul(14);
 
+    // Keep the selected row visible during keyboard navigation; `nearest`
+    // makes this a no-op when the row is already on screen (mouse clicks).
+    let row_ref = NodeRef::<html::Div>::new();
+    Effect::new(move |_| {
+        if selected.get() != Some(field) {
+            return;
+        }
+        if let Some(el) = row_ref.get() {
+            let options = web_sys::ScrollIntoViewOptions::new();
+            options.set_block(web_sys::ScrollLogicalPosition::Nearest);
+            el.scroll_into_view_with_scroll_into_view_options(&options);
+        }
+    });
+
     let on_toggle_expand = move |ev: leptos::ev::MouseEvent| {
         ev.stop_propagation();
         if !is_expandable.get() {
@@ -142,6 +157,7 @@ fn FieldRow(field: FieldId, depth: usize) -> AnyView {
     view! {
         <>
             <div
+                node_ref=row_ref
                 class=row_class
                 style:margin-left=format!("{indent_px}px")
                 on:click=move |_| selected.set(Some(field))

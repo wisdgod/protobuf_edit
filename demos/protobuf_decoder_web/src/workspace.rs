@@ -8,7 +8,7 @@ mod tree;
 pub(crate) use commands::{
     close_envelope_browser, confirm_discard_edits, load_patch_from_view, open_envelope_frame,
     parse_child_untracked, revert_pending_edits, save_and_reparse, show_envelope_browser,
-    visible_fields, SaveReparseInfo,
+    SaveReparseInfo,
 };
 pub(crate) use drilldown::drilldown_byte;
 pub(crate) use field_paths::{

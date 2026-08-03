@@ -1,6 +1,6 @@
 use crate::bytes::ByteView;
 use crate::error::{UiError, UiResult};
-use crate::fx::FxHashMap;
+use rustc_hash::FxHashMap;
 use js_sys::{Object, Reflect};
 use std::sync::Arc;
 use wasm_bindgen::{JsCast as _, JsValue};

@@ -1,4 +1,4 @@
-use crate::fx::FxHashSet;
+use rustc_hash::FxHashSet;
 use protobuf_edit::patch::FieldId;
 use protobuf_edit::Patch;
 

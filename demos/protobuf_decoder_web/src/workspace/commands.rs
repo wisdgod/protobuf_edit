@@ -1,12 +1,12 @@
 use crate::bytes::ByteView;
 use crate::error::shared_error;
 use crate::envelope::{parse_envelope_frames, EnvelopeView};
-use crate::fx::FxHashSet;
+use rustc_hash::FxHashSet;
 use crate::messages::MessageId;
 use crate::state::WorkspaceState;
 use crate::toast::{ToastManager, ToastKind};
 use super::{
-    build_selection_path, collect_visible_fields, decode_selection_path, resolve_selection_path,
+    build_selection_path, decode_selection_path, resolve_selection_path,
 };
 use leptos::prelude::*;
 use protobuf_edit::patch::FieldId;
@@ -182,19 +182,6 @@ pub(crate) fn close_envelope_browser(ws: &WorkspaceState, toast: &ToastManager) 
     };
     ws.show_root_raw_bytes(view);
     toast.show(ToastKind::Success, "Showing raw envelope bytes.");
-}
-
-pub(crate) fn visible_fields(ws: &WorkspaceState) -> Vec<FieldId> {
-    ws.patch_state.with_untracked(|state| {
-        let Some(patch) = state.as_ref() else {
-            return Vec::new();
-        };
-        ws.expanded.with_untracked(|expanded| {
-            let mut out = Vec::new();
-            collect_visible_fields(patch, patch.root(), expanded, &mut out);
-            out
-        })
-    })
 }
 
 pub(crate) fn revert_pending_edits(ws: &WorkspaceState) -> Result<(), TreeError> {
