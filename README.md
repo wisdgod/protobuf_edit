@@ -31,8 +31,12 @@ Three tiers by allocation budget:
 | `Scanner` / `ChunkStream` | trie-matched extraction from one buffer / from chunks | zero-copy walk; chunked mode buffers only boundary state |
 
 `cargo bench` (`benches/core.rs`, no external dependencies) keeps these cost claims
-measurable; as reference points on one machine: cursor walk ~1.0 GiB/s, one-edit
-`Patch::save` ~4.3 GiB/s versus a full `Document` re-encode at ~0.8 GiB/s.
+measurable. Reference points on one machine, on a field-dense input (~30 B/field):
+cursor walk ~1.0 GiB/s; one-edit `Patch::save` ~4.9 GiB/s versus `Document::to_buf`
+at ~0.8 GiB/s. That gap is per-field reassembly cost, not nesting: `Document` also
+keeps nested payloads opaque, and on a control input with few large fields both
+models converge to memcpy speed (~51 vs ~41 GiB/s). The fewer and larger the
+fields, the less the model choice matters for serialization.
 
 ## API layout
 

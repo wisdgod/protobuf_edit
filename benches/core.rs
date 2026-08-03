@@ -32,6 +32,19 @@ fn fnn(n: u32) -> FieldNumber {
     FieldNumber::new(n).expect("bench field numbers are static")
 }
 
+/// Builds a message of few large bytes fields (~4 KiB each): the control
+/// input where per-field overhead vanishes and every model approaches memcpy.
+fn build_chunky_message(target_len: usize) -> Vec<u8> {
+    let mut doc = Document::new();
+    let mut approx = 0usize;
+    while approx < target_len {
+        let payload = vec![0x5Au8; 4096];
+        let _ = doc.push_length_delimited(fnn(3), Buf::from_vec(payload)).unwrap();
+        approx += 4096 + 3;
+    }
+    doc.to_buf().unwrap().into_vec()
+}
+
 /// Builds a mixed-field message of at least `target_len` bytes.
 fn build_message(target_len: usize) -> Vec<u8> {
     let mut rng = Rng(0x9E37_79B9_7F4A_7C15);
@@ -149,6 +162,26 @@ fn main() {
     {
         let doc = Document::from_bytes(&large).unwrap();
         bench("document_to_buf_100k", large.len(), || {
+            black_box(doc.to_buf().unwrap());
+        });
+    }
+
+    // Control: few large fields. Per-field overhead vanishes, so the
+    // Patch-vs-Document save gap collapses toward pure memcpy; the gap on the
+    // field-dense input above is per-field reassembly cost, not nesting.
+    {
+        let chunky = build_chunky_message(100 * 1024);
+
+        let mut patch = BorrowedPatch::from_bytes(&chunky).unwrap();
+        let root = patch.root();
+        let field = patch.fields_by_number(root, fnn(3)).unwrap().next().unwrap();
+        patch.set_bytes(field, Buf::from_static(b"edited")).unwrap();
+        bench("patch_save_one_edit_chunky_100k", chunky.len(), || {
+            black_box(patch.save().unwrap());
+        });
+
+        let doc = Document::from_bytes(&chunky).unwrap();
+        bench("document_to_buf_chunky_100k", chunky.len(), || {
             black_box(doc.to_buf().unwrap());
         });
     }
