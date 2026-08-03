@@ -55,12 +55,12 @@ impl WorkspaceService {
                     if let Err(msg) =
                         messages::update_message_bytes(message_id, bytes_len, bytes_value).await
                     {
-                        toast.show(ToastKind::Error, msg);
+                        toast.show(ToastKind::Alert, msg);
                     }
                 });
 
                 toast.show(
-                    ToastKind::Success,
+                    ToastKind::Notice,
                     format!(
                         "Saved & reparsed: {bytes_len} bytes (was {before_len}), {field_count} field(s) in {elapsed_ms:.1}ms."
                     ),
@@ -68,7 +68,7 @@ impl WorkspaceService {
                 Ok(info)
             }
             Err(err) => {
-                toast.show(ToastKind::Error, format!("Save & reparse failed: {err:?}"));
+                toast.show(ToastKind::Alert, format!("Save & reparse failed: {err:?}"));
                 Err(err)
             }
         }
@@ -87,9 +87,9 @@ impl WorkspaceService {
 
         match revert_workspace_edits(&ws) {
             Ok(()) => {
-                self.toast.show(ToastKind::Success, format!("Reverted {pending} pending edit(s)."));
+                self.toast.show(ToastKind::Notice, format!("Reverted {pending} pending edit(s)."));
             }
-            Err(err) => self.toast.show(ToastKind::Error, format!("Undo failed: {err:?}")),
+            Err(err) => self.toast.show(ToastKind::Alert, format!("Undo failed: {err:?}")),
         }
     }
 
@@ -100,13 +100,13 @@ impl WorkspaceService {
         let messages_list = self.catalog.messages_list;
 
         let Some(tab) = self.tabs.active_tab_untracked() else {
-            toast.show(ToastKind::Error, "No message open.");
+            toast.show(ToastKind::Alert, "No message open.");
             return;
         };
         let id = tab.message_id;
         let Some(ws) = tab.message_ws() else {
             toast.show(
-                ToastKind::Error,
+                ToastKind::Alert,
                 "Cannot save expand defaults while viewing envelope frames.",
             );
             return;
@@ -125,7 +125,7 @@ impl WorkspaceService {
                 paths
             }))
         }) else {
-            toast.show(ToastKind::Error, "No protobuf message loaded.");
+            toast.show(ToastKind::Alert, "No protobuf message loaded.");
             return;
         };
 
@@ -138,14 +138,14 @@ impl WorkspaceService {
             .unwrap_or(id);
         spawn_local(async move {
             if let Err(msg) = messages::store_auto_expand_paths(class_id, &paths).await {
-                toast.show(ToastKind::Error, msg);
+                toast.show(ToastKind::Alert, msg);
                 return;
             }
 
             if count == 0 {
-                toast.show(ToastKind::Success, "Cleared auto-expand defaults.");
+                toast.show(ToastKind::Notice, "Cleared auto-expand defaults.");
             } else {
-                toast.show(ToastKind::Success, format!("Saved {count} auto-expand path(s)."));
+                toast.show(ToastKind::Notice, format!("Saved {count} auto-expand path(s)."));
             }
         });
     }

@@ -167,7 +167,7 @@ pub fn App() -> impl IntoView {
 
             <div class="main">{main_view}</div>
 
-            <ToastContainer toasts=toast.toasts_signal() />
+            <ToastContainer manager=toast />
         </div>
     }
 }

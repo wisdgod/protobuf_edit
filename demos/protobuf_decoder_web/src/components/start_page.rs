@@ -191,7 +191,7 @@ pub(crate) fn StartPage(on_open: UnsyncCallback<MessageId>) -> impl IntoView {
         if let Err(msg) =
             messages::store_frame_name_template(&frame_name_template_text.get_untracked())
         {
-            toast.show(ToastKind::Error, msg);
+            toast.show(ToastKind::Alert, msg);
         }
     };
 

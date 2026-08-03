@@ -41,7 +41,7 @@ impl MessageService {
         let list = match messages::list_messages().await {
             Ok(v) => v,
             Err(msg) => {
-                toast.show(ToastKind::Error, format!("Failed to load messages: {msg}"));
+                toast.show(ToastKind::Alert, format!("Failed to load messages: {msg}"));
                 Vec::new()
             }
         };
@@ -104,7 +104,7 @@ impl MessageService {
                             {
                                 Ok(v) => v,
                                 Err(msg) => {
-                                    toast.show(ToastKind::Error, msg);
+                                    toast.show(ToastKind::Alert, msg);
                                     Vec::new()
                                 }
                             };
@@ -116,7 +116,7 @@ impl MessageService {
                         LoadedBytesMode::Raw => {
                             ws.show_root_raw_bytes(loaded.bytes);
                             if let Some(note) = loaded.note {
-                                toast.show(ToastKind::Success, note);
+                                toast.show(ToastKind::Notice, note);
                             }
                         }
                     }
@@ -125,7 +125,7 @@ impl MessageService {
                     if stale() {
                         return;
                     }
-                    toast.show(ToastKind::Error, format!("Failed to load message bytes: {msg}"));
+                    toast.show(ToastKind::Alert, format!("Failed to load message bytes: {msg}"));
                 }
             }
         });
@@ -175,7 +175,7 @@ impl MessageService {
                         Vec::new(),
                     );
                 }
-                Err(msg) => toast.show(ToastKind::Error, msg),
+                Err(msg) => toast.show(ToastKind::Alert, msg),
             }
         });
     }
@@ -223,16 +223,16 @@ impl MessageService {
             let (deleted, failed) = match messages::delete_messages(&ids).await {
                 Ok(counts) => counts,
                 Err(msg) => {
-                    toast.show(ToastKind::Error, msg);
+                    toast.show(ToastKind::Alert, msg);
                     return;
                 }
             };
             if failed != 0 {
-                toast.show(ToastKind::Error, format!("Failed to delete {failed} message(s)."));
+                toast.show(ToastKind::Alert, format!("Failed to delete {failed} message(s)."));
             }
 
             this.refresh_inner().await;
-            toast.show(ToastKind::Success, format!("Deleted {deleted} message(s)."));
+            toast.show(ToastKind::Notice, format!("Deleted {deleted} message(s)."));
         });
     }
 
@@ -245,7 +245,7 @@ impl MessageService {
         let toast = self.toast;
         spawn_local(async move {
             if let Err(msg) = messages::rename_message(id, &name).await {
-                toast.show(ToastKind::Error, msg);
+                toast.show(ToastKind::Alert, msg);
                 return;
             }
             this.refresh_inner().await;
@@ -261,7 +261,7 @@ impl MessageService {
         let toast = self.toast;
         spawn_local(async move {
             if let Err(msg) = messages::rename_class(class_id, &name).await {
-                toast.show(ToastKind::Error, msg);
+                toast.show(ToastKind::Alert, msg);
                 return;
             }
             this.refresh_inner().await;
@@ -299,11 +299,11 @@ impl MessageService {
                                 bytes,
                             );
                         }
-                        Err(msg) => toast.show(ToastKind::Error, msg),
+                        Err(msg) => toast.show(ToastKind::Alert, msg),
                     }
                 });
             }
-            Err(msg) => toast.show(ToastKind::Error, format!("Failed to decode {label}: {msg}")),
+            Err(msg) => toast.show(ToastKind::Alert, format!("Failed to decode {label}: {msg}")),
         }
     }
 
@@ -314,7 +314,7 @@ impl MessageService {
         if let Err(msg) =
             messages::store_frame_name_template(&frame_name_template_text.get_untracked())
         {
-            self.toast.show(ToastKind::Error, msg);
+            self.toast.show(ToastKind::Alert, msg);
         }
         let input = self.catalog.raw_input.get_untracked();
         self.import_text("input", &input, "Import");
@@ -343,7 +343,7 @@ impl MessageService {
         let this = self.clone();
         spawn_local(async move {
             let Ok(result) = wasm_bindgen_futures::JsFuture::from(file.array_buffer()).await else {
-                this.toast.show(ToastKind::Error, "Failed to read file contents.");
+                this.toast.show(ToastKind::Alert, "Failed to read file contents.");
                 return;
             };
             let u8_array = js_sys::Uint8Array::new(&result);
@@ -369,7 +369,7 @@ impl MessageService {
                         bytes,
                     );
                 }
-                Err(msg) => toast.show(ToastKind::Error, msg),
+                Err(msg) => toast.show(ToastKind::Alert, msg),
             }
         });
     }
@@ -383,17 +383,17 @@ impl MessageService {
     pub(crate) fn bump_modified(&self) {
         let toast = self.toast;
         let Some(id) = self.tabs.active_message_id_untracked() else {
-            toast.show(ToastKind::Error, "No message open.");
+            toast.show(ToastKind::Alert, "No message open.");
             return;
         };
         let this = self.clone();
         spawn_local(async move {
             if let Err(msg) = messages::bump_message_modified(id).await {
-                toast.show(ToastKind::Error, msg);
+                toast.show(ToastKind::Alert, msg);
                 return;
             }
             this.refresh_inner().await;
-            toast.show(ToastKind::Success, "Updated modified time (reordered messages).");
+            toast.show(ToastKind::Notice, "Updated modified time (reordered messages).");
         });
     }
 
@@ -413,7 +413,7 @@ impl MessageService {
         spawn_local(async move {
             match messages::load_frame_name_template() {
                 Ok(v) => frame_name_template_text.set(v),
-                Err(msg) => toast.show(ToastKind::Error, msg),
+                Err(msg) => toast.show(ToastKind::Alert, msg),
             }
 
             this.refresh_inner().await;
@@ -421,7 +421,7 @@ impl MessageService {
             let hash = match get_url_hash() {
                 Ok(h) => h,
                 Err(msg) => {
-                    toast.show(ToastKind::Error, msg);
+                    toast.show(ToastKind::Alert, msg);
                     return;
                 }
             };
@@ -452,14 +452,14 @@ impl MessageService {
                                 bytes,
                             );
                             toast.show(
-                                ToastKind::Success,
+                                ToastKind::Notice,
                                 format!("Imported URL hash as message \"{name}\"."),
                             );
                         }
-                        Err(msg) => toast.show(ToastKind::Error, msg),
+                        Err(msg) => toast.show(ToastKind::Alert, msg),
                     }
                 }
-                Err(msg) => toast.show(ToastKind::Error, msg),
+                Err(msg) => toast.show(ToastKind::Alert, msg),
             }
         });
     }

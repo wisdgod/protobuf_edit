@@ -46,13 +46,17 @@ impl ExportService {
         Self::with_bytes_of(&ws, f)
     }
 
+    // Pending edits make the copied bytes differ from the saved message, so
+    // the receipt escalates to a warning.
     fn show_copied(toast: ToastManager, pending: usize, label: &str, len: usize) {
-        let msg = if pending == 0 {
-            format!("Copied {label}: {len} bytes.")
+        if pending == 0 {
+            toast.show(ToastKind::Confirmation, format!("Copied {label}: {len} bytes."));
         } else {
-            format!("Copied {label}: {len} bytes. ({pending} edit(s) pending.)")
-        };
-        toast.show(ToastKind::Success, msg);
+            toast.show(
+                ToastKind::Warning,
+                format!("Copied {label}: {len} bytes. ({pending} edit(s) pending.)"),
+            );
+        }
     }
 
     fn copy_and_toast(
@@ -65,7 +69,7 @@ impl ExportService {
         spawn_local(async move {
             match clipboard_write_text_async(text).await {
                 Ok(()) => Self::show_copied(toast, pending, label, len),
-                Err(msg) => toast.show(ToastKind::Error, msg),
+                Err(msg) => toast.show(ToastKind::Alert, msg),
             }
         });
     }
@@ -75,16 +79,16 @@ impl ExportService {
         let url = match build_share_url(&hash) {
             Ok(v) => v,
             Err(msg) => {
-                toast.show(ToastKind::Error, msg);
+                toast.show(ToastKind::Alert, msg);
                 return;
             }
         };
         spawn_local(async move {
             match clipboard_write_text_async(url).await {
                 Ok(()) => {
-                    toast.show(ToastKind::Success, format!("Copied share URL: {len} bytes."));
+                    toast.show(ToastKind::Confirmation, format!("Copied share URL: {len} bytes."));
                 }
-                Err(msg) => toast.show(ToastKind::Error, msg),
+                Err(msg) => toast.show(ToastKind::Alert, msg),
             }
         });
     }
@@ -97,17 +101,21 @@ impl ExportService {
         res: Result<(), crate::error::UiError>,
     ) {
         match res {
+            Ok(()) if pending == 0 => {
+                toast.show(
+                    ToastKind::Confirmation,
+                    format!("Started download: {filename} ({len} bytes)."),
+                );
+            }
             Ok(()) => {
-                let msg = if pending == 0 {
-                    format!("Started download: {filename} ({len} bytes).")
-                } else {
+                toast.show(
+                    ToastKind::Warning,
                     format!(
                         "Started download: {filename} ({len} bytes). ({pending} edit(s) pending.)"
-                    )
-                };
-                toast.show(ToastKind::Success, msg);
+                    ),
+                );
             }
-            Err(msg) => toast.show(ToastKind::Error, msg),
+            Err(msg) => toast.show(ToastKind::Alert, msg),
         }
     }
 
@@ -122,14 +130,14 @@ impl ExportService {
         }
 
         let Some(id) = self.tabs.active_message_id_untracked() else {
-            toast.show(ToastKind::Error, "No message open.");
+            toast.show(ToastKind::Alert, "No message open.");
             return;
         };
         spawn_local(async move {
             let loaded = match messages::load_message_bytes(id).await {
                 Ok(v) => v,
                 Err(msg) => {
-                    toast.show(ToastKind::Error, msg);
+                    toast.show(ToastKind::Alert, msg);
                     return;
                 }
             };
@@ -156,7 +164,7 @@ impl ExportService {
         });
 
         let Some((text, len)) = copied else {
-            toast.show(ToastKind::Error, "No data loaded.");
+            toast.show(ToastKind::Alert, "No data loaded.");
             return;
         };
 
@@ -164,11 +172,11 @@ impl ExportService {
             match clipboard_write_text_async(text).await {
                 Ok(()) => {
                     toast.show(
-                        ToastKind::Success,
+                        ToastKind::Confirmation,
                         format!("Copied {}: {len} byte(s).", fmt.label()),
                     );
                 }
-                Err(msg) => toast.show(ToastKind::Error, msg),
+                Err(msg) => toast.show(ToastKind::Alert, msg),
             }
         });
     }
@@ -184,14 +192,14 @@ impl ExportService {
         }
 
         let Some(id) = self.tabs.active_message_id_untracked() else {
-            toast.show(ToastKind::Error, "No message open.");
+            toast.show(ToastKind::Alert, "No message open.");
             return;
         };
         spawn_local(async move {
             let loaded = match messages::load_message_bytes(id).await {
                 Ok(v) => v,
                 Err(msg) => {
-                    toast.show(ToastKind::Error, msg);
+                    toast.show(ToastKind::Alert, msg);
                     return;
                 }
             };
@@ -206,7 +214,7 @@ impl ExportService {
         let dirty = self.active_dirty_count();
 
         let Some(id) = self.tabs.active_message_id_untracked() else {
-            toast.show(ToastKind::Error, "No message open.");
+            toast.show(ToastKind::Alert, "No message open.");
             return;
         };
 
@@ -223,7 +231,7 @@ impl ExportService {
             let loaded = match messages::load_message_bytes(id).await {
                 Ok(v) => v,
                 Err(msg) => {
-                    toast.show(ToastKind::Error, msg);
+                    toast.show(ToastKind::Alert, msg);
                     return;
                 }
             };

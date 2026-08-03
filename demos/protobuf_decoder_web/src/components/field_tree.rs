@@ -150,7 +150,7 @@ fn FieldRow(field: FieldId, depth: usize) -> AnyView {
             Ok(_child) => expanded.update(|s| {
                 s.insert(field);
             }),
-            Err(e) => toast.show(ToastKind::Error, format!("Failed to parse child message: {e:?}")),
+            Err(e) => toast.show(ToastKind::Alert, format!("Failed to parse child message: {e:?}")),
         }
     };
 

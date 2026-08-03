@@ -87,7 +87,7 @@ pub(crate) fn Breadcrumb() -> impl IntoView {
     let navigate = move || {
         let input = edit_text.get_untracked();
         let Some(steps) = parse_user_path(&input) else {
-            toast.show(ToastKind::Error, "Invalid path format. Use .field.field:occurrence");
+            toast.show(ToastKind::Alert, "Invalid path format. Use .field.field:occurrence");
             return;
         };
         editing.set(false);
@@ -112,13 +112,13 @@ pub(crate) fn Breadcrumb() -> impl IntoView {
                 selected.set(Some(fid));
             }
             Some(Ok(None)) => {
-                toast.show(ToastKind::Error, format!("Path not found: {input}"));
+                toast.show(ToastKind::Alert, format!("Path not found: {input}"));
             }
             Some(Err(e)) => {
-                toast.show(ToastKind::Error, format!("Path resolution error: {e:?}"));
+                toast.show(ToastKind::Alert, format!("Path resolution error: {e:?}"));
             }
             None => {
-                toast.show(ToastKind::Error, "No protobuf loaded.");
+                toast.show(ToastKind::Alert, "No protobuf loaded.");
             }
         }
     };

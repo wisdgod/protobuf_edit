@@ -335,7 +335,7 @@ pub(crate) fn InspectorDrawer() -> impl IntoView {
         };
 
         let Some(wt) = selected_wire.get_untracked() else {
-            toast.show(ToastKind::Error, "No field selected.");
+            toast.show(ToastKind::Alert, "No field selected.");
             return;
         };
 
@@ -345,7 +345,7 @@ pub(crate) fn InspectorDrawer() -> impl IntoView {
             WireType::Varint => {
                 let Ok(Some(value)) = varint_validation.get_untracked() else {
                     toast.show(
-                        ToastKind::Error,
+                        ToastKind::Alert,
                         "Invalid varint value. Use decimal or 0x-prefixed hex.",
                     );
                     return;
@@ -357,9 +357,8 @@ pub(crate) fn InspectorDrawer() -> impl IntoView {
                             s.insert(fid);
                         });
                         varint_base.set(Some(value));
-                        toast.show(ToastKind::Success, format!("Applied varint edit: {value}."));
                     }
-                    Err(e) => toast.show(ToastKind::Error, format!("Failed to apply edit: {e:?}")),
+                    Err(e) => toast.show(ToastKind::Alert, format!("Failed to apply edit: {e:?}")),
                 }
             }
             WireType::Len => {
@@ -367,7 +366,7 @@ pub(crate) fn InspectorDrawer() -> impl IntoView {
                     Ok(Some(bytes)) => bytes,
                     Ok(None) => return,
                     Err(msg) => {
-                        toast.show(ToastKind::Error, msg);
+                        toast.show(ToastKind::Alert, msg);
                         return;
                     }
                 };
@@ -376,12 +375,10 @@ pub(crate) fn InspectorDrawer() -> impl IntoView {
                 let canonical_text = match encode_bytes_view(&bytes, view) {
                     Ok(s) => s,
                     Err(msg) => {
-                        toast.show(ToastKind::Error, msg);
+                        toast.show(ToastKind::Alert, msg);
                         return;
                     }
                 };
-
-                let bytes_len = bytes.len();
 
                 let descendants = patch_state.with_untracked(|p| {
                     p.as_ref().map(|patch| collect_child_subtree(patch, fid)).unwrap_or_default()
@@ -389,7 +386,7 @@ pub(crate) fn InspectorDrawer() -> impl IntoView {
 
                 let mut buf = Buf::new();
                 if let Err(e) = buf.extend_from_slice(&bytes) {
-                    toast.show(ToastKind::Error, format!("Failed to allocate buffer: {e:?}"));
+                    toast.show(ToastKind::Alert, format!("Failed to allocate buffer: {e:?}"));
                     return;
                 }
 
@@ -408,18 +405,14 @@ pub(crate) fn InspectorDrawer() -> impl IntoView {
                             s.insert(fid);
                         });
                         bytes_text.set(canonical_text);
-                        toast.show(
-                            ToastKind::Success,
-                            format!("Applied bytes edit: {bytes_len} byte(s)."),
-                        );
                     }
-                    Err(e) => toast.show(ToastKind::Error, format!("Failed to apply edit: {e:?}")),
+                    Err(e) => toast.show(ToastKind::Alert, format!("Failed to apply edit: {e:?}")),
                 }
             }
             WireType::I32 | WireType::I64 => {
                 let Ok(Some(value)) = fixed_validation.get_untracked() else {
                     toast.show(
-                        ToastKind::Error,
+                        ToastKind::Alert,
                         "Invalid fixed value. Use decimal or 0x-prefixed hex.",
                     );
                     return;
@@ -443,11 +436,10 @@ pub(crate) fn InspectorDrawer() -> impl IntoView {
                         dirty_fields.update(|s| {
                             s.insert(fid);
                         });
-                        toast.show(ToastKind::Success, format!("Applied fixed edit: {text}."));
                         fixed_text.set(text);
                         fixed_base.set(Some(value));
                     }
-                    Err(e) => toast.show(ToastKind::Error, format!("Failed to apply edit: {e:?}")),
+                    Err(e) => toast.show(ToastKind::Alert, format!("Failed to apply edit: {e:?}")),
                 }
             }
         }
@@ -477,9 +469,8 @@ pub(crate) fn InspectorDrawer() -> impl IntoView {
                     s.insert(fid);
                 });
                 selected.set(None);
-                toast.show(ToastKind::Success, "Deleted field.");
             }
-            Err(e) => toast.show(ToastKind::Error, format!("Failed to delete field: {e:?}")),
+            Err(e) => toast.show(ToastKind::Alert, format!("Failed to delete field: {e:?}")),
         }
     };
 
@@ -514,7 +505,6 @@ pub(crate) fn InspectorDrawer() -> impl IntoView {
 
                 if was_inserted {
                     selected.set(None);
-                    toast.show(ToastKind::Success, "Removed inserted field.");
                     return;
                 }
 
@@ -523,10 +513,8 @@ pub(crate) fn InspectorDrawer() -> impl IntoView {
                         refresh_from_patch(patch, fid);
                     }
                 });
-
-                toast.show(ToastKind::Success, "Cleared field edit.");
             }
-            Err(e) => toast.show(ToastKind::Error, format!("Failed to clear edit: {e:?}")),
+            Err(e) => toast.show(ToastKind::Alert, format!("Failed to clear edit: {e:?}")),
         }
     };
 
@@ -638,13 +626,13 @@ pub(crate) fn InspectorDrawer() -> impl IntoView {
             return;
         }
 
-        let Some((target, target_label)) = insert_target.get_untracked() else {
-            toast.show(ToastKind::Error, "No data loaded.");
+        let Some((target, _)) = insert_target.get_untracked() else {
+            toast.show(ToastKind::Alert, "No data loaded.");
             return;
         };
 
         let Ok(Some(tag)) = insert_tag_validation.get_untracked() else {
-            toast.show(ToastKind::Error, "Invalid tag.");
+            toast.show(ToastKind::Alert, "Invalid tag.");
             return;
         };
 
@@ -653,20 +641,20 @@ pub(crate) fn InspectorDrawer() -> impl IntoView {
         let res = match wt {
             WireType::Varint => {
                 let Ok(Some(value)) = insert_varint_validation.get_untracked() else {
-                    toast.show(ToastKind::Error, "Invalid varint.");
+                    toast.show(ToastKind::Alert, "Invalid varint.");
                     return;
                 };
                 edit_patch(patch_state, |patch| patch.insert_varint(target, tag, value))
             }
             WireType::Len => {
                 let Ok(Some(bytes)) = insert_bytes_validation.get_untracked() else {
-                    toast.show(ToastKind::Error, "Invalid bytes payload.");
+                    toast.show(ToastKind::Alert, "Invalid bytes payload.");
                     return;
                 };
 
                 let mut buf = Buf::new();
                 if let Err(e) = buf.extend_from_slice(&bytes) {
-                    toast.show(ToastKind::Error, format!("Failed to allocate buffer: {e:?}"));
+                    toast.show(ToastKind::Alert, format!("Failed to allocate buffer: {e:?}"));
                     return;
                 }
 
@@ -674,7 +662,7 @@ pub(crate) fn InspectorDrawer() -> impl IntoView {
             }
             WireType::I32 | WireType::I64 => {
                 let Ok(Some(value)) = insert_fixed_validation.get_untracked() else {
-                    toast.show(ToastKind::Error, "Invalid fixed value.");
+                    toast.show(ToastKind::Alert, "Invalid fixed value.");
                     return;
                 };
                 if wt == WireType::I32 {
@@ -693,13 +681,8 @@ pub(crate) fn InspectorDrawer() -> impl IntoView {
                     s.insert(fid);
                 });
                 selected.set(Some(fid));
-                let field_number = tag.field_number().as_inner();
-                toast.show(
-                    ToastKind::Success,
-                    format!("Inserted field {field_number} ({wt:?}) into {target_label}."),
-                );
             }
-            Err(e) => toast.show(ToastKind::Error, format!("Insert failed: {e:?}")),
+            Err(e) => toast.show(ToastKind::Alert, format!("Insert failed: {e:?}")),
         }
     };
 
@@ -1087,14 +1070,14 @@ fn bytes_view_change_handler(
         let bytes = match decode_bytes_view(&raw, old_view) {
             Ok(v) => v,
             Err(msg) => {
-                toast.show(ToastKind::Error, msg);
+                toast.show(ToastKind::Alert, msg);
                 return;
             }
         };
         let new_text = match encode_bytes_view(&bytes, new_view) {
             Ok(s) => s,
             Err(msg) => {
-                toast.show(ToastKind::Error, msg);
+                toast.show(ToastKind::Alert, msg);
                 return;
             }
         };

@@ -48,7 +48,7 @@ impl EnvelopeService {
     /// for the active message.
     pub(crate) fn view_frames(&self) {
         let Some(tab) = self.tabs.active_tab_untracked() else {
-            self.toast.show(ToastKind::Error, "No message open.");
+            self.toast.show(ToastKind::Alert, "No message open.");
             return;
         };
         self.open_envelope_tab(tab.message_id);
@@ -95,7 +95,7 @@ impl EnvelopeService {
             // Errors close the tab again: an envelope tab without frames is
             // dead weight.
             let fail = |msg: String| {
-                toast.show(ToastKind::Error, msg);
+                toast.show(ToastKind::Alert, msg);
                 tabs.close(tab.id);
             };
 
@@ -142,7 +142,7 @@ impl EnvelopeService {
             let meta = vec![EnvelopeFrameMeta::default(); frames_len];
             show_envelope_browser(&env, source_id, bytes, frames, meta);
             open_workspace_envelope_frame(&env, selected, &toast);
-            toast.show(ToastKind::Success, format!("Loaded envelope view: {frames_len} frame(s)."));
+            toast.show(ToastKind::Notice, format!("Loaded envelope view: {frames_len} frame(s)."));
         });
     }
 
@@ -175,7 +175,7 @@ impl EnvelopeService {
     pub(crate) fn decompress_selected_frame(&self) {
         let toast = self.toast;
         let Some((_tab, env)) = self.active_envelope() else {
-            toast.show(ToastKind::Error, "No envelope view loaded.");
+            toast.show(ToastKind::Alert, "No envelope view loaded.");
             return;
         };
         let message_name_text = self.catalog.message_name_text;
@@ -187,12 +187,12 @@ impl EnvelopeService {
             let frame = view.frames.get(idx).copied()?;
             Some((view.source_id, idx, frame))
         }) else {
-            toast.show(ToastKind::Error, "No envelope view loaded.");
+            toast.show(ToastKind::Alert, "No envelope view loaded.");
             return;
         };
 
         if !frame.is_compressed() {
-            toast.show(ToastKind::Error, "Selected envelope frame is not compressed.");
+            toast.show(ToastKind::Alert, "Selected envelope frame is not compressed.");
             return;
         }
 
@@ -219,7 +219,7 @@ impl EnvelopeService {
             {
                 Ok(id) => id,
                 Err(msg) => {
-                    toast.show(ToastKind::Error, msg);
+                    toast.show(ToastKind::Alert, msg);
                     return;
                 }
             };
@@ -227,7 +227,7 @@ impl EnvelopeService {
             this.msg_svc.refresh_inner().await;
             this.msg_svc.switch_to(id);
             toast.show(
-                ToastKind::Success,
+                ToastKind::Notice,
                 format!("Opened frame {idx} as message \"{name}\" ({id})."),
             );
         });
@@ -242,7 +242,7 @@ impl EnvelopeService {
     pub(crate) fn extract_frame(&self, idx: usize) {
         let toast = self.toast;
         let Some((_tab, env)) = self.active_envelope() else {
-            toast.show(ToastKind::Error, "No envelope view loaded.");
+            toast.show(ToastKind::Alert, "No envelope view loaded.");
             return;
         };
         let message_name_text = self.catalog.message_name_text;
@@ -253,7 +253,7 @@ impl EnvelopeService {
             let frame = view.frames.get(idx).copied()?;
             Some((view.source_id, frame))
         }) else {
-            toast.show(ToastKind::Error, "No envelope view loaded.");
+            toast.show(ToastKind::Alert, "No envelope view loaded.");
             return;
         };
 
@@ -282,14 +282,14 @@ impl EnvelopeService {
             {
                 Ok(id) => id,
                 Err(msg) => {
-                    toast.show(ToastKind::Error, msg);
+                    toast.show(ToastKind::Alert, msg);
                     return;
                 }
             };
 
             this.msg_svc.refresh_inner().await;
             toast.show(
-                ToastKind::Success,
+                ToastKind::Notice,
                 format!("Extracted frame {idx} as message \"{name}\" ({id})."),
             );
         });
@@ -303,7 +303,7 @@ impl EnvelopeService {
     pub(crate) fn extract_all_frames(&self) {
         let toast = self.toast;
         let Some((_tab, env)) = self.active_envelope() else {
-            toast.show(ToastKind::Error, "No envelope view loaded.");
+            toast.show(ToastKind::Alert, "No envelope view loaded.");
             return;
         };
         let message_name_text = self.catalog.message_name_text;
@@ -314,11 +314,11 @@ impl EnvelopeService {
             let view = state.as_ref()?;
             Some((view.source_id, view.frames.clone()))
         }) else {
-            toast.show(ToastKind::Error, "No envelope view loaded.");
+            toast.show(ToastKind::Alert, "No envelope view loaded.");
             return;
         };
         if frames.is_empty() {
-            toast.show(ToastKind::Error, "Envelope did not contain any frames.");
+            toast.show(ToastKind::Alert, "Envelope did not contain any frames.");
             return;
         }
 
@@ -367,7 +367,7 @@ impl EnvelopeService {
                 {
                     Ok(_id) => created = created.saturating_add(1),
                     Err(msg) => {
-                        toast.show(ToastKind::Error, msg);
+                        toast.show(ToastKind::Alert, msg);
                         return;
                     }
                 }
@@ -387,7 +387,7 @@ impl EnvelopeService {
                     "Extracted {created} frame(s) into new messages. ({compressed} compressed, {json} json.)"
                 ),
             };
-            toast.show(ToastKind::Success, msg);
+            toast.show(ToastKind::Notice, msg);
         });
     }
 
@@ -407,14 +407,14 @@ impl EnvelopeService {
         let bytes = match decode_user_input(&input) {
             Ok(v) => v,
             Err(msg) => {
-                toast.show(ToastKind::Error, format!("Failed to decode input: {msg}"));
+                toast.show(ToastKind::Alert, format!("Failed to decode input: {msg}"));
                 return;
             }
         };
         if let Err(msg) =
             messages::store_frame_name_template(&frame_name_template_text.get_untracked())
         {
-            toast.show(ToastKind::Error, msg);
+            toast.show(ToastKind::Alert, msg);
         }
 
         let import_name = import_name_text.get_untracked();
@@ -431,14 +431,14 @@ impl EnvelopeService {
                 match messages::create_message(&source_name, bytes_len, bytes_value).await {
                     Ok(v) => v,
                     Err(msg) => {
-                        toast.show(ToastKind::Error, msg);
+                        toast.show(ToastKind::Alert, msg);
                         return;
                     }
                 };
             this.msg_svc.refresh_inner().await;
             this.open_envelope_tab(source_id);
             toast.show(
-                ToastKind::Success,
+                ToastKind::Notice,
                 format!("Imported envelope as message \"{source_name}\"."),
             );
         });

@@ -171,7 +171,7 @@ pub(crate) fn DocumentView(ws: WorkspaceState, split_px: RwSignal<f64>) -> impl 
                             s.insert(field);
                         }),
                         Err(e) => toast.show(
-                            ToastKind::Error,
+                            ToastKind::Alert,
                             format!("Failed to parse child message: {e:?}"),
                         ),
                     }

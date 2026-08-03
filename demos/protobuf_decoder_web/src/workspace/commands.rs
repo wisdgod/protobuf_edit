@@ -92,7 +92,7 @@ pub(crate) fn load_patch_from_view(
 
             ws.show_root_patch(patch, bytes, None, expanded_by_default);
             toast.show(
-                ToastKind::Success,
+                ToastKind::Notice,
                 format!("Loaded {label}: {bytes_len} bytes, {field_count} field(s)."),
             );
         }
@@ -106,7 +106,7 @@ pub(crate) fn load_patch_from_view(
                 ),
                 _ => format!("Failed to load {label}: {err:?}"),
             };
-            toast.show(ToastKind::Error, msg);
+            toast.show(ToastKind::Alert, msg);
         }
     }
 }
@@ -141,7 +141,7 @@ pub(crate) fn open_envelope_frame(env: &EnvelopeTabState, idx: usize, toast: &To
         frame.payload_offset,
         frame.payload_offset.saturating_add(frame.payload_len),
     ) else {
-        toast.show(ToastKind::Error, "Envelope frame payload range is out of bounds.");
+        toast.show(ToastKind::Alert, "Envelope frame payload range is out of bounds.");
         return;
     };
 
@@ -169,7 +169,7 @@ pub(crate) fn open_envelope_frame(env: &EnvelopeTabState, idx: usize, toast: &To
             });
             env.preview.show_root_raw_bytes(view);
             toast.show(
-                ToastKind::Error,
+                ToastKind::Alert,
                 format!("Failed to parse envelope frame as protobuf: {msg}"),
             );
         }

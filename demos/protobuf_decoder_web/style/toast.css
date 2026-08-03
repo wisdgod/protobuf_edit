@@ -21,16 +21,35 @@
   align-items: flex-start;
 }
 
-.toast--success {
+.toast--confirmation {
   border-color: var(--color-success);
 }
 
-.toast--error {
+.toast--notice {
+  border-color: var(--color-info);
+}
+
+.toast--warning {
+  border-color: var(--color-warn);
+}
+
+.toast--alert {
   border-color: var(--color-error);
 }
 
-.toast--info {
-  border-color: var(--color-info);
+.toast-body {
+  display: flex;
+  align-items: baseline;
+  gap: var(--spacing-sm);
+}
+
+.toast-count {
+  flex: 0 0 auto;
+  padding: 0 var(--spacing-xs);
+  border-radius: var(--border-radius);
+  background: var(--color-bg-inset);
+  color: var(--color-text-secondary);
+  font-size: var(--font-size-xs);
 }
 
 .toast-close {
