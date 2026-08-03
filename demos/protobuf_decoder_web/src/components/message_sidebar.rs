@@ -2,7 +2,6 @@ use rustc_hash::{FxHashMap, FxHashSet};
 use crate::messages::{self, MessageId, MessageMeta};
 use crate::services::{EnvelopeService, MessageService};
 use crate::state::{MessageCatalogState, UiState};
-use super::ThemeSwitcher;
 use leptos::prelude::*;
 use crate::toast::ToastKind;
 use std::sync::Arc;
@@ -31,7 +30,7 @@ impl ImportMode {
 }
 
 #[component]
-pub(crate) fn MessageSidebar(on_toggle_theme: UnsyncCallback<()>) -> impl IntoView {
+pub(crate) fn MessageSidebar() -> impl IntoView {
     let msg_svc = expect_context::<MessageService>();
     let env_svc = expect_context::<EnvelopeService>();
     let messages = expect_context::<MessageCatalogState>();
@@ -42,7 +41,6 @@ pub(crate) fn MessageSidebar(on_toggle_theme: UnsyncCallback<()>) -> impl IntoVi
     let import_name_text = messages.import_name_text;
     let raw_input = messages.raw_input;
     let frame_name_template_text = messages.frame_name_template_text;
-    let theme_is_dark = ui.theme_is_dark;
     let toast = ui.toast;
     let collapsed = RwSignal::new(false);
     let selected_for_delete: RwSignal<FxHashSet<MessageId>> = RwSignal::new(FxHashSet::default());
@@ -208,34 +206,30 @@ pub(crate) fn MessageSidebar(on_toggle_theme: UnsyncCallback<()>) -> impl IntoVi
                 >
                     {move || if collapsed.get() { "»" } else { "«" }}
                 </button>
-                <div class="sidebar-title" class:hidden=move || collapsed.get()>
-                    "Messages"
-                </div>
-            </div>
-
-            <div class="sidebar-body" class:hidden=move || collapsed.get()>
-                <div class="sidebar-actions">
-                    <button class="btn btn--secondary" on:click=on_new_message>
+                <div class="sidebar-header-actions" class:hidden=move || collapsed.get()>
+                    <button class="btn btn--secondary btn--small" on:click=on_new_message>
                         "New"
                     </button>
 
                     <button
-                        class="btn btn--danger"
+                        class="btn btn--danger btn--small"
                         on:click=move |_| on_delete_selected.run(())
                         disabled=move || !delete_selected_enabled.get()
                     >
-                        {move || format!("Delete selected ({})", delete_selected_count.get())}
+                        {move || format!("Delete ({})", delete_selected_count.get())}
                     </button>
 
                     <button
-                        class="btn btn--secondary"
+                        class="btn btn--secondary btn--small"
                         on:click=on_view_frames
                         disabled=move || !has_current_message()
                     >
                         "Frames"
                     </button>
                 </div>
+            </div>
 
+            <div class="sidebar-body" class:hidden=move || collapsed.get()>
                 <div class="sidebar-list-controls">
                     <input
                         class="input sidebar-search"
@@ -363,9 +357,6 @@ pub(crate) fn MessageSidebar(on_toggle_theme: UnsyncCallback<()>) -> impl IntoVi
                         />
                     </Show>
                 </div>
-            </div>
-            <div class="sidebar-footer">
-                <ThemeSwitcher is_night=theme_is_dark on_toggle=on_toggle_theme />
             </div>
         </div>
     }
@@ -543,8 +534,7 @@ fn class_row_view(
     let selected_count = {
         let member_ids = member_ids.clone();
         move || {
-            selected_for_delete
-                .with(|set| member_ids.iter().filter(|id| set.contains(id)).count())
+            selected_for_delete.with(|set| member_ids.iter().filter(|id| set.contains(id)).count())
         }
     };
     let class_checked = {

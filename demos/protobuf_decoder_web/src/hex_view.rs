@@ -413,9 +413,8 @@ fn HexRow(
     // Hover moves at mouse frequency but only ever touches the rows the
     // hovered field intersects; keeping it separate leaves all other rows'
     // cells untouched.
-    let row_hover = Memo::new(move |_| {
-        hovered_range.get().filter(|h| h.intersects(row_start, row_end))
-    });
+    let row_hover =
+        Memo::new(move |_| hovered_range.get().filter(|h| h.intersects(row_start, row_end)));
 
     #[derive(Clone, Copy, Debug, PartialEq, Eq)]
     struct CellData {
@@ -482,28 +481,22 @@ fn HexRow(
         })
     });
 
-    let class_for = move |kind: Option<HighlightKind>, range_selected: bool| -> &'static str {
-        match (kind, range_selected) {
-            (_, true) => "hex-byte hex-byte--range-selected",
-            (None, false) => "hex-byte",
-            (Some(HighlightKind::Ancestor), false) => "hex-byte hex-byte--ancestor",
-            (Some(HighlightKind::Hovered), false) => "hex-byte hex-byte--hovered",
-            (Some(HighlightKind::SelectedTag), false) => "hex-byte hex-byte--tag",
-            (Some(HighlightKind::SelectedLenPrefix), false) => {
-                "hex-byte hex-byte--selected-len-prefix"
-            }
-            (Some(HighlightKind::SelectedField(WireType::Varint)), false) => {
+    // Range selection is additive (`hex-byte--range-selected` class binding
+    // on the span): the field-selection background stays visible and only
+    // the range underline stacks on top.
+    let class_for = move |kind: Option<HighlightKind>| -> &'static str {
+        match kind {
+            None => "hex-byte",
+            Some(HighlightKind::Ancestor) => "hex-byte hex-byte--ancestor",
+            Some(HighlightKind::Hovered) => "hex-byte hex-byte--hovered",
+            Some(HighlightKind::SelectedTag) => "hex-byte hex-byte--tag",
+            Some(HighlightKind::SelectedLenPrefix) => "hex-byte hex-byte--selected-len-prefix",
+            Some(HighlightKind::SelectedField(WireType::Varint)) => {
                 "hex-byte hex-byte--selected-varint"
             }
-            (Some(HighlightKind::SelectedField(WireType::I64)), false) => {
-                "hex-byte hex-byte--selected-i64"
-            }
-            (Some(HighlightKind::SelectedField(WireType::Len)), false) => {
-                "hex-byte hex-byte--selected-len"
-            }
-            (Some(HighlightKind::SelectedField(WireType::I32)), false) => {
-                "hex-byte hex-byte--selected-i32"
-            }
+            Some(HighlightKind::SelectedField(WireType::I64)) => "hex-byte hex-byte--selected-i64",
+            Some(HighlightKind::SelectedField(WireType::Len)) => "hex-byte hex-byte--selected-len",
+            Some(HighlightKind::SelectedField(WireType::I32)) => "hex-byte hex-byte--selected-i32",
         }
     };
 
@@ -516,9 +509,13 @@ fn HexRow(
                         cells
                             .iter()
                             .map(|cell| {
-                                let cls = class_for(cell.kind, cell.range_selected);
+                                let cls = class_for(cell.kind);
                                 view! {
-                                    <span class=cls data-i=cell.idx>
+                                    <span
+                                        class=cls
+                                        class:hex-byte--range-selected=cell.range_selected
+                                        data-i=cell.idx
+                                    >
                                         {hex_cell(cell.byte)}
                                     </span>
                                 }
@@ -534,16 +531,27 @@ fn HexRow(
                         cells
                             .iter()
                             .map(|cell| {
-                                let cls = class_for(cell.kind, cell.range_selected);
+                                let cls = class_for(cell.kind);
+                                let range = cell.range_selected;
                                 // Ascii mode resolves to `Static` cells inside
                                 // `row_cells`, so one match covers both modes.
                                 match cell.utf8 {
                                     Utf8Cell::Static(text) => view! {
-                                        <span class=cls data-i=cell.idx>{text}</span>
+                                        <span
+                                            class=cls
+                                            class:hex-byte--range-selected=range
+                                            data-i=cell.idx
+                                        >
+                                            {text}
+                                        </span>
                                     }
                                     .into_any(),
                                     Utf8Cell::Char(ch) => view! {
-                                        <span class=cls data-i=cell.idx>
+                                        <span
+                                            class=cls
+                                            class:hex-byte--range-selected=range
+                                            data-i=cell.idx
+                                        >
                                             {ch.to_string()}
                                         </span>
                                     }
@@ -552,6 +560,7 @@ fn HexRow(
                                         <span
                                             class=cls
                                             class:hex-byte--placeholder=true
+                                            class:hex-byte--range-selected=range
                                             data-i=cell.idx
                                         ></span>
                                     }

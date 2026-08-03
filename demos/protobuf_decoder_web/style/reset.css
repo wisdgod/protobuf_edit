@@ -25,6 +25,17 @@ body {
   background: var(--color-bg-primary);
 }
 
+/* Thin theme-tinted scrollbars everywhere (standard properties; Safari
+   keeps its overlay scrollbars, which is fine). */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--color-border) transparent;
+}
+
+*:hover {
+  scrollbar-color: var(--color-text-tertiary) transparent;
+}
+
 @media (prefers-reduced-motion: no-preference) {
   html.theme-transition body,
   html.theme-transition .sidebar,

@@ -54,28 +54,28 @@ pub(crate) fn EnvelopeFramesPanel() -> impl IntoView {
                 </div>
                 <div class="envelope-frames-controls">
                     <button
-                        class="btn btn--secondary"
+                        class="btn btn--secondary btn--small"
                         on:click=move |_| list_collapsed.update(|v| *v = !*v)
                     >
                         {move || if list_collapsed.get() { "Show list" } else { "Hide list" }}
                     </button>
                     <Show when=move || !list_collapsed.get() fallback=|| ()>
                         <button
-                            class="btn btn--secondary"
+                            class="btn btn--secondary btn--small"
                             on:click=move |_| on_extract_all.run(())
                         >
                             "Extract all"
                         </button>
                         <Show when=show_decompress_controls fallback=|| ()>
                             <button
-                                class="btn btn--secondary"
+                                class="btn btn--secondary btn--small"
                                 on:click=move |_| on_decompress.run(())
                             >
                                 "Auto-decompress → Message"
                             </button>
                         </Show>
                     </Show>
-                    <button class="btn btn--secondary" on:click=move |_| on_close.run(())>
+                    <button class="btn btn--secondary btn--small" on:click=move |_| on_close.run(())>
                         "Close"
                     </button>
                 </div>
@@ -178,7 +178,7 @@ fn frame_row_view(
             </div>
             <div class="frame-actions">
                 <button
-                    class="btn btn--secondary"
+                    class="btn btn--secondary btn--small"
                     on:click=move |ev: leptos::ev::MouseEvent| {
                         ev.stop_propagation();
                         on_extract.run(idx);

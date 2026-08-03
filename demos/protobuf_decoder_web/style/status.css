@@ -1,5 +1,5 @@
 .status-bar {
-  padding: var(--spacing-sm);
+  padding: var(--spacing-xs) var(--spacing-sm);
   background: var(--color-bg-secondary);
   border-top: 1px solid var(--color-border);
   display: flex;

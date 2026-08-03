@@ -75,7 +75,9 @@ pub fn App() -> impl IntoView {
     let split_ref = NodeRef::<html::Div>::new();
     let hex_container_ref = NodeRef::<html::Div>::new();
     let tree_container_ref = NodeRef::<html::Div>::new();
-    let split_pct: RwSignal<f64> = RwSignal::new(50.0);
+    // Hex pane width in px, so sidebar toggling never rescales it. Default
+    // fits one full 16-byte row (offset + hex + text columns).
+    let split_px: RwSignal<f64> = RwSignal::new(620.0);
     let split_dragging: RwSignal<bool> = RwSignal::new(false);
 
     let _stop_hotkeys = use_event_listener(
@@ -222,26 +224,39 @@ pub fn App() -> impl IntoView {
         },
     );
 
-    let on_split_mouse_move = move |ev: leptos::ev::MouseEvent| {
-        if !split_dragging.get_untracked() {
-            return;
-        }
-        let Some(el) = split_ref.get() else {
-            return;
-        };
-        let rect = el.get_bounding_client_rect();
-        let x = f64::from(ev.client_x()) - rect.left();
-        let w = rect.width();
-        if w <= 0.0 {
-            return;
-        }
-        let pct = (x / w * 100.0).clamp(20.0, 80.0);
-        split_pct.set(pct);
-    };
+    // Window-level listeners keep the drag alive when the cursor leaves the
+    // pane; mouseup anywhere ends it.
+    let _stop_split_move = use_event_listener(
+        web_sys::window().expect("window is available"),
+        leptos::ev::mousemove,
+        move |ev: web_sys::MouseEvent| {
+            if !split_dragging.get_untracked() {
+                return;
+            }
+            let Some(el) = split_ref.get() else {
+                return;
+            };
+            let rect = el.get_bounding_client_rect();
+            let w = rect.width();
+            if w <= 0.0 {
+                return;
+            }
+            // Hex pane may collapse to zero; the tree keeps a usable sliver.
+            let max = (w - 220.0).max(0.0);
+            let x = (f64::from(ev.client_x()) - rect.left()).clamp(0.0, max);
+            split_px.set(x);
+        },
+    );
 
-    let stop_split_drag = move |_| {
-        split_dragging.set(false);
-    };
+    let _stop_split_up = use_event_listener(
+        web_sys::window().expect("window is available"),
+        leptos::ev::mouseup,
+        move |_| {
+            if split_dragging.get_untracked() {
+                split_dragging.set(false);
+            }
+        },
+    );
 
     let structure_tree_fallback = move || {
         if raw_bytes.with(std::option::Option::is_some) {
@@ -270,24 +285,18 @@ pub fn App() -> impl IntoView {
         <div class="app">
             <div class="main">
                 <div class="workspace">
-                    <MessageSidebar on_toggle_theme=on_toggle_theme />
+                    <MessageSidebar />
 
-                    <div
-                        node_ref=split_ref
-                        class="split-pane"
-                        on:mousemove=on_split_mouse_move
-                        on:mouseup=stop_split_drag
-                        on:mouseleave=stop_split_drag
-                    >
+                    <div node_ref=split_ref class="split-pane">
                         <div
                             class="split-left"
-                            style:flex=move || format!("0 0 {:.2}%", split_pct.get())
+                            style:flex=move || format!("0 1 {:.0}px", split_px.get())
                         >
                             <div class="panel">
                                 <div class="panel-header">
                                     <span>"Hex View"</span>
                                     <button
-                                        class="btn btn--secondary"
+                                        class="btn btn--secondary btn--small"
                                         on:click=move |_| hex_text_mode.update(|m| *m = m.toggle())
                                     >
                                         {move || hex_text_mode.get().label()}
@@ -305,7 +314,6 @@ pub fn App() -> impl IntoView {
                         ></div>
                         <div class="split-right" style:flex="1 1 0">
                             <div class="panel panel--right">
-                                <div class="panel-header">"Structure Tree"</div>
                                 <div class="structure">
                                     <Breadcrumb />
 
@@ -333,7 +341,7 @@ pub fn App() -> impl IntoView {
                 </div>
             </div>
 
-            <StatusBar />
+            <StatusBar on_toggle_theme=on_toggle_theme />
 
             <ToastContainer toasts=toast.toasts_signal() />
         </div>

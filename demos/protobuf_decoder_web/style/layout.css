@@ -27,12 +27,26 @@
   flex: 1 1 0;
   min-width: 0;
   height: 100%;
+  overflow: hidden;
+}
+
+/* The hex pane holds a fixed px basis (and may shrink to zero); the tree
+   pane absorbs the rest but never collapses below a usable width. */
+.split-right {
+  min-width: 200px;
 }
 
 .split-handle {
   width: var(--split-handle-width);
   cursor: col-resize;
   background: var(--color-border);
+}
+
+.split-handle--h {
+  width: auto;
+  height: var(--split-handle-width);
+  cursor: row-resize;
+  flex: 0 0 auto;
 }
 
 .panel {
@@ -50,7 +64,8 @@
 }
 
 .panel-header {
-  padding: var(--spacing-sm);
+  min-height: var(--header-height);
+  padding: var(--spacing-xs) var(--spacing-sm);
   border-bottom: 1px solid var(--color-border);
   color: var(--color-text-secondary);
   font-size: var(--font-size-sm);

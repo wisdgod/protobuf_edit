@@ -31,6 +31,11 @@
   cursor: pointer;
 }
 
+.btn--small {
+  padding: 2px 8px;
+  font-size: var(--font-size-sm);
+}
+
 .btn--primary {
   background: var(--color-btn-primary-bg);
   color: var(--color-btn-primary-text);

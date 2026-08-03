@@ -5,9 +5,7 @@ use rustc_hash::FxHashSet;
 use crate::messages::MessageId;
 use crate::state::WorkspaceState;
 use crate::toast::{ToastManager, ToastKind};
-use super::{
-    build_selection_path, decode_selection_path, resolve_selection_path,
-};
+use super::{build_selection_path, decode_selection_path, resolve_selection_path};
 use leptos::prelude::*;
 use protobuf_edit::patch::FieldId;
 use protobuf_edit::{Patch, TreeError};

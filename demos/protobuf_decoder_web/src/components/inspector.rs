@@ -2,7 +2,9 @@ use crate::error::UiError;
 use crate::state::{UiState, WorkspaceState};
 use crate::toast::{ToastManager, ToastKind};
 use base64::Engine as _;
+use leptos::html;
 use leptos::prelude::*;
+use leptos_use::use_event_listener;
 use protobuf_edit::patch::FieldId;
 use protobuf_edit::{Buf, Patch, Tag, TreeError, WireType};
 
@@ -114,6 +116,42 @@ pub(crate) fn InspectorDrawer() -> impl IntoView {
     let dirty_fields = workspace.dirty_fields;
     let toast = ui.toast;
     let collapsed = RwSignal::new(false);
+
+    let panel_ref = NodeRef::<html::Div>::new();
+    let panel_height: RwSignal<f64> = RwSignal::new(280.0);
+    let resizing = RwSignal::new(false);
+
+    // Window-level listeners keep the drag alive outside the panel; mouseup
+    // anywhere ends it. The panel bottom is anchored, so its rect bottom is
+    // stable while dragging.
+    let _stop_resize_move = use_event_listener(
+        web_sys::window().expect("window is available"),
+        leptos::ev::mousemove,
+        move |ev: web_sys::MouseEvent| {
+            if !resizing.get_untracked() {
+                return;
+            }
+            let Some(el) = panel_ref.get() else {
+                return;
+            };
+            let rect = el.get_bounding_client_rect();
+            let max = el.parent_element().map_or(f64::MAX, |parent| {
+                (parent.get_bounding_client_rect().height() - 120.0).max(120.0)
+            });
+            let h = (rect.bottom() - f64::from(ev.client_y())).clamp(120.0, max);
+            panel_height.set(h);
+        },
+    );
+
+    let _stop_resize_up = use_event_listener(
+        web_sys::window().expect("window is available"),
+        leptos::ev::mouseup,
+        move |_| {
+            if resizing.get_untracked() {
+                resizing.set(false);
+            }
+        },
+    );
 
     let varint_text = RwSignal::new(String::new());
     let bytes_view: RwSignal<BytesView> = RwSignal::new(BytesView::Hex);
@@ -698,7 +736,9 @@ pub(crate) fn InspectorDrawer() -> impl IntoView {
                     return;
                 };
                 if wt == WireType::I32 {
-                    edit_patch(patch_state, |patch| patch.insert_i32_bits(target, tag, value as u32))
+                    edit_patch(patch_state, |patch| {
+                        patch.insert_i32_bits(target, tag, value as u32)
+                    })
                 } else {
                     edit_patch(patch_state, |patch| patch.insert_i64_bits(target, tag, value))
                 }
@@ -786,28 +826,28 @@ pub(crate) fn InspectorDrawer() -> impl IntoView {
             <div class="inspector-panel-title">{move || header_title.get()}</div>
             <div class="inspector-panel-actions">
                 <button
-                    class="btn btn--secondary"
+                    class="btn btn--secondary btn--small"
                     on:click=move |_| on_toggle_collapsed.run(())
                 >
                     {move || if collapsed.get() { "Show" } else { "Hide" }}
                 </button>
                 <Show when=move || !collapsed.get() && meta.get().is_some() fallback=|| ()>
                     <button
-                        class="btn btn--danger"
+                        class="btn btn--danger btn--small"
                         on:click=on_delete
                         disabled=move || read_only.get()
                     >
                         "Delete"
                     </button>
                     <button
-                        class="btn btn--secondary"
+                        class="btn btn--secondary btn--small"
                         on:click=on_clear
                         disabled=move || !clear_enabled.get()
                     >
                         "Clear"
                     </button>
                     <button
-                        class="btn btn--primary"
+                        class="btn btn--primary btn--small"
                         on:click=on_apply
                         disabled=move || !apply_enabled.get()
                     >
@@ -1117,9 +1157,28 @@ pub(crate) fn InspectorDrawer() -> impl IntoView {
     };
 
     view! {
-        <div class="inspector-panel" class:inspector-panel--collapsed=move || collapsed.get()>
+        <div
+            node_ref=panel_ref
+            class="inspector-panel"
+            class:inspector-panel--collapsed=move || collapsed.get()
+            style:height=move || {
+                if collapsed.get() {
+                    "auto".to_string()
+                } else {
+                    format!("{:.0}px", panel_height.get())
+                }
+            }
+        >
+            <div
+                class="split-handle split-handle--h"
+                class:hidden=move || collapsed.get()
+                on:mousedown=move |ev: leptos::ev::MouseEvent| {
+                    ev.prevent_default();
+                    resizing.set(true);
+                }
+            ></div>
             {panel_header}
-            <div class:hidden=move || collapsed.get()>{body}</div>
+            <div class="inspector-body" class:hidden=move || collapsed.get()>{body}</div>
         </div>
     }
 }

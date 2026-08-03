@@ -66,6 +66,14 @@
   background: var(--color-hl-ancestor);
 }
 
+/* Byte-range selection. Deliberately placed before the field-selection
+   rules: on overlap the field background wins and only the underline marks
+   the range, instead of two translucent tints stacking. */
+.hex-byte--range-selected {
+  background: var(--color-hl-range-sel);
+  box-shadow: inset 0 -2px 0 0 var(--color-hl-range-sel-outline);
+}
+
 .hex-byte--tag {
   background: var(--color-hl-tag);
   font-weight: 600;
@@ -92,11 +100,6 @@
 
 .hex-byte--selected-i32 {
   background: var(--color-hl-i32-sel);
-}
-
-.hex-byte--range-selected {
-  background: var(--color-hl-range-sel);
-  outline: 1px solid var(--color-hl-range-sel-outline);
 }
 
 .hex-context-menu {

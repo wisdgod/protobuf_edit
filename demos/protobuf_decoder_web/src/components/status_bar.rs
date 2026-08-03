@@ -1,18 +1,20 @@
+use super::ThemeSwitcher;
 use crate::hex_copy::CopyFormat;
 use crate::services::{ExportService, MessageService, WorkspaceService};
-use crate::state::{MessageCatalogState, WorkspaceState};
+use crate::state::{MessageCatalogState, UiState, WorkspaceState};
 use leptos::html;
 use leptos::oco::Oco;
 use leptos::prelude::*;
 use wasm_bindgen::JsCast;
 
 #[component]
-pub(crate) fn StatusBar() -> impl IntoView {
+pub(crate) fn StatusBar(on_toggle_theme: UnsyncCallback<()>) -> impl IntoView {
     let export_svc = expect_context::<ExportService>();
     let ws_svc = expect_context::<WorkspaceService>();
     let msg_svc = expect_context::<MessageService>();
     let workspace = expect_context::<WorkspaceState>();
     let messages = expect_context::<MessageCatalogState>();
+    let theme_is_dark = expect_context::<UiState>().theme_is_dark;
 
     let has_current_message = move || messages.current_message_id.get().is_some();
 
@@ -71,7 +73,7 @@ pub(crate) fn StatusBar() -> impl IntoView {
             <div class="status-actions">
                 <div class="dropdown" node_ref=menu_ref>
                     <button
-                        class="btn btn--secondary"
+                        class="btn btn--secondary btn--small"
                         on:click=move |_| copy_open.update(|v| *v = !*v)
                         disabled=move || !has_current_message()
                     >
@@ -86,21 +88,21 @@ pub(crate) fn StatusBar() -> impl IntoView {
                     </Show>
                 </div>
                 <button
-                    class="btn btn--secondary"
+                    class="btn btn--secondary btn--small"
                     on:click=move |_| url_svc.copy_share_url()
                     disabled=move || !has_current_message()
                 >
                     "Share URL"
                 </button>
                 <button
-                    class="btn btn--secondary"
+                    class="btn btn--secondary btn--small"
                     on:click=move |_| dl_svc.download_bin()
                     disabled=move || !has_current_message()
                 >
                     "Download .bin"
                 </button>
                 <button
-                    class="btn btn--secondary"
+                    class="btn btn--secondary btn--small"
                     on:click=move |_| ws_svc.save_expand_defaults()
                     disabled=move || {
                         !has_current_message()
@@ -111,7 +113,7 @@ pub(crate) fn StatusBar() -> impl IntoView {
                     "Save Expand"
                 </button>
                 <button
-                    class="btn btn--primary"
+                    class="btn btn--primary btn--small"
                     on:click=move |_| {
                         if workspace.dirty_count.get() != 0 {
                             let _ = save_ws_svc.save_reparse();
@@ -136,6 +138,7 @@ pub(crate) fn StatusBar() -> impl IntoView {
                         }
                     }}
                 </button>
+                <ThemeSwitcher is_night=theme_is_dark on_toggle=on_toggle_theme />
             </div>
         </div>
     }

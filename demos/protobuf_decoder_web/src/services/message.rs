@@ -388,8 +388,7 @@ impl MessageService {
         // no leaked Closure) is needed.
         let this = self.clone();
         spawn_local(async move {
-            let Ok(result) = wasm_bindgen_futures::JsFuture::from(file.array_buffer()).await
-            else {
+            let Ok(result) = wasm_bindgen_futures::JsFuture::from(file.array_buffer()).await else {
                 this.toast.show(ToastKind::Error, "Failed to read file contents.");
                 return;
             };
