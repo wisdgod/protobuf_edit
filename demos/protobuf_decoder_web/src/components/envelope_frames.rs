@@ -1,16 +1,15 @@
 use crate::services::EnvelopeService;
-use crate::state::WorkspaceState;
+use crate::state::EnvelopeTabState;
 use leptos::prelude::*;
 use std::sync::Arc;
 
 #[component]
-pub(crate) fn EnvelopeFramesPanel() -> impl IntoView {
-    let workspace = expect_context::<WorkspaceState>();
+pub(crate) fn EnvelopeFramesPanel(env: EnvelopeTabState) -> impl IntoView {
     let env_svc = expect_context::<EnvelopeService>();
-    let envelope_view = workspace.envelope_view;
-    let selected = workspace.envelope_selected;
+    let envelope_view = env.view;
+    let selected = env.selected;
 
-    let list_collapsed = RwSignal::new(true);
+    let list_collapsed = RwSignal::new(false);
 
     let frames_len =
         move || envelope_view.with(|s| s.as_ref().map(|v| v.frames.len())).unwrap_or(0);

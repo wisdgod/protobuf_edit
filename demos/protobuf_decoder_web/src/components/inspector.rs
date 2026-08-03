@@ -110,15 +110,14 @@ pub(crate) fn InspectorDrawer() -> impl IntoView {
     let workspace = expect_context::<WorkspaceState>();
     let ui = expect_context::<UiState>();
     let patch_state = workspace.patch_state;
-    let read_only = workspace.read_only;
     let selected = workspace.selected;
     let expanded = workspace.expanded;
     let dirty_fields = workspace.dirty_fields;
+    let insert_open = workspace.insert_open;
     let toast = ui.toast;
-    let collapsed = RwSignal::new(false);
 
     let panel_ref = NodeRef::<html::Div>::new();
-    let panel_height: RwSignal<f64> = RwSignal::new(280.0);
+    let panel_height = workspace.inspector_height;
     let resizing = RwSignal::new(false);
 
     // Window-level listeners keep the drag alive outside the panel; mouseup
@@ -236,9 +235,6 @@ pub(crate) fn InspectorDrawer() -> impl IntoView {
     });
 
     let clear_enabled = Memo::new(move |_| {
-        if read_only.get() {
-            return false;
-        }
         let Some(fid) = selected.get() else {
             return false;
         };
@@ -286,9 +282,6 @@ pub(crate) fn InspectorDrawer() -> impl IntoView {
     });
 
     let apply_enabled = Memo::new(move |_| {
-        if read_only.get() {
-            return false;
-        }
         let Some(wt) = selected_wire.get() else {
             return false;
         };
@@ -331,13 +324,6 @@ pub(crate) fn InspectorDrawer() -> impl IntoView {
     });
 
     let on_apply = move |_| {
-        if read_only.get() {
-            toast.show(
-                ToastKind::Error,
-                "Envelope frame view is read-only. Extract the frame to a message to edit.",
-            );
-            return;
-        }
         if !apply_enabled.get_untracked() {
             return;
         }
@@ -466,13 +452,6 @@ pub(crate) fn InspectorDrawer() -> impl IntoView {
     };
 
     let on_delete = move |_| {
-        if read_only.get() {
-            toast.show(
-                ToastKind::Error,
-                "Envelope frame view is read-only. Extract the frame to a message to edit.",
-            );
-            return;
-        }
         let Some(fid) = selected.get_untracked() else {
             return;
         };
@@ -503,13 +482,6 @@ pub(crate) fn InspectorDrawer() -> impl IntoView {
     };
 
     let on_clear = move |_| {
-        if read_only.get() {
-            toast.show(
-                ToastKind::Error,
-                "Envelope frame view is read-only. Extract the frame to a message to edit.",
-            );
-            return;
-        }
         let Some(fid) = selected.get_untracked() else {
             return;
         };
@@ -668,9 +640,6 @@ pub(crate) fn InspectorDrawer() -> impl IntoView {
     });
 
     let insert_enabled = Memo::new(move |_| {
-        if read_only.get() {
-            return false;
-        }
         if patch_state.with(std::option::Option::is_none) {
             return false;
         }
@@ -685,13 +654,6 @@ pub(crate) fn InspectorDrawer() -> impl IntoView {
     });
 
     let on_insert = move |_| {
-        if read_only.get() {
-            toast.show(
-                ToastKind::Error,
-                "Envelope frame view is read-only. Extract the frame to a message to edit.",
-            );
-            return;
-        }
         if !insert_enabled.get_untracked() {
             return;
         }
@@ -789,11 +751,12 @@ pub(crate) fn InspectorDrawer() -> impl IntoView {
             let wt = tag.wire_type();
             return format!("Inspector: Field {field_number} ({wt:?})");
         }
-        "Inspector".to_string()
+        "Insert Field".to_string()
     });
 
-    let on_toggle_collapsed = UnsyncCallback::new(move |()| {
-        collapsed.update(|v| *v = !*v);
+    let on_close = UnsyncCallback::new(move |()| {
+        selected.set(None);
+        insert_open.set(false);
     });
 
     let on_bytes_view_change = bytes_view_change_handler(bytes_view, bytes_text, toast);
@@ -807,63 +770,40 @@ pub(crate) fn InspectorDrawer() -> impl IntoView {
         insert_wire.set(wt);
     });
 
-    let empty_view = move || {
+    let panel_header = move || {
         view! {
-            <div class="inspector-empty">
-                {move || {
-                    if selected.get().is_some() {
-                        "No field selected."
-                    } else {
-                        "Select a field to inspect."
-                    }
-                }}
-            </div>
-        }
-    };
-
-    let panel_header = view! {
-        <div class="inspector-panel-header">
-            <div class="inspector-panel-title">{move || header_title.get()}</div>
-            <div class="inspector-panel-actions">
-                <button
-                    class="btn btn--secondary btn--small"
-                    on:click=move |_| on_toggle_collapsed.run(())
-                >
-                    {move || if collapsed.get() { "Show" } else { "Hide" }}
-                </button>
-                <Show when=move || !collapsed.get() && meta.get().is_some() fallback=|| ()>
-                    <button
-                        class="btn btn--danger btn--small"
-                        on:click=on_delete
-                        disabled=move || read_only.get()
-                    >
-                        "Delete"
-                    </button>
+            <div class="inspector-panel-header">
+                <div class="inspector-panel-title">{move || header_title.get()}</div>
+                <div class="inspector-panel-actions">
+                    <Show when=move || meta.get().is_some() fallback=|| ()>
+                        <button class="btn btn--danger btn--small" on:click=on_delete>
+                            "Delete"
+                        </button>
+                        <button
+                            class="btn btn--secondary btn--small"
+                            on:click=on_clear
+                            disabled=move || !clear_enabled.get()
+                        >
+                            "Clear"
+                        </button>
+                        <button
+                            class="btn btn--primary btn--small"
+                            on:click=on_apply
+                            disabled=move || !apply_enabled.get()
+                        >
+                            "Apply"
+                        </button>
+                    </Show>
                     <button
                         class="btn btn--secondary btn--small"
-                        on:click=on_clear
-                        disabled=move || !clear_enabled.get()
+                        title="Close (deselect)"
+                        on:click=move |_| on_close.run(())
                     >
-                        "Clear"
+                        "\u{00D7}"
                     </button>
-                    <button
-                        class="btn btn--primary btn--small"
-                        on:click=on_apply
-                        disabled=move || !apply_enabled.get()
-                    >
-                        "Apply"
-                    </button>
-                </Show>
+                </div>
             </div>
-        </div>
-    };
-
-    let read_only_hint = view! {
-        <Show when=move || read_only.get() fallback=|| ()>
-            <div class="inspector-hint">
-                "Envelope frame view is read-only. Use \"Extract\" to open the frame payload as an editable message."
-            </div>
-        </Show>
+        }
     };
 
     let selected_field_view = move || {
@@ -999,187 +939,187 @@ pub(crate) fn InspectorDrawer() -> impl IntoView {
         })
     };
 
-    let insert_section = view! {
-        <details class="inspector-section">
-            <summary class="inspector-summary">"Insert Field"</summary>
-            <div class="inspector-header">
-                <div class="inspector-title">"Insert Field"</div>
-                <div class="inspector-actions">
-                    <button
-                        class="btn btn--primary"
-                        on:click=on_insert
-                        disabled=move || !insert_enabled.get()
-                    >
-                        "Insert"
-                    </button>
+    let insert_section = move || {
+        view! {
+            <Show when=move || insert_open.get() fallback=|| ()>
+            <div class="inspector-section">
+                <div class="inspector-header">
+                    <div class="inspector-title">"Insert Field"</div>
+                    <div class="inspector-actions">
+                        <button
+                            class="btn btn--primary"
+                            on:click=on_insert
+                            disabled=move || !insert_enabled.get()
+                        >
+                            "Insert"
+                        </button>
+                    </div>
                 </div>
-            </div>
 
-            <div class="inspector-meta">
-                <div>
-                    {move || {
-                        insert_target
-                            .get().map_or_else(|| "Target: —".to_string(), |(msg, label)| format!("Target: {label} ({msg:?})"))
-                    }}
+                <div class="inspector-meta">
+                    <div>
+                        {move || {
+                            insert_target
+                                .get().map_or_else(|| "Target: —".to_string(), |(msg, label)| format!("Target: {label} ({msg:?})"))
+                        }}
+                    </div>
+                    <div>"Inserted fields have no spans until Save & Reparse."</div>
                 </div>
-                <div>"Inserted fields have no spans until Save & Reparse."</div>
-            </div>
 
-            <div class="inspector-editor">
-                <label class="inspector-label">"Field number"</label>
-                <input
-                    class="input inspector-input"
-                    placeholder="1"
-                    prop:value=move || insert_field_number.get()
-                    on:input=move |ev| insert_field_number.set(event_target_value(&ev))
-                />
-                {validation_error(insert_tag_validation)}
-
-                <label class="inspector-label">"Wire type"</label>
-                <select
-                    class="select inspector-select"
-                    prop:value=move || wire_type_value(insert_wire.get())
-                    on:change=move |ev| on_insert_wire_change.run(ev)
-                >
-                    <option value={wire_type_value(WireType::Varint)}>"Varint"</option>
-                    <option value={wire_type_value(WireType::Len)}>"Len"</option>
-                    <option value={wire_type_value(WireType::I32)}>"I32 (fixed32)"</option>
-                    <option value={wire_type_value(WireType::I64)}>"I64 (fixed64)"</option>
-                </select>
-
-                <Show when=move || insert_wire.get() == WireType::Varint fallback=|| ()>
-                    <label class="inspector-label">"Value"</label>
+                <div class="inspector-editor">
+                    <label class="inspector-label">"Field number"</label>
                     <input
                         class="input inspector-input"
-                        placeholder="0"
-                        prop:value=move || insert_varint_text.get()
-                        on:input=move |ev| insert_varint_text.set(event_target_value(&ev))
+                        placeholder="1"
+                        prop:value=move || insert_field_number.get()
+                        on:input=move |ev| insert_field_number.set(event_target_value(&ev))
                     />
-                    {validation_error(insert_varint_validation)}
-                    <Show
-                        when=move || matches!(insert_varint_validation.get(), Ok(Some(_)))
-                        fallback=|| ()
-                    >
-                        <div class="inspector-hint">
-                            {move || {
-                                let Ok(Some(v)) = insert_varint_validation.get() else {
-                                    return "—".to_string();
-                                };
-                                let zz = protobuf_edit::varint::zigzag_decode64(v);
-                                format!("zigzag i64: {zz} | hex: 0x{v:X}")
-                            }}
-                        </div>
-                    </Show>
-                </Show>
+                    {validation_error(insert_tag_validation)}
 
-                <Show when=move || insert_wire.get() == WireType::Len fallback=|| ()>
-                    <label class="inspector-label">"Bytes"</label>
+                    <label class="inspector-label">"Wire type"</label>
                     <select
                         class="select inspector-select"
-                        prop:value=move || insert_bytes_view.get().as_value()
-                        on:change=move |ev| on_insert_bytes_view_change.run(ev)
+                        prop:value=move || wire_type_value(insert_wire.get())
+                        on:change=move |ev| on_insert_wire_change.run(ev)
                     >
-                        <option value={BytesView::Hex.as_value()}>"Hex"</option>
-                        <option value={BytesView::Utf8.as_value()}>"UTF-8"</option>
-                        <option value={BytesView::Base64.as_value()}>"Base64"</option>
+                        <option value={wire_type_value(WireType::Varint)}>"Varint"</option>
+                        <option value={wire_type_value(WireType::Len)}>"Len"</option>
+                        <option value={wire_type_value(WireType::I32)}>"I32 (fixed32)"</option>
+                        <option value={wire_type_value(WireType::I64)}>"I64 (fixed64)"</option>
                     </select>
-                    <textarea
-                        class="input inspector-textarea"
-                        prop:value=move || insert_bytes_text.get()
-                        on:input=move |ev| insert_bytes_text.set(event_target_value(&ev))
-                    />
-                    {validation_error(insert_bytes_validation)}
-                    <Show
-                        when=move || matches!(insert_bytes_validation.get(), Ok(Some(_)))
-                        fallback=|| ()
-                    >
-                        <div class="inspector-hint">
-                            {move || {
-                                let Some(len) = insert_bytes_validation
-                                    .with(|v| match v {
-                                        Ok(Some(bytes)) => Some(bytes.len()),
-                                        _ => None,
-                                    })
-                                else {
-                                    return "—".to_string();
-                                };
-                                format!("{len} byte(s)")
-                            }}
-                        </div>
-                    </Show>
-                </Show>
 
-                <Show
-                    when=move || matches!(insert_wire.get(), WireType::I32 | WireType::I64)
-                    fallback=|| ()
-                >
-                    <label class="inspector-label">"Bits"</label>
-                    <input
-                        class="input inspector-input"
-                        placeholder="0x0"
-                        prop:value=move || insert_fixed_text.get()
-                        on:input=move |ev| insert_fixed_text.set(event_target_value(&ev))
-                    />
-                    {validation_error(insert_fixed_validation)}
+                    <Show when=move || insert_wire.get() == WireType::Varint fallback=|| ()>
+                        <label class="inspector-label">"Value"</label>
+                        <input
+                            class="input inspector-input"
+                            placeholder="0"
+                            prop:value=move || insert_varint_text.get()
+                            on:input=move |ev| insert_varint_text.set(event_target_value(&ev))
+                        />
+                        {validation_error(insert_varint_validation)}
+                        <Show
+                            when=move || matches!(insert_varint_validation.get(), Ok(Some(_)))
+                            fallback=|| ()
+                        >
+                            <div class="inspector-hint">
+                                {move || {
+                                    let Ok(Some(v)) = insert_varint_validation.get() else {
+                                        return "—".to_string();
+                                    };
+                                    let zz = protobuf_edit::varint::zigzag_decode64(v);
+                                    format!("zigzag i64: {zz} | hex: 0x{v:X}")
+                                }}
+                            </div>
+                        </Show>
+                    </Show>
+
+                    <Show when=move || insert_wire.get() == WireType::Len fallback=|| ()>
+                        <label class="inspector-label">"Bytes"</label>
+                        <select
+                            class="select inspector-select"
+                            prop:value=move || insert_bytes_view.get().as_value()
+                            on:change=move |ev| on_insert_bytes_view_change.run(ev)
+                        >
+                            <option value={BytesView::Hex.as_value()}>"Hex"</option>
+                            <option value={BytesView::Utf8.as_value()}>"UTF-8"</option>
+                            <option value={BytesView::Base64.as_value()}>"Base64"</option>
+                        </select>
+                        <textarea
+                            class="input inspector-textarea"
+                            prop:value=move || insert_bytes_text.get()
+                            on:input=move |ev| insert_bytes_text.set(event_target_value(&ev))
+                        />
+                        {validation_error(insert_bytes_validation)}
+                        <Show
+                            when=move || matches!(insert_bytes_validation.get(), Ok(Some(_)))
+                            fallback=|| ()
+                        >
+                            <div class="inspector-hint">
+                                {move || {
+                                    let Some(len) = insert_bytes_validation
+                                        .with(|v| match v {
+                                            Ok(Some(bytes)) => Some(bytes.len()),
+                                            _ => None,
+                                        })
+                                    else {
+                                        return "—".to_string();
+                                    };
+                                    format!("{len} byte(s)")
+                                }}
+                            </div>
+                        </Show>
+                    </Show>
+
                     <Show
-                        when=move || matches!(insert_fixed_validation.get(), Ok(Some(_)))
+                        when=move || matches!(insert_wire.get(), WireType::I32 | WireType::I64)
                         fallback=|| ()
                     >
-                        <div class="inspector-hint">
-                            {move || {
-                                let Ok(Some(v)) = insert_fixed_validation.get() else {
-                                    return "—".to_string();
-                                };
-                                match insert_wire.get() {
-                                    WireType::I32 => {
-                                        let bits = v as u32;
-                                        format!("u32: {bits} | hex: 0x{bits:08X}")
+                        <label class="inspector-label">"Bits"</label>
+                        <input
+                            class="input inspector-input"
+                            placeholder="0x0"
+                            prop:value=move || insert_fixed_text.get()
+                            on:input=move |ev| insert_fixed_text.set(event_target_value(&ev))
+                        />
+                        {validation_error(insert_fixed_validation)}
+                        <Show
+                            when=move || matches!(insert_fixed_validation.get(), Ok(Some(_)))
+                            fallback=|| ()
+                        >
+                            <div class="inspector-hint">
+                                {move || {
+                                    let Ok(Some(v)) = insert_fixed_validation.get() else {
+                                        return "—".to_string();
+                                    };
+                                    match insert_wire.get() {
+                                        WireType::I32 => {
+                                            let bits = v as u32;
+                                            format!("u32: {bits} | hex: 0x{bits:08X}")
+                                        }
+                                        WireType::I64 => format!("u64: {v} | hex: 0x{v:016X}"),
+                                        _ => "—".to_string(),
                                     }
-                                    WireType::I64 => format!("u64: {v} | hex: 0x{v:016X}"),
-                                    _ => "—".to_string(),
-                                }
-                            }}
-                        </div>
+                                }}
+                            </div>
+                        </Show>
                     </Show>
-                </Show>
+                </div>
             </div>
-        </details>
-    };
-
-    let body = view! {
-        <div class="inspector">
-            {read_only_hint}
-            <Show when=move || meta.get().is_some() fallback=empty_view>
-                {selected_field_view}
             </Show>
-            {insert_section}
-        </div>
+        }
     };
 
+    let body = move || {
+        view! {
+            <div class="inspector">
+                <Show when=move || meta.get().is_some() fallback=|| ()>
+                    {selected_field_view}
+                </Show>
+                {insert_section}
+            </div>
+        }
+    };
+
+    // The drawer only exists while there is something to show: a selected
+    // field or the insert form. Otherwise the tree gets the full height.
     view! {
-        <div
-            node_ref=panel_ref
-            class="inspector-panel"
-            class:inspector-panel--collapsed=move || collapsed.get()
-            style:height=move || {
-                if collapsed.get() {
-                    "auto".to_string()
-                } else {
-                    format!("{:.0}px", panel_height.get())
-                }
-            }
-        >
+        <Show when=move || selected.get().is_some() || insert_open.get() fallback=|| ()>
             <div
-                class="split-handle split-handle--h"
-                class:hidden=move || collapsed.get()
-                on:mousedown=move |ev: leptos::ev::MouseEvent| {
-                    ev.prevent_default();
-                    resizing.set(true);
-                }
-            ></div>
-            {panel_header}
-            <div class="inspector-body" class:hidden=move || collapsed.get()>{body}</div>
-        </div>
+                node_ref=panel_ref
+                class="inspector-panel"
+                style:height=move || format!("{:.0}px", panel_height.get())
+            >
+                <div
+                    class="split-handle split-handle--h"
+                    on:mousedown=move |ev: leptos::ev::MouseEvent| {
+                        ev.prevent_default();
+                        resizing.set(true);
+                    }
+                ></div>
+                {panel_header}
+                <div class="inspector-body">{body}</div>
+            </div>
+        </Show>
     }
 }
 

@@ -1,26 +1,19 @@
-use crate::components::{
-    Breadcrumb, EnvelopeFramesPanel, FieldTree, InspectorDrawer, MessageSidebar, StatusBar,
-};
-use crate::hex_view::HexGrid;
-use crate::messages::{self, MessageMeta};
+use crate::components::{DocumentView, EnvelopeTabView, StartPage, TabStrip, ThemeSwitcher};
+use crate::messages::{self, MessageId, MessageMeta};
 use crate::services::{EnvelopeService, ExportService, MessageService, WorkspaceService};
-use crate::state::{parse_theme, MessageCatalogState, Theme, UiState, WorkspaceState};
-use crate::toast::{ToastContainer, ToastKind, ToastManager};
+use crate::state::{parse_theme, MessageCatalogState, TabsState, Theme, UiState};
+use crate::toast::{ToastContainer, ToastManager};
 use crate::web::{get_document_theme, set_document_theme, start_theme_transition};
-use leptos::html;
 use leptos::prelude::*;
-use leptos_use::use_event_listener;
-use wasm_bindgen::JsCast;
 
 #[component]
 pub fn App() -> impl IntoView {
-    let ws = WorkspaceState::new();
     let toast = ToastManager::new();
 
     let raw_input = RwSignal::new(String::new());
     let import_name_text = RwSignal::new(String::new());
     let messages_list: RwSignal<Vec<MessageMeta>> = RwSignal::new(Vec::new());
-    let current_message_id = RwSignal::new(None);
+    let current_message_id: RwSignal<Option<MessageId>> = RwSignal::new(None);
     let message_name_text = RwSignal::new(String::new());
     let frame_name_template_text = RwSignal::new(messages::DEFAULT_FRAME_NAME_TEMPLATE.to_string());
 
@@ -41,16 +34,16 @@ pub fn App() -> impl IntoView {
         message_name_text,
         frame_name_template_text,
     };
-    let ui = UiState { theme_is_dark, toast };
+    let ui = UiState { toast };
 
-    let ws_svc = WorkspaceService::new(ws.clone(), catalog.clone(), toast);
-    let load_nonce: RwSignal<u64> = RwSignal::new(0);
-    let msg_svc =
-        MessageService::new(ws.clone(), catalog.clone(), toast, ws_svc.clone(), load_nonce);
-    let env_svc = EnvelopeService::new(ws.clone(), catalog.clone(), toast, msg_svc.clone());
-    let export_svc = ExportService::new(ws.clone(), catalog.clone(), toast);
+    let tabs = TabsState::new(current_message_id);
 
-    provide_context(ws.clone());
+    let ws_svc = WorkspaceService::new(tabs.clone(), catalog.clone(), toast);
+    let msg_svc = MessageService::new(tabs.clone(), catalog.clone(), toast, ws_svc.clone());
+    let env_svc = EnvelopeService::new(tabs.clone(), catalog.clone(), toast, msg_svc.clone());
+    let export_svc = ExportService::new(tabs.clone(), catalog.clone(), toast);
+
+    provide_context(tabs.clone());
     provide_context(catalog);
     provide_context(ui);
     provide_context(msg_svc.clone());
@@ -62,216 +55,46 @@ pub fn App() -> impl IntoView {
         let _ = set_document_theme(theme.get().as_str());
     });
 
-    let patch_state = ws.patch_state;
-    let raw_bytes = ws.raw_bytes;
-    let envelope_view = ws.envelope_view;
-    let selected = ws.selected;
-    let expanded = ws.expanded;
-    let dirty_count = ws.dirty_count;
-    let hex_text_mode = ws.hex_text_mode;
+    {
+        let msg_svc = msg_svc.clone();
+        Effect::new(move |_| msg_svc.bootstrap());
+    }
 
-    Effect::new(move |_| msg_svc.bootstrap());
-
-    let split_ref = NodeRef::<html::Div>::new();
-    let hex_container_ref = NodeRef::<html::Div>::new();
-    let tree_container_ref = NodeRef::<html::Div>::new();
-    // Hex pane width in px, so sidebar toggling never rescales it. Default
-    // fits one full 16-byte row (offset + hex + text columns).
-    let split_px: RwSignal<f64> = RwSignal::new(620.0);
-    let split_dragging: RwSignal<bool> = RwSignal::new(false);
-
-    let _stop_hotkeys = use_event_listener(
-        web_sys::window().expect("window is available"),
-        leptos::ev::keydown,
-        move |ev: web_sys::KeyboardEvent| {
-            if ev.target().is_some_and(|target| {
-                target.dyn_ref::<web_sys::HtmlInputElement>().is_some()
-                    || target.dyn_ref::<web_sys::HtmlTextAreaElement>().is_some()
-                    || target.dyn_ref::<web_sys::HtmlSelectElement>().is_some()
-            }) {
-                return;
+    // Persist the working set (open tabs + active tab) across reloads.
+    {
+        let tabs = tabs.clone();
+        Effect::new(move |prev: Option<()>| {
+            let open = tabs.open_tabs_persisted();
+            let active = tabs.active_tab_persisted();
+            // Skip the very first run so bootstrap restoration reads the
+            // stored values before this effect overwrites them.
+            if prev.is_some() {
+                let _ = messages::set_open_tabs(&open);
+                let _ = messages::set_active_tab(active);
             }
+        });
+    }
 
-            let key = ev.key();
-
-            if key == "Tab" && !ev.ctrl_key() && !ev.meta_key() && !ev.alt_key() {
-                let Some(hex) = hex_container_ref.get() else {
-                    return;
-                };
-                let Some(tree) = tree_container_ref.get() else {
-                    return;
-                };
-                ev.prevent_default();
-
-                let active_in_hex = web_sys::window()
-                    .and_then(|w| w.document())
-                    .and_then(|d| d.active_element())
-                    .is_some_and(|active| {
-                        let active: web_sys::Node = active.unchecked_into();
-                        let hex: web_sys::Node = hex.clone().unchecked_into();
-                        hex.contains(Some(&active))
-                    });
-
-                if active_in_hex {
-                    let _ = tree.focus();
-                } else {
-                    let _ = hex.focus();
-                }
-                return;
-            }
-
-            if (ev.ctrl_key() || ev.meta_key()) && key.eq_ignore_ascii_case("z") {
-                if patch_state.with_untracked(std::option::Option::is_some)
-                    && dirty_count.get_untracked() > 0
-                {
-                    ev.prevent_default();
-                    ws_svc.revert_edits();
-                }
-                return;
-            }
-
-            if (ev.ctrl_key() || ev.meta_key()) && key.eq_ignore_ascii_case("s") {
-                ev.prevent_default();
-                if patch_state.with_untracked(std::option::Option::is_some)
-                    && dirty_count.get_untracked() > 0
-                {
-                    let _ = ws_svc.save_reparse();
-                }
-                return;
-            }
-
-            match key.as_str() {
-                "Escape" => {
-                    ev.prevent_default();
-                    selected.set(None);
-                    ws.hex_selection.set(None);
-                }
-                "ArrowDown" => {
-                    ev.prevent_default();
-                    let next = ws.visible_fields.with_untracked(|visible| {
-                        selected.get_untracked().map_or_else(
-                            || visible.first().copied(),
-                            |cur| {
-                                visible
-                                    .iter()
-                                    .position(|&f| f == cur)
-                                    .and_then(|i| visible.get(i + 1))
-                                    .copied()
-                                    .or(Some(cur))
-                            },
-                        )
-                    });
-                    if next.is_some() {
-                        selected.set(next);
-                    }
-                }
-                "ArrowUp" => {
-                    ev.prevent_default();
-                    let prev = ws.visible_fields.with_untracked(|visible| {
-                        selected.get_untracked().map_or_else(
-                            || visible.last().copied(),
-                            |cur| {
-                                visible
-                                    .iter()
-                                    .position(|&f| f == cur)
-                                    .and_then(|i| i.checked_sub(1).and_then(|j| visible.get(j)))
-                                    .copied()
-                                    .or(Some(cur))
-                            },
-                        )
-                    });
-                    if prev.is_some() {
-                        selected.set(prev);
-                    }
-                }
-                "Enter" => {
-                    let Some(field) = selected.get_untracked() else {
-                        return;
-                    };
-                    let is_len = patch_state.with_untracked(|p| {
-                        let Some(patch) = p.as_ref() else {
-                            return false;
-                        };
-                        patch
-                            .field_tag(field)
-                            .is_ok_and(|tag| tag.wire_type() == protobuf_edit::WireType::Len)
-                    });
-                    if !is_len {
-                        return;
-                    }
-
-                    ev.prevent_default();
-
-                    if expanded.with_untracked(|s| s.contains(&field)) {
-                        expanded.update(|s| {
-                            s.remove(&field);
-                        });
-                        return;
-                    }
-
-                    match crate::workspace::parse_child_untracked(patch_state, field) {
-                        Ok(_child) => expanded.update(|s| {
-                            s.insert(field);
-                        }),
-                        Err(e) => toast.show(
-                            ToastKind::Error,
-                            format!("Failed to parse child message: {e:?}"),
-                        ),
-                    }
-                }
-                _ => {}
-            }
-        },
-    );
-
-    // Window-level listeners keep the drag alive when the cursor leaves the
-    // pane; mouseup anywhere ends it.
-    let _stop_split_move = use_event_listener(
-        web_sys::window().expect("window is available"),
-        leptos::ev::mousemove,
-        move |ev: web_sys::MouseEvent| {
-            if !split_dragging.get_untracked() {
-                return;
-            }
-            let Some(el) = split_ref.get() else {
-                return;
-            };
-            let rect = el.get_bounding_client_rect();
-            let w = rect.width();
-            if w <= 0.0 {
-                return;
-            }
-            // Hex pane may collapse to zero; the tree keeps a usable sliver.
-            let max = (w - 220.0).max(0.0);
-            let x = (f64::from(ev.client_x()) - rect.left()).clamp(0.0, max);
-            split_px.set(x);
-        },
-    );
-
-    let _stop_split_up = use_event_listener(
-        web_sys::window().expect("window is available"),
-        leptos::ev::mouseup,
-        move |_| {
-            if split_dragging.get_untracked() {
-                split_dragging.set(false);
-            }
-        },
-    );
-
-    let structure_tree_fallback = move || {
-        if raw_bytes.with(std::option::Option::is_some) {
-            view! { <div class="panel-header">"No protobuf structure."</div> }.into_any()
-        } else {
-            view! { <div class="panel-header">"No data loaded."</div> }.into_any()
+    // Keep the export-filename mirror in sync with the active document.
+    Effect::new(move |_| {
+        let name = current_message_id.get().and_then(|id| {
+            messages_list.with(|list| list.iter().find(|m| m.id == id).map(|m| m.name.clone()))
+        });
+        let name = name.as_deref().unwrap_or("");
+        if message_name_text.with_untracked(|s| s.as_str() != name) {
+            message_name_text.set(name.to_string());
         }
-    };
+    });
 
-    let field_tree_view = move || {
-        // `Show` gates on patch presence, but never panic if the value went
-        // away between `when` and children evaluation.
-        patch_state
-            .with(|p| p.as_ref().map(protobuf_edit::Patch::root))
-            .map(|root| view! { <FieldTree msg=root depth=0 /> })
+    // Hex pane width in px, shared across tabs so the layout stays put when
+    // switching documents. Default fits one full 16-byte row.
+    let split_px: RwSignal<f64> = RwSignal::new(620.0);
+
+    let on_open_message = {
+        let msg_svc = msg_svc.clone();
+        UnsyncCallback::new(move |id: MessageId| {
+            msg_svc.switch_to(id);
+        })
     };
 
     let on_toggle_theme = UnsyncCallback::new(move |()| {
@@ -281,67 +104,37 @@ pub fn App() -> impl IntoView {
         let _ = messages::store_theme_pref(next.as_str());
     });
 
+    let active_tab_id = {
+        let tabs = tabs.clone();
+        Memo::new(move |_| tabs.active.get())
+    };
+
+    let main_view = {
+        let tabs = tabs.clone();
+        move || {
+            let tab = active_tab_id.get().and_then(|tab_id| tabs.get(tab_id));
+            let Some(tab) = tab else {
+                return view! { <StartPage on_open=on_open_message /> }.into_any();
+            };
+            match &tab.doc {
+                crate::state::TabDoc::Message(ws) => {
+                    view! { <DocumentView ws=ws.clone() split_px=split_px /> }.into_any()
+                }
+                crate::state::TabDoc::Envelope(env) => {
+                    view! { <EnvelopeTabView env=env.clone() split_px=split_px /> }.into_any()
+                }
+            }
+        }
+    };
+
     view! {
         <div class="app">
-            <div class="main">
-                <div class="workspace">
-                    <MessageSidebar />
-
-                    <div node_ref=split_ref class="split-pane">
-                        <div
-                            class="split-left"
-                            style:flex=move || format!("0 1 {:.0}px", split_px.get())
-                        >
-                            <div class="panel">
-                                <div class="panel-header">
-                                    <span>"Hex View"</span>
-                                    <button
-                                        class="btn btn--secondary btn--small"
-                                        on:click=move |_| hex_text_mode.update(|m| *m = m.toggle())
-                                    >
-                                        {move || hex_text_mode.get().label()}
-                                    </button>
-                                </div>
-                                <HexGrid container_ref=hex_container_ref />
-                            </div>
-                        </div>
-                        <div
-                            class="split-handle"
-                            on:mousedown=move |ev: leptos::ev::MouseEvent| {
-                                ev.prevent_default();
-                                split_dragging.set(true);
-                            }
-                        ></div>
-                        <div class="split-right" style:flex="1 1 0">
-                            <div class="panel panel--right">
-                                <div class="structure">
-                                    <Breadcrumb />
-
-                                    <Show
-                                        when=move || envelope_view.with(std::option::Option::is_some)
-                                        fallback=|| ()
-                                    >
-                                        <EnvelopeFramesPanel />
-                                    </Show>
-
-                                    <div class="field-list" node_ref=tree_container_ref tabindex="0">
-                                        <Show
-                                            when=move || patch_state.with(std::option::Option::is_some)
-                                            fallback=structure_tree_fallback
-                                        >
-                                            {field_tree_view}
-                                        </Show>
-                                    </div>
-
-                                    <InspectorDrawer />
-                                </div>
-                            </div>
-                        </div>
-                    </div>
-                </div>
+            <div class="shell-bar">
+                <TabStrip />
+                <ThemeSwitcher is_night=theme_is_dark on_toggle=on_toggle_theme />
             </div>
 
-            <StatusBar on_toggle_theme=on_toggle_theme />
+            <div class="main">{main_view}</div>
 
             <ToastContainer toasts=toast.toasts_signal() />
         </div>

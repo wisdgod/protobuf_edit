@@ -3,7 +3,7 @@ use crate::error::shared_error;
 use crate::envelope::{parse_envelope_frames, EnvelopeView};
 use rustc_hash::FxHashSet;
 use crate::messages::MessageId;
-use crate::state::WorkspaceState;
+use crate::state::{EnvelopeTabState, WorkspaceState};
 use crate::toast::{ToastManager, ToastKind};
 use super::{build_selection_path, decode_selection_path, resolve_selection_path};
 use leptos::prelude::*;
@@ -23,8 +23,9 @@ pub(crate) struct SaveReparseInfo {
 /// SAFETY contract (single point for the whole demo): the returned `Patch`
 /// must only be stored together with a clone of `view` keeping the backing
 /// `Rc<Vec<u8>>` alive, and must be replaced before that clone drops.
-/// `WorkspaceState::show_root_patch` / `show_envelope_frame_patch` maintain
-/// this by setting `patch_state` before `patch_bytes`.
+/// `WorkspaceState::show_root_patch` maintains this by setting `patch_state`
+/// before `patch_bytes`; tab closing clears the patch first for the same
+/// reason.
 fn patch_from_view(view: &ByteView) -> Result<Patch, TreeError> {
     // SAFETY: see the function contract above; callers keep `view` alive for
     // the patch's whole lifetime.
@@ -110,18 +111,23 @@ pub(crate) fn load_patch_from_view(
     }
 }
 
+/// Fills an envelope tab with parsed frames, resetting frame selection and
+/// the preview workspace.
 pub(crate) fn show_envelope_browser(
-    ws: &WorkspaceState,
+    env: &EnvelopeTabState,
     source_id: MessageId,
     bytes: Rc<Vec<u8>>,
     frames: Vec<crate::envelope::EnvelopeFrame>,
     meta: Vec<crate::envelope::EnvelopeFrameMeta>,
 ) {
-    ws.show_envelope_browser(EnvelopeView { source_id, bytes, frames, meta });
+    env.preview.clear_loaded_data();
+    env.selected.set(0);
+    env.view.set(Some(EnvelopeView { source_id, bytes, frames, meta }));
 }
 
-pub(crate) fn open_envelope_frame(ws: &WorkspaceState, idx: usize, toast: &ToastManager) {
-    let Some((bytes, frame, cached_err)) = ws.envelope_view.with_untracked(|state| {
+/// Opens frame `idx` in the envelope tab's read-only preview workspace.
+pub(crate) fn open_envelope_frame(env: &EnvelopeTabState, idx: usize, toast: &ToastManager) {
+    let Some((bytes, frame, cached_err)) = env.view.with_untracked(|state| {
         let view = state.as_ref()?;
         let frame = view.frames.get(idx).copied()?;
         let cached_err = view.meta.get(idx).and_then(|meta| meta.protobuf_error.as_ref()).cloned();
@@ -139,18 +145,20 @@ pub(crate) fn open_envelope_frame(ws: &WorkspaceState, idx: usize, toast: &Toast
         return;
     };
 
+    env.selected.set(idx);
+
     if frame.is_compressed() || frame.is_json() || cached_err.is_some() {
-        ws.show_envelope_frame_raw_bytes(view, idx);
+        env.preview.show_root_raw_bytes(view);
         return;
     }
 
     match patch_from_view(&view) {
         Ok(patch) => {
-            ws.show_envelope_frame_patch(patch, view, idx);
+            env.preview.show_root_patch(patch, view, None, FxHashSet::default());
         }
         Err(err) => {
             let msg = shared_error(format!("{err:?}"));
-            ws.envelope_view.update(|state| {
+            env.view.update(|state| {
                 let Some(view) = state.as_mut() else {
                     return;
                 };
@@ -159,27 +167,13 @@ pub(crate) fn open_envelope_frame(ws: &WorkspaceState, idx: usize, toast: &Toast
                 };
                 meta.protobuf_error = Some(msg.clone());
             });
-            ws.show_envelope_frame_raw_bytes(view, idx);
+            env.preview.show_root_raw_bytes(view);
             toast.show(
                 ToastKind::Error,
                 format!("Failed to parse envelope frame as protobuf: {msg}"),
             );
         }
     }
-}
-
-pub(crate) fn close_envelope_browser(ws: &WorkspaceState, toast: &ToastManager) {
-    let Some(bytes) =
-        ws.envelope_view.with_untracked(|state| state.as_ref().map(|view| view.bytes.clone()))
-    else {
-        return;
-    };
-    let len = bytes.len();
-    let Some(view) = ByteView::slice(bytes, 0, len) else {
-        return;
-    };
-    ws.show_root_raw_bytes(view);
-    toast.show(ToastKind::Success, "Showing raw envelope bytes.");
 }
 
 pub(crate) fn revert_pending_edits(ws: &WorkspaceState) -> Result<(), TreeError> {

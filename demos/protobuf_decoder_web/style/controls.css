@@ -36,6 +36,11 @@
   font-size: var(--font-size-sm);
 }
 
+.btn--active {
+  background: var(--color-bg-inset);
+  border-color: var(--color-border-focus);
+}
+
 .btn--primary {
   background: var(--color-btn-primary-bg);
   color: var(--color-btn-primary-text);

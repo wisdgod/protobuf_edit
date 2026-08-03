@@ -268,12 +268,15 @@ pub fn HexGrid(container_ref: NodeRef<html::Div>) -> impl IntoView {
         hex_selection.set(Some((start, end)));
     };
 
-    let on_copy_format = Callback::new(move |fmt: CopyFormat| {
-        let Some((start, end)) = hex_selection.get_untracked() else {
-            return;
-        };
-        export_svc.copy_range_as(start, end, fmt);
-    });
+    let on_copy_format = {
+        let workspace = workspace.clone();
+        Callback::new(move |fmt: CopyFormat| {
+            let Some((start, end)) = hex_selection.get_untracked() else {
+                return;
+            };
+            export_svc.copy_range_as(&workspace, start, end, fmt);
+        })
+    };
 
     // Track only the selected span (and the container mounting): forcing
     // layout + hijacking the scroll position on unrelated patch mutations was

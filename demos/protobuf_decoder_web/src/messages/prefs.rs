@@ -2,7 +2,8 @@ use crate::error::{UiError, UiResult};
 
 use super::model::{MessageId, DEFAULT_FRAME_NAME_TEMPLATE};
 
-const KEY_CURRENT: &str = "protobuf_decoder_web.v1.current_message";
+const KEY_OPEN_TABS: &str = "protobuf_decoder_web.v1.open_tabs";
+const KEY_ACTIVE_TAB: &str = "protobuf_decoder_web.v1.active_tab";
 const KEY_NEXT_ID: &str = "protobuf_decoder_web.v1.next_message_id";
 const KEY_FRAME_NAME_TEMPLATE: &str = "protobuf_decoder_web.v1.frame_name_template";
 const KEY_THEME_PREF: &str = "protobuf_decoder_web.v1.theme";
@@ -34,22 +35,70 @@ pub(crate) fn store_frame_name_template(template: &str) -> UiResult<()> {
     storage_set(KEY_FRAME_NAME_TEMPLATE, template)
 }
 
-pub(crate) fn current_message() -> UiResult<Option<MessageId>> {
-    let Some(raw) = storage_get(KEY_CURRENT)? else {
-        return Ok(None);
-    };
-    if raw.trim().is_empty() {
-        return Ok(None);
-    }
-    raw.trim().parse::<MessageId>().map(Some).map_err(|_| "Invalid current message id.".into())
+/// Persisted identity of one open tab: a message document or an envelope
+/// frame browser for a source message.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum PersistedTab {
+    Message(MessageId),
+    Envelope(MessageId),
 }
 
-pub(crate) fn set_current_message(id: Option<MessageId>) -> UiResult<()> {
-    match id {
-        Some(id) => storage_set(KEY_CURRENT, &id.to_string())?,
-        None => storage_remove(KEY_CURRENT)?,
+impl PersistedTab {
+    pub(crate) const fn message_id(self) -> MessageId {
+        match self {
+            Self::Message(id) | Self::Envelope(id) => id,
+        }
     }
-    Ok(())
+
+    fn encode(self) -> String {
+        match self {
+            Self::Message(id) => format!("m:{id}"),
+            Self::Envelope(id) => format!("e:{id}"),
+        }
+    }
+
+    fn decode(raw: &str) -> Option<Self> {
+        let raw = raw.trim();
+        if let Some(rest) = raw.strip_prefix("m:") {
+            return rest.parse::<MessageId>().ok().map(Self::Message);
+        }
+        if let Some(rest) = raw.strip_prefix("e:") {
+            return rest.parse::<MessageId>().ok().map(Self::Envelope);
+        }
+        // Legacy bare message id.
+        raw.parse::<MessageId>().ok().map(Self::Message)
+    }
+}
+
+/// Persisted working set: open tabs, in tab order.
+pub(crate) fn open_tabs() -> UiResult<Vec<PersistedTab>> {
+    let Some(raw) = storage_get(KEY_OPEN_TABS)? else {
+        return Ok(Vec::new());
+    };
+    Ok(raw.split(',').filter_map(PersistedTab::decode).collect())
+}
+
+pub(crate) fn set_open_tabs(tabs: &[PersistedTab]) -> UiResult<()> {
+    if tabs.is_empty() {
+        return storage_remove(KEY_OPEN_TABS);
+    }
+    let joined = tabs.iter().map(|t| t.encode()).collect::<Vec<_>>().join(",");
+    storage_set(KEY_OPEN_TABS, &joined)
+}
+
+/// Persisted active tab; `None` means the start view.
+pub(crate) fn active_tab() -> UiResult<Option<PersistedTab>> {
+    let Some(raw) = storage_get(KEY_ACTIVE_TAB)? else {
+        return Ok(None);
+    };
+    Ok(PersistedTab::decode(&raw))
+}
+
+pub(crate) fn set_active_tab(tab: Option<PersistedTab>) -> UiResult<()> {
+    match tab {
+        Some(tab) => storage_set(KEY_ACTIVE_TAB, &tab.encode()),
+        None => storage_remove(KEY_ACTIVE_TAB),
+    }
 }
 
 pub(crate) fn download_filename(name: &str, id: MessageId) -> String {

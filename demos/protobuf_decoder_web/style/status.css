@@ -70,3 +70,15 @@
 .dropdown__item:hover {
   background: var(--color-hl-hovered);
 }
+
+.dropdown__group-label {
+  padding: var(--spacing-xs) var(--spacing-md) 0;
+  color: var(--color-text-tertiary);
+  font-size: var(--font-size-xs);
+}
+
+.dropdown__separator {
+  height: 1px;
+  background: var(--color-border);
+  margin: var(--spacing-xs) 0;
+}

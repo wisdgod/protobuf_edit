@@ -20,6 +20,7 @@ pub(crate) fn Breadcrumb() -> impl IntoView {
     let patch_state = workspace.patch_state;
     let selected = workspace.selected;
     let expanded = workspace.expanded;
+    let insert_open = workspace.insert_open;
 
     let editing = RwSignal::new(false);
     let edit_text = RwSignal::new(String::new());
@@ -197,6 +198,14 @@ pub(crate) fn Breadcrumb() -> impl IntoView {
                     "\u{00D7}"
                 </button>
             </Show>
+            <button
+                class="btn btn--secondary btn--small breadcrumb-insert"
+                class:btn--active=move || insert_open.get()
+                title="Insert a field"
+                on:click=move |_| insert_open.update(|v| *v = !*v)
+            >
+                "Insert"
+            </button>
         </div>
     }
 }

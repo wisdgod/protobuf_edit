@@ -1,31 +1,28 @@
-use super::ThemeSwitcher;
 use crate::hex_copy::CopyFormat;
-use crate::services::{ExportService, MessageService, WorkspaceService};
-use crate::state::{MessageCatalogState, UiState, WorkspaceState};
+use crate::services::{EnvelopeService, ExportService, MessageService, WorkspaceService};
+use crate::state::{MessageCatalogState, WorkspaceState};
 use leptos::html;
 use leptos::oco::Oco;
 use leptos::prelude::*;
 use wasm_bindgen::JsCast;
 
 #[component]
-pub(crate) fn StatusBar(on_toggle_theme: UnsyncCallback<()>) -> impl IntoView {
+pub(crate) fn StatusBar() -> impl IntoView {
     let export_svc = expect_context::<ExportService>();
     let ws_svc = expect_context::<WorkspaceService>();
     let msg_svc = expect_context::<MessageService>();
+    let env_svc = expect_context::<EnvelopeService>();
     let workspace = expect_context::<WorkspaceState>();
     let messages = expect_context::<MessageCatalogState>();
-    let theme_is_dark = expect_context::<UiState>().theme_is_dark;
 
     let has_current_message = move || messages.current_message_id.get().is_some();
 
-    let copy_open = RwSignal::new(false);
+    let export_open = RwSignal::new(false);
     let menu_ref = NodeRef::<html::Div>::new();
 
     let save_ws_svc = ws_svc.clone();
     let save_msg_svc = msg_svc;
-    let dropdown_svc = export_svc.clone();
-    let url_svc = export_svc.clone();
-    let dl_svc = export_svc;
+    let on_view_frames = move |_| env_svc.view_frames();
 
     view! {
         <div class="status-bar">
@@ -71,47 +68,30 @@ pub(crate) fn StatusBar(on_toggle_theme: UnsyncCallback<()>) -> impl IntoView {
             </div>
 
             <div class="status-actions">
+                <button
+                    class="btn btn--secondary btn--small"
+                    on:click=on_view_frames
+                    disabled=move || !has_current_message()
+                >
+                    "Frames"
+                </button>
                 <div class="dropdown" node_ref=menu_ref>
                     <button
                         class="btn btn--secondary btn--small"
-                        on:click=move |_| copy_open.update(|v| *v = !*v)
+                        on:click=move |_| export_open.update(|v| *v = !*v)
                         disabled=move || !has_current_message()
                     >
-                        {move || if copy_open.get() { "Copy \u{25B4}" } else { "Copy \u{25BE}" }}
+                        {move || if export_open.get() { "Export \u{25B4}" } else { "Export \u{25BE}" }}
                     </button>
-                    <Show when=move || copy_open.get() fallback=|| ()>
-                        <CopyDropdown
-                            export_svc=dropdown_svc.clone()
-                            on_close=Callback::new(move |()| copy_open.set(false))
+                    <Show when=move || export_open.get() fallback=|| ()>
+                        <ExportDropdown
+                            export_svc=export_svc.clone()
+                            ws_svc=ws_svc.clone()
+                            on_close=Callback::new(move |()| export_open.set(false))
                             menu_ref=menu_ref
                         />
                     </Show>
                 </div>
-                <button
-                    class="btn btn--secondary btn--small"
-                    on:click=move |_| url_svc.copy_share_url()
-                    disabled=move || !has_current_message()
-                >
-                    "Share URL"
-                </button>
-                <button
-                    class="btn btn--secondary btn--small"
-                    on:click=move |_| dl_svc.download_bin()
-                    disabled=move || !has_current_message()
-                >
-                    "Download .bin"
-                </button>
-                <button
-                    class="btn btn--secondary btn--small"
-                    on:click=move |_| ws_svc.save_expand_defaults()
-                    disabled=move || {
-                        !has_current_message()
-                            || workspace.read_only.get()
-                            || workspace.patch_state.with(std::option::Option::is_none)
-                    }
-                >
-                    "Save Expand"
-                </button>
                 <button
                     class="btn btn--primary btn--small"
                     on:click=move |_| {
@@ -125,8 +105,7 @@ pub(crate) fn StatusBar(on_toggle_theme: UnsyncCallback<()>) -> impl IntoView {
                         if workspace.dirty_count.get() == 0 {
                             !has_current_message()
                         } else {
-                            workspace.read_only.get()
-                                || workspace.patch_state.with(std::option::Option::is_none)
+                            workspace.patch_state.with(std::option::Option::is_none)
                         }
                     }
                 >
@@ -138,15 +117,16 @@ pub(crate) fn StatusBar(on_toggle_theme: UnsyncCallback<()>) -> impl IntoView {
                         }
                     }}
                 </button>
-                <ThemeSwitcher is_night=theme_is_dark on_toggle=on_toggle_theme />
             </div>
         </div>
     }
 }
 
+/// Export menu: copy formats, share URL, download, expand defaults.
 #[component]
-fn CopyDropdown(
+fn ExportDropdown(
     export_svc: ExportService,
+    ws_svc: WorkspaceService,
     on_close: Callback<()>,
     menu_ref: NodeRef<html::Div>,
 ) -> impl IntoView {
@@ -174,8 +154,12 @@ fn CopyDropdown(
         },
     );
 
+    let url_svc = export_svc.clone();
+    let dl_svc = export_svc.clone();
+
     view! {
         <div class="dropdown__menu">
+            <div class="dropdown__group-label">"Copy as"</div>
             {CopyFormat::ALL.iter().map(|&fmt| {
                 let svc = export_svc.clone();
                 view! {
@@ -190,6 +174,35 @@ fn CopyDropdown(
                     </button>
                 }
             }).collect::<Vec<_>>()}
+            <div class="dropdown__separator"></div>
+            <button
+                class="dropdown__item"
+                on:click=move |_| {
+                    url_svc.copy_share_url();
+                    on_close.run(());
+                }
+            >
+                "Copy share URL"
+            </button>
+            <button
+                class="dropdown__item"
+                on:click=move |_| {
+                    dl_svc.download_bin();
+                    on_close.run(());
+                }
+            >
+                "Download .bin"
+            </button>
+            <div class="dropdown__separator"></div>
+            <button
+                class="dropdown__item"
+                on:click=move |_| {
+                    ws_svc.save_expand_defaults();
+                    on_close.run(());
+                }
+            >
+                "Save expand defaults"
+            </button>
         </div>
     }
 }

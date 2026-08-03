@@ -1,17 +1,23 @@
 mod breadcrumb;
+mod document;
 mod envelope_frames;
+mod envelope_tab;
 mod field_tree;
 mod hex_context_menu;
 mod inspector;
-mod message_sidebar;
+mod start_page;
 mod status_bar;
+mod tab_strip;
 mod theme_switcher;
 
 pub(crate) use breadcrumb::Breadcrumb;
+pub(crate) use document::DocumentView;
 pub(crate) use envelope_frames::EnvelopeFramesPanel;
+pub(crate) use envelope_tab::EnvelopeTabView;
 pub(crate) use field_tree::FieldTree;
 pub(crate) use hex_context_menu::HexContextMenu;
 pub(crate) use inspector::InspectorDrawer;
-pub(crate) use message_sidebar::MessageSidebar;
+pub(crate) use start_page::StartPage;
 pub(crate) use status_bar::StatusBar;
+pub(crate) use tab_strip::TabStrip;
 pub(crate) use theme_switcher::ThemeSwitcher;

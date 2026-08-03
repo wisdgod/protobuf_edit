@@ -1,9 +1,9 @@
-use rustc_hash::{FxHashMap, FxHashSet};
 use crate::messages::{self, MessageId, MessageMeta};
 use crate::services::{EnvelopeService, MessageService};
 use crate::state::{MessageCatalogState, UiState};
-use leptos::prelude::*;
 use crate::toast::ToastKind;
+use leptos::prelude::*;
+use rustc_hash::{FxHashMap, FxHashSet};
 use std::sync::Arc;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -29,32 +29,34 @@ impl ImportMode {
     }
 }
 
+/// Start tab: centered import card plus the message library.
 #[component]
-pub(crate) fn MessageSidebar() -> impl IntoView {
+pub(crate) fn StartPage(on_open: UnsyncCallback<MessageId>) -> impl IntoView {
     let msg_svc = expect_context::<MessageService>();
     let env_svc = expect_context::<EnvelopeService>();
-    let messages = expect_context::<MessageCatalogState>();
+    let messages_state = expect_context::<MessageCatalogState>();
     let ui = expect_context::<UiState>();
-    let messages_list = messages.messages_list;
-    let current_message_id = messages.current_message_id;
-    let message_name_text = messages.message_name_text;
-    let import_name_text = messages.import_name_text;
-    let raw_input = messages.raw_input;
-    let frame_name_template_text = messages.frame_name_template_text;
+    let messages_list = messages_state.messages_list;
+    let current_message_id = messages_state.current_message_id;
+    let import_name_text = messages_state.import_name_text;
+    let raw_input = messages_state.raw_input;
+    let frame_name_template_text = messages_state.frame_name_template_text;
     let toast = ui.toast;
-    let collapsed = RwSignal::new(false);
+
     let selected_for_delete: RwSignal<FxHashSet<MessageId>> = RwSignal::new(FxHashSet::default());
     let collapsed_classes: RwSignal<FxHashSet<MessageId>> = RwSignal::new(FxHashSet::default());
     let import_mode: RwSignal<ImportMode> = RwSignal::new(ImportMode::Bytes);
     let filter_text = RwSignal::new(String::new());
     let renaming_id: RwSignal<Option<MessageId>> = RwSignal::new(None);
     let rename_text = RwSignal::new(String::new());
+    let drag_over = RwSignal::new(false);
     let row_ctx = MessageRowCtx {
         current_message_id,
         selected_for_delete,
         renaming_id,
         rename_text,
         msg_svc: msg_svc.clone(),
+        on_open,
     };
 
     Effect::new(move |_| {
@@ -120,17 +122,9 @@ pub(crate) fn MessageSidebar() -> impl IntoView {
         })
     });
 
-    let has_current_message = move || current_message_id.get().is_some();
-
     let delete_selected_count =
         Memo::new(move |_| selected_for_delete.with(std::collections::HashSet::len));
     let delete_selected_enabled = Memo::new(move |_| selected_for_delete.with(|s| !s.is_empty()));
-
-    let on_toggle_collapsed = UnsyncCallback::new(move |()| {
-        collapsed.update(|v| {
-            *v = !*v;
-        });
-    });
 
     let on_delete_selected = {
         let msg_svc = msg_svc.clone();
@@ -174,17 +168,23 @@ pub(crate) fn MessageSidebar() -> impl IntoView {
         move |_| msg_svc.create()
     };
 
-    let on_view_frames = move |_| env_svc.view_frames();
-
-    let on_name_change = {
+    let on_upload = {
         let msg_svc = msg_svc.clone();
-        move |ev: leptos::ev::Event| {
-            let value = event_target_value(&ev);
-            msg_svc.on_message_name_change(Arc::<str>::from(value.trim()));
-        }
+        move |ev: leptos::ev::Event| msg_svc.upload(&ev)
     };
 
-    let on_upload = move |ev: leptos::ev::Event| msg_svc.upload(&ev);
+    let on_drop = {
+        let msg_svc = msg_svc.clone();
+        move |ev: web_sys::DragEvent| {
+            ev.prevent_default();
+            drag_over.set(false);
+            let Some(file) = ev.data_transfer().and_then(|dt| dt.files()).and_then(|f| f.get(0))
+            else {
+                return;
+            };
+            msg_svc.import_file(file);
+        }
+    };
 
     let on_store_template = move |_| {
         if let Err(msg) =
@@ -194,168 +194,149 @@ pub(crate) fn MessageSidebar() -> impl IntoView {
         }
     };
 
-    let sidebar_class =
-        move || if collapsed.get() { "sidebar sidebar--collapsed" } else { "sidebar" };
+    let card_class = move || {
+        if drag_over.get() { "start-card start-card--drag" } else { "start-card" }
+    };
 
     view! {
-        <div class=sidebar_class>
-            <div class="sidebar-header">
-                <button
-                    class="btn btn--secondary sidebar-collapse-btn"
-                    on:click=move |_| on_toggle_collapsed.run(())
+        <div class="start-page">
+            <div class="start-page-inner">
+                <div
+                    class=card_class
+                    on:dragover=move |ev: web_sys::DragEvent| {
+                        ev.prevent_default();
+                        drag_over.set(true);
+                    }
+                    on:dragleave=move |_| drag_over.set(false)
+                    on:drop=on_drop
                 >
-                    {move || if collapsed.get() { "»" } else { "«" }}
-                </button>
-                <div class="sidebar-header-actions" class:hidden=move || collapsed.get()>
-                    <button class="btn btn--secondary btn--small" on:click=on_new_message>
-                        "New"
-                    </button>
+                    <div class="start-card-title">"Drop a file or paste data"</div>
+                    <div class="start-card-hint">"Base64 · Hex · binary file"</div>
 
-                    <button
-                        class="btn btn--danger btn--small"
-                        on:click=move |_| on_delete_selected.run(())
-                        disabled=move || !delete_selected_enabled.get()
-                    >
-                        {move || format!("Delete ({})", delete_selected_count.get())}
-                    </button>
-
-                    <button
-                        class="btn btn--secondary btn--small"
-                        on:click=on_view_frames
-                        disabled=move || !has_current_message()
-                    >
-                        "Frames"
-                    </button>
-                </div>
-            </div>
-
-            <div class="sidebar-body" class:hidden=move || collapsed.get()>
-                <div class="sidebar-list-controls">
-                    <input
-                        class="input sidebar-search"
-                        placeholder="Search…"
-                        prop:value=move || filter_text.get()
-                        on:input=move |ev| filter_text.set(event_target_value(&ev))
+                    <textarea
+                        class="input start-textarea"
+                        placeholder="Paste hex/base64…"
+                        prop:value=move || raw_input.get()
+                        on:input=move |ev| raw_input.set(event_target_value(&ev))
                     />
-                    <button
-                        class="btn btn--secondary"
-                        on:click=move |_| on_select_all_visible.run(())
-                        disabled=move || messages_list.with(std::vec::Vec::is_empty)
-                    >
-                        "All"
-                    </button>
-                    <button
-                        class="btn btn--secondary"
-                        on:click=move |_| on_clear_selection.run(())
-                        disabled=move || selected_for_delete.with(std::collections::HashSet::is_empty)
-                    >
-                        "None"
-                    </button>
-                </div>
 
-                <div class="sidebar-current">
-                    <label class="sidebar-label">"Name"</label>
-                    <div class="sidebar-current-row">
+                    <div class="start-card-row">
                         <input
-                            class="input sidebar-input"
-                            placeholder="Message name"
-                            prop:value=move || message_name_text.get()
-                            on:input=move |ev| message_name_text.set(event_target_value(&ev))
-                            on:change=on_name_change
-                            disabled=move || !has_current_message()
-                        />
-                    </div>
-                </div>
-
-                <details class="sidebar-section">
-                    <summary class="sidebar-summary">"Import"</summary>
-                    <div class="sidebar-import">
-                        <input
-                            class="input sidebar-input"
+                            class="input start-name-input"
                             placeholder="New message name (optional)"
                             prop:value=move || import_name_text.get()
                             on:input=move |ev| import_name_text.set(event_target_value(&ev))
                         />
-                        <input
-                            class="input sidebar-input"
-                            placeholder="Frame name template ({source} {idx} {idx1} {len})"
-                            prop:value=move || frame_name_template_text.get()
-                            on:input=move |ev| frame_name_template_text.set(event_target_value(&ev))
-                            on:change=on_store_template
-                        />
-                        <div class="sidebar-import-row">
-                            <select
-                                class="select sidebar-select"
-                                prop:value=move || import_mode.get().as_value()
-                                on:change=move |ev| {
-                                    let v = event_target_value(&ev);
-                                    if let Some(mode) = ImportMode::from_value(v.trim()) {
-                                        import_mode.set(mode);
-                                    }
-                                }
-                            >
-                                <option value={ImportMode::Bytes.as_value()}>"Bytes"</option>
-                                <option value={ImportMode::Envelope.as_value()}>"Envelope"</option>
-                            </select>
-                            <button
-                                class="btn btn--primary"
-                                on:click=move |_| on_import_click.run(())
-                                disabled=move || raw_input.with(|s| s.trim().is_empty())
-                            >
-                                "Import"
-                            </button>
-                            <label class="btn btn--secondary">
-                                "Upload"
-                                <input
-                                    class="file-input"
-                                    type="file"
-                                    on:change=on_upload
-                                />
-                            </label>
-                        </div>
-
-                        <textarea
-                            class="input sidebar-textarea"
-                            placeholder="Paste hex/base64…"
-                            prop:value=move || raw_input.get()
-                            on:input=move |ev| raw_input.set(event_target_value(&ev))
-                        />
-                    </div>
-                </details>
-
-                <div class="message-list">
-                    <Show
-                        when=move || messages_list.with(|list| !list.is_empty())
-                        fallback=|| view! { <div class="message-empty">"No messages."</div> }
-                    >
-                        <For
-                            each=move || row_specs.get()
-                            key=RowSpec::key
-                            children={
-                                let row_ctx = row_ctx.clone();
-                                move |spec| match spec {
-                                    RowSpec::Class {
-                                        class_id,
-                                        label,
-                                        title,
-                                        member_ids,
-                                        default_select_id,
-                                    } => class_row_view(
-                                        class_id,
-                                        label,
-                                        title,
-                                        member_ids,
-                                        default_select_id,
-                                        collapsed_classes,
-                                        &row_ctx,
-                                    ),
-                                    RowSpec::Message { meta, indent } => {
-                                        message_row_view(&meta, indent, &row_ctx)
-                                    }
+                        <select
+                            class="select"
+                            prop:value=move || import_mode.get().as_value()
+                            on:change=move |ev| {
+                                let v = event_target_value(&ev);
+                                if let Some(mode) = ImportMode::from_value(v.trim()) {
+                                    import_mode.set(mode);
                                 }
                             }
+                        >
+                            <option value={ImportMode::Bytes.as_value()}>"Bytes"</option>
+                            <option value={ImportMode::Envelope.as_value()}>"Envelope"</option>
+                        </select>
+                        <button
+                            class="btn btn--primary"
+                            on:click=move |_| on_import_click.run(())
+                            disabled=move || raw_input.with(|s| s.trim().is_empty())
+                        >
+                            "Import"
+                        </button>
+                        <label class="btn btn--secondary">
+                            "Upload"
+                            <input class="file-input" type="file" on:change=on_upload />
+                        </label>
+                    </div>
+
+                    <details class="start-options">
+                        <summary class="start-options-summary">"Options"</summary>
+                        <input
+                            class="input start-name-input"
+                            placeholder="Frame name template ({source} {idx} {idx1} {len})"
+                            prop:value=move || frame_name_template_text.get()
+                            on:input=move |ev| {
+                                frame_name_template_text.set(event_target_value(&ev))
+                            }
+                            on:change=on_store_template
                         />
-                    </Show>
+                    </details>
+                </div>
+
+                <div class="start-library">
+                    <div class="start-library-toolbar">
+                        <input
+                            class="input start-search"
+                            placeholder="Search…"
+                            prop:value=move || filter_text.get()
+                            on:input=move |ev| filter_text.set(event_target_value(&ev))
+                        />
+                        <button class="btn btn--secondary btn--small" on:click=on_new_message>
+                            "New"
+                        </button>
+                        <button
+                            class="btn btn--secondary btn--small"
+                            on:click=move |_| on_select_all_visible.run(())
+                            disabled=move || messages_list.with(std::vec::Vec::is_empty)
+                        >
+                            "All"
+                        </button>
+                        <button
+                            class="btn btn--secondary btn--small"
+                            on:click=move |_| on_clear_selection.run(())
+                            disabled=move || {
+                                selected_for_delete.with(std::collections::HashSet::is_empty)
+                            }
+                        >
+                            "None"
+                        </button>
+                        <button
+                            class="btn btn--danger btn--small"
+                            on:click=move |_| on_delete_selected.run(())
+                            disabled=move || !delete_selected_enabled.get()
+                        >
+                            {move || format!("Delete ({})", delete_selected_count.get())}
+                        </button>
+                    </div>
+
+                    <div class="message-list">
+                        <Show
+                            when=move || messages_list.with(|list| !list.is_empty())
+                            fallback=|| view! { <div class="message-empty">"No messages yet."</div> }
+                        >
+                            <For
+                                each=move || row_specs.get()
+                                key=RowSpec::key
+                                children={
+                                    let row_ctx = row_ctx.clone();
+                                    move |spec| match spec {
+                                        RowSpec::Class {
+                                            class_id,
+                                            label,
+                                            title,
+                                            member_ids,
+                                            default_select_id,
+                                        } => class_row_view(
+                                            class_id,
+                                            label,
+                                            title,
+                                            member_ids,
+                                            default_select_id,
+                                            collapsed_classes,
+                                            &row_ctx,
+                                        ),
+                                        RowSpec::Message { meta, indent } => {
+                                            message_row_view(&meta, indent, &row_ctx)
+                                        }
+                                    }
+                                }
+                            />
+                        </Show>
+                    </div>
                 </div>
             </div>
         </div>
@@ -394,6 +375,7 @@ struct MessageRowCtx {
     renaming_id: RwSignal<Option<MessageId>>,
     rename_text: RwSignal<String>,
     msg_svc: MessageService,
+    on_open: UnsyncCallback<MessageId>,
 }
 
 /// ASCII-case-insensitive substring search without allocating.
@@ -524,7 +506,8 @@ fn class_row_view(
     collapsed_classes: RwSignal<FxHashSet<MessageId>>,
     ctx: &MessageRowCtx,
 ) -> AnyView {
-    let MessageRowCtx { selected_for_delete, renaming_id, rename_text, msg_svc, .. } = ctx.clone();
+    let MessageRowCtx { selected_for_delete, renaming_id, rename_text, msg_svc, on_open, .. } =
+        ctx.clone();
 
     // Caret and checkbox state are reactive, so collapsing a class or
     // toggling a selection never rebuilds the row list.
@@ -579,8 +562,6 @@ fn class_row_view(
         }
     };
 
-    let select_svc = msg_svc.clone();
-
     view! {
         <div class="message-class-row">
             <button class="btn btn--secondary message-caret" on:click=on_toggle_collapse>
@@ -598,7 +579,7 @@ fn class_row_view(
                 class="message-class-title"
                 on:click=move |_| {
                     if let Some(id) = default_select_id {
-                        select_svc.switch_to(id);
+                        on_open.run(id);
                     }
                 }
             >
@@ -652,6 +633,7 @@ fn message_row_view(meta: &MessageMeta, indent: usize, ctx: &MessageRowCtx) -> A
         renaming_id,
         rename_text,
         msg_svc,
+        on_open,
     } = ctx.clone();
     let id = meta.id;
     let name = meta.name.clone();
@@ -665,10 +647,8 @@ fn message_row_view(meta: &MessageMeta, indent: usize, ctx: &MessageRowCtx) -> A
         if current { "message-row message-row--current" } else { "message-row" }
     };
 
-    let select_svc = msg_svc.clone();
-
     view! {
-        <div class=row_class on:click=move |_| select_svc.switch_to(id)>
+        <div class=row_class on:click=move |_| on_open.run(id)>
             <div class="message-indent" style=move || format!("width: {indent_px}px")></div>
             <input
                 class="message-checkbox"

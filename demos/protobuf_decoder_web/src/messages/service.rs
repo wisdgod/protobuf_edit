@@ -12,7 +12,7 @@ use super::model::{
     class_record_to_js, load_class_name_map, message_record_from_js, message_record_to_js,
     EnvelopeFrameRef, LoadedBytes, LoadedBytesMode, MessageId, MessageMeta, MessageRecord,
 };
-use super::prefs::{alloc_message_id, current_message, set_current_message};
+use super::prefs::alloc_message_id;
 
 pub(crate) async fn list_messages() -> UiResult<Vec<MessageMeta>> {
     let raw = idb::list_message_meta().await?;
@@ -122,7 +122,6 @@ pub(crate) async fn create_envelope_frame_ref_in_same_class(
     if !class_name.is_empty() {
         idb::put_class_meta(class_id, class_record_to_js(class_id, class_name)?).await?;
     }
-    set_current_message(Some(id))?;
     Ok(id)
 }
 
@@ -150,7 +149,6 @@ async fn create_message_impl(
     if !class_name.is_empty() {
         idb::put_class_meta(class_id, class_record_to_js(class_id, class_name)?).await?;
     }
-    set_current_message(Some(id))?;
     Ok(id)
 }
 
@@ -184,12 +182,6 @@ pub(crate) async fn delete_messages(ids: &[MessageId]) -> UiResult<(usize, usize
             let _ = idb::delete_class_auto_expand(class_id).await;
             let _ = idb::delete_class_meta(class_id).await;
         }
-    }
-
-    if let Some(current) = current_message()?
-        && ids.contains(&current)
-    {
-        set_current_message(list.first().map(|m| m.id))?;
     }
     Ok((deleted, failed))
 }
@@ -274,10 +266,6 @@ pub(crate) async fn bump_message_modified(id: MessageId) -> UiResult<()> {
     record.modified_ms = now_ms();
     idb::put_message_meta(id, message_record_to_js(&record)?).await?;
     Ok(())
-}
-
-pub(crate) async fn message_modified_ms(id: MessageId) -> UiResult<u64> {
-    Ok(load_message_record(id).await?.modified_ms)
 }
 
 async fn load_envelope_frame_ref(

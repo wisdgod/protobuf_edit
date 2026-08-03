@@ -3,23 +3,22 @@ use crate::envelope::{parse_envelope_frames, EnvelopeFrameMeta};
 use crate::messages::{self, MessageId};
 use crate::page_cache;
 use crate::services::MessageService;
-use crate::state::{MessageCatalogState, WorkspaceState};
+use crate::state::{EnvelopeTabState, MessageCatalogState, Tab, TabsState};
 use crate::toast::{ToastKind, ToastManager};
 use crate::workspace::{
-    close_envelope_browser, confirm_discard_edits as confirm_workspace_discard_edits,
     format_frame_name_template, open_envelope_frame as open_workspace_envelope_frame,
     show_envelope_browser,
 };
 use leptos::prelude::*;
-use std::rc::Rc;
 use std::sync::Arc;
 use wasm_bindgen_futures::spawn_local;
 
-/// Manages envelope framing operations: viewing, extracting, decompressing,
-/// and importing envelope-formatted bytes.
+/// Manages envelope framing operations: browsing frames in envelope tabs,
+/// extracting/decompressing frames into messages, and importing
+/// envelope-formatted bytes.
 #[derive(Clone)]
 pub(crate) struct EnvelopeService {
-    ws: WorkspaceState,
+    tabs: TabsState,
     catalog: MessageCatalogState,
     toast: ToastManager,
     msg_svc: MessageService,
@@ -27,47 +26,96 @@ pub(crate) struct EnvelopeService {
 
 impl EnvelopeService {
     pub(crate) const fn new(
-        ws: WorkspaceState,
+        tabs: TabsState,
         catalog: MessageCatalogState,
         toast: ToastManager,
         msg_svc: MessageService,
     ) -> Self {
-        Self { ws, catalog, toast, msg_svc }
+        Self { tabs, catalog, toast, msg_svc }
+    }
+
+    fn active_envelope(&self) -> Option<(Tab, EnvelopeTabState)> {
+        let tab = self.tabs.active_tab_untracked()?;
+        let env = tab.envelope()?;
+        Some((tab, env))
     }
 
     // ------------------------------------------------------------------
-    // View frames
+    // Open envelope tabs
     // ------------------------------------------------------------------
 
-    /// Load the current message as an envelope, parse its frames, and open
-    /// the envelope browser panel.
+    /// "Frames" action from a message tab: open (or focus) the envelope tab
+    /// for the active message.
     pub(crate) fn view_frames(&self) {
-        let toast = self.toast;
-        let current_message_id = self.catalog.current_message_id;
-        let ws = self.ws.clone();
-
-        let Some(source_id) = current_message_id.get_untracked() else {
-            toast.show(ToastKind::Error, "No message selected.");
+        let Some(tab) = self.tabs.active_tab_untracked() else {
+            self.toast.show(ToastKind::Error, "No message open.");
             return;
         };
-        if !confirm_workspace_discard_edits(&ws, "view envelope frames") {
+        self.open_envelope_tab(tab.message_id);
+    }
+
+    /// Focus the envelope tab for a source message, creating it if needed.
+    /// Loading happens lazily when the tab body mounts.
+    pub(crate) fn open_envelope_tab(&self, source_id: MessageId) {
+        let tab = self
+            .tabs
+            .find_envelope(source_id)
+            .unwrap_or_else(|| self.tabs.push_envelope_tab(source_id));
+        self.tabs.activate(tab.id);
+    }
+
+    /// Load the active envelope tab's frames if not loaded yet. Called from
+    /// the envelope tab view on mount, which covers every activation path
+    /// (open, tab click, session restore).
+    pub(crate) fn ensure_active_loaded(&self) {
+        let Some((tab, env)) = self.active_envelope() else {
+            return;
+        };
+        if env.view.with_untracked(Option::is_some) {
             return;
         }
+        self.load_envelope_into(&tab, &env);
+    }
 
-        let this = self.clone();
+    fn load_envelope_into(&self, tab: &Tab, env: &EnvelopeTabState) {
+        let toast = self.toast;
+        let tabs = self.tabs.clone();
+        let source_id = tab.message_id;
+        let nonce = tab.load_nonce.get_untracked().wrapping_add(1);
+        tab.load_nonce.set(nonce);
+
+        let tab = tab.clone();
+        let env = env.clone();
         spawn_local(async move {
+            let stale = {
+                let tabs = tabs.clone();
+                let tab = tab.clone();
+                move || tab.load_nonce.get_untracked() != nonce || !tabs.contains(tab.id)
+            };
+            // Errors close the tab again: an envelope tab without frames is
+            // dead weight.
+            let fail = |msg: String| {
+                toast.show(ToastKind::Error, msg);
+                tabs.close(tab.id);
+            };
+
             let loaded = match messages::load_message_bytes(source_id).await {
                 Ok(value) => value,
                 Err(msg) => {
-                    toast.show(ToastKind::Error, msg);
+                    if !stale() {
+                        fail(msg.to_string());
+                    }
                     return;
                 }
             };
+            if stale() {
+                return;
+            }
 
             let bytes_view = loaded.bytes;
             let bytes = bytes_view.bytes_rc();
             if bytes_view.len() != bytes.len() {
-                toast.show(ToastKind::Error, "View Frames is not supported for sliced messages.");
+                fail("View Frames is not supported for sliced messages.".to_string());
                 return;
             }
 
@@ -75,12 +123,12 @@ impl EnvelopeService {
             let frames = match parse_envelope_frames(bytes_view.as_slice()) {
                 Ok(value) => value,
                 Err(msg) => {
-                    toast.show(ToastKind::Error, msg);
+                    fail(msg.to_string());
                     return;
                 }
             };
             if frames.is_empty() {
-                toast.show(ToastKind::Error, "Envelope did not contain any frames.");
+                fail("Envelope did not contain any frames.".to_string());
                 return;
             }
 
@@ -92,8 +140,8 @@ impl EnvelopeService {
                 .unwrap_or(0);
 
             let meta = vec![EnvelopeFrameMeta::default(); frames_len];
-            show_envelope_browser(&ws, source_id, bytes, frames, meta);
-            this.open_frame(selected);
+            show_envelope_browser(&env, source_id, bytes, frames, meta);
+            open_workspace_envelope_frame(&env, selected, &toast);
             toast.show(ToastKind::Success, format!("Loaded envelope view: {frames_len} frame(s)."));
         });
     }
@@ -102,14 +150,20 @@ impl EnvelopeService {
     // Open / Close frame
     // ------------------------------------------------------------------
 
-    /// Open a specific envelope frame by index in the workspace.
+    /// Preview a specific envelope frame by index in the active envelope tab.
     pub(crate) fn open_frame(&self, idx: usize) {
-        open_workspace_envelope_frame(&self.ws, idx, &self.toast);
+        let Some((_tab, env)) = self.active_envelope() else {
+            return;
+        };
+        open_workspace_envelope_frame(&env, idx, &self.toast);
     }
 
-    /// Close the envelope browser and show the raw envelope bytes.
+    /// Close the active envelope tab.
     pub(crate) fn close_frames(&self) {
-        close_envelope_browser(&self.ws, &self.toast);
+        let Some((tab, _env)) = self.active_envelope() else {
+            return;
+        };
+        self.tabs.close(tab.id);
     }
 
     // ------------------------------------------------------------------
@@ -117,17 +171,19 @@ impl EnvelopeService {
     // ------------------------------------------------------------------
 
     /// Create a new message from the currently selected (compressed) envelope
-    /// frame, then switch to it.
+    /// frame, then open it in a message tab.
     pub(crate) fn decompress_selected_frame(&self) {
         let toast = self.toast;
-        let envelope_view = self.ws.envelope_view;
-        let envelope_selected = self.ws.envelope_selected;
+        let Some((_tab, env)) = self.active_envelope() else {
+            toast.show(ToastKind::Error, "No envelope view loaded.");
+            return;
+        };
         let message_name_text = self.catalog.message_name_text;
         let frame_name_template_text = self.catalog.frame_name_template_text;
 
-        let Some((source_id, idx, frame)) = envelope_view.with_untracked(|state| {
+        let Some((source_id, idx, frame)) = env.view.with_untracked(|state| {
             let view = state.as_ref()?;
-            let idx = envelope_selected.get_untracked();
+            let idx = env.selected.get_untracked();
             let frame = view.frames.get(idx).copied()?;
             Some((view.source_id, idx, frame))
         }) else {
@@ -182,14 +238,17 @@ impl EnvelopeService {
     // ------------------------------------------------------------------
 
     /// Extract a single envelope frame by index into a new message (without
-    /// switching to it).
+    /// opening it).
     pub(crate) fn extract_frame(&self, idx: usize) {
         let toast = self.toast;
-        let envelope_view = self.ws.envelope_view;
+        let Some((_tab, env)) = self.active_envelope() else {
+            toast.show(ToastKind::Error, "No envelope view loaded.");
+            return;
+        };
         let message_name_text = self.catalog.message_name_text;
         let frame_name_template_text = self.catalog.frame_name_template_text;
 
-        let Some((source_id, frame)) = envelope_view.with_untracked(|state| {
+        let Some((source_id, frame)) = env.view.with_untracked(|state| {
             let view = state.as_ref()?;
             let frame = view.frames.get(idx).copied()?;
             Some((view.source_id, frame))
@@ -228,7 +287,6 @@ impl EnvelopeService {
                 }
             };
 
-            let _ = messages::set_current_message(Some(source_id));
             this.msg_svc.refresh_inner().await;
             toast.show(
                 ToastKind::Success,
@@ -241,15 +299,18 @@ impl EnvelopeService {
     // Extract all frames
     // ------------------------------------------------------------------
 
-    /// Extract every frame in the envelope browser into new messages.
+    /// Extract every frame in the active envelope tab into new messages.
     pub(crate) fn extract_all_frames(&self) {
         let toast = self.toast;
-        let envelope_view = self.ws.envelope_view;
+        let Some((_tab, env)) = self.active_envelope() else {
+            toast.show(ToastKind::Error, "No envelope view loaded.");
+            return;
+        };
         let message_name_text = self.catalog.message_name_text;
         let frame_name_template_text = self.catalog.frame_name_template_text;
 
         let source_name = message_name_text.get_untracked();
-        let Some((source_id, frames)) = envelope_view.with_untracked(|state| {
+        let Some((source_id, frames)) = env.view.with_untracked(|state| {
             let view = state.as_ref()?;
             Some((view.source_id, view.frames.clone()))
         }) else {
@@ -312,119 +373,8 @@ impl EnvelopeService {
                 }
             }
 
-            let _ = messages::set_current_message(Some(source_id));
             this.msg_svc.refresh_inner().await;
 
-            let msg = match (compressed, json) {
-                (0, 0) => format!("Extracted {created} frame(s) into new messages."),
-                (_, 0) => format!(
-                    "Extracted {created} frame(s) into new messages. ({compressed} compressed.)"
-                ),
-                (0, _) => {
-                    format!("Extracted {created} frame(s) into new messages. ({json} json.)")
-                }
-                (_, _) => format!(
-                    "Extracted {created} frame(s) into new messages. ({compressed} compressed, {json} json.)"
-                ),
-            };
-            toast.show(ToastKind::Success, msg);
-        });
-    }
-
-    // ------------------------------------------------------------------
-    // Extract envelope bytes (shared helper)
-    // ------------------------------------------------------------------
-
-    /// Parse raw bytes as an envelope, create a new message for each frame,
-    /// cache the source bytes, and switch to the best candidate frame.
-    pub(crate) fn extract_envelope_bytes(
-        &self,
-        source_id: MessageId,
-        source_name: Arc<str>,
-        bytes: Vec<u8>,
-    ) {
-        let ws = self.ws.clone();
-        ws.clear_loaded_data();
-
-        let bytes = Rc::new(bytes);
-        let template = self.catalog.frame_name_template_text.get_untracked();
-        let toast = self.toast;
-        let this = self.clone();
-        spawn_local(async move {
-            let revision = match messages::message_modified_ms(source_id).await {
-                Ok(v) => v,
-                Err(msg) => {
-                    toast.show(ToastKind::Error, msg);
-                    0
-                }
-            };
-            page_cache::store_message_bytes(source_id, revision, bytes.clone());
-
-            let frames = match parse_envelope_frames(bytes.as_slice()) {
-                Ok(v) => v,
-                Err(msg) => {
-                    toast.show(ToastKind::Error, msg);
-                    return;
-                }
-            };
-
-            let mut created: usize = 0;
-            let mut compressed: usize = 0;
-            let mut json: usize = 0;
-            let mut open_id: Option<MessageId> = None;
-            let mut open_score: u8 = 0;
-
-            for (idx, frame) in frames.iter().copied().enumerate() {
-                let payload_len = frame.payload_len;
-                let mut name =
-                    format_frame_name_template(&template, &source_name, idx, payload_len);
-                if frame.is_compressed() {
-                    compressed = compressed.saturating_add(1);
-                    name.push_str(" (compressed)");
-                }
-                if frame.is_json() {
-                    json = json.saturating_add(1);
-                    name.push_str(" (json)");
-                }
-
-                let id = match messages::create_envelope_frame_ref_in_same_class(
-                    source_id,
-                    &name,
-                    frame.payload_offset,
-                    frame.payload_len,
-                    frame.flags,
-                    frame.is_compressed(),
-                )
-                .await
-                {
-                    Ok(v) => v,
-                    Err(msg) => {
-                        toast.show(ToastKind::Error, msg);
-                        return;
-                    }
-                };
-                created = created.saturating_add(1);
-
-                let score = if !frame.is_json() && !frame.is_compressed() {
-                    3
-                } else if !frame.is_json() {
-                    2
-                } else {
-                    1
-                };
-                if open_id.is_none() || score > open_score {
-                    open_id = Some(id);
-                    open_score = score;
-                }
-            }
-
-            let Some(open_id) = open_id else {
-                toast.show(ToastKind::Error, "Envelope did not contain any frames.");
-                return;
-            };
-
-            this.msg_svc.refresh_inner().await;
-            this.msg_svc.switch_to(open_id);
             let msg = match (compressed, json) {
                 (0, 0) => format!("Extracted {created} frame(s) into new messages."),
                 (_, 0) => format!(
@@ -445,17 +395,14 @@ impl EnvelopeService {
     // Import envelope from raw input
     // ------------------------------------------------------------------
 
-    /// Handle the "Import Envelope" button: decode user input, create a
-    /// source message, then extract its envelope frames.
+    /// Handle the "Import Envelope" action: decode user input, create a
+    /// source message, and open it as an envelope tab.
     pub(crate) fn import_envelope(&self) {
         let toast = self.toast;
         let raw_input = self.catalog.raw_input;
         let import_name_text = self.catalog.import_name_text;
         let frame_name_template_text = self.catalog.frame_name_template_text;
 
-        if !confirm_workspace_discard_edits(&self.ws, "import envelope bytes") {
-            return;
-        }
         let input = raw_input.get_untracked();
         let bytes = match decode_user_input(&input) {
             Ok(v) => v,
@@ -488,7 +435,12 @@ impl EnvelopeService {
                         return;
                     }
                 };
-            this.extract_envelope_bytes(source_id, source_name, bytes);
+            this.msg_svc.refresh_inner().await;
+            this.open_envelope_tab(source_id);
+            toast.show(
+                ToastKind::Success,
+                format!("Imported envelope as message \"{source_name}\"."),
+            );
         });
     }
 }

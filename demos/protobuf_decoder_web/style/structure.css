@@ -150,6 +150,11 @@
   color: var(--color-text-primary);
 }
 
+.breadcrumb-insert {
+  flex: 0 0 auto;
+  margin-right: var(--spacing-sm);
+}
+
 .envelope-frames {
   border-bottom: 1px solid var(--color-border);
   min-height: 0;

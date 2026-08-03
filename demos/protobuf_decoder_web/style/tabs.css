@@ -1,0 +1,71 @@
+/* Resident tab strip inside the shell bar. */
+
+.tab-strip {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  overflow-x: auto;
+}
+
+.tab {
+  flex: 0 1 auto;
+  min-width: 0;
+  max-width: 32ch;
+  display: inline-flex;
+  align-items: center;
+  gap: var(--spacing-xs);
+  padding: 2px var(--spacing-sm);
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: var(--border-radius);
+  color: var(--color-text-secondary);
+  font-size: var(--font-size-sm);
+  white-space: nowrap;
+  cursor: pointer;
+  user-select: none;
+}
+
+.tab:hover {
+  background: var(--color-hl-hovered);
+}
+
+.tab--active {
+  background: var(--color-bg-elevated);
+  border-color: var(--color-border);
+  color: var(--color-text-primary);
+}
+
+.tab--library {
+  flex: 0 0 auto;
+}
+
+.tab-title {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.tab-dirty {
+  color: var(--color-warn);
+  font-size: 9px;
+  line-height: 1;
+}
+
+.tab-close {
+  flex: 0 0 auto;
+  background: transparent;
+  border: none;
+  border-radius: 2px;
+  color: var(--color-text-tertiary);
+  cursor: pointer;
+  padding: 0 2px;
+  line-height: 1;
+  font-size: var(--font-size-base);
+}
+
+.tab-close:hover {
+  color: var(--color-text-primary);
+  background: var(--color-hl-hovered);
+}

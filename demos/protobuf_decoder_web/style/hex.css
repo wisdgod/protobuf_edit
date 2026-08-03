@@ -68,7 +68,8 @@
 
 /* Byte-range selection. Deliberately placed before the field-selection
    rules: on overlap the field background wins and only the underline marks
-   the range, instead of two translucent tints stacking. */
+   the range. The underline is reserved for range selection everywhere;
+   field highlights use backgrounds only, so the two never fight. */
 .hex-byte--range-selected {
   background: var(--color-hl-range-sel);
   box-shadow: inset 0 -2px 0 0 var(--color-hl-range-sel-outline);
@@ -77,7 +78,6 @@
 .hex-byte--tag {
   background: var(--color-hl-tag);
   font-weight: 600;
-  box-shadow: inset 0 0 0 1px var(--color-hl-tag-outline);
 }
 
 .hex-byte--selected-varint {
@@ -86,8 +86,6 @@
 
 .hex-byte--selected-len-prefix {
   background: color-mix(in srgb, var(--color-hl-varint-sel) 50%, var(--color-hl-len-sel) 50%);
-  box-shadow: inset 0 -1px 0 0
-    color-mix(in srgb, var(--color-wt-varint) 50%, var(--color-wt-len) 50%);
 }
 
 .hex-byte--selected-i64 {
