@@ -9,7 +9,9 @@ use std::time::Instant;
 
 use protobuf_edit::encode::{self, Field, Value};
 use protobuf_edit::wire::{FieldCursor, WireValue};
-use protobuf_edit::{field_number, Buf, BorrowedDocument, BorrowedPatch, Document, FieldNumber};
+use protobuf_edit::{
+    field_number, Buf, BorrowedDocument, BorrowedPatch, Document, FieldNumber, WireType,
+};
 
 const SAMPLES: usize = 25;
 const MIN_SAMPLE_NANOS: u128 = 2_000_000;
@@ -155,6 +157,41 @@ fn main() {
         patch.set_varint(field, 1).unwrap();
         bench("patch_save_one_edit_100k", large.len(), || {
             black_box(patch.save().unwrap());
+        });
+    }
+
+    // Read path: decode every scalar of the parsed tree (no read cache).
+    {
+        let mut patch = BorrowedPatch::from_bytes(&large).unwrap();
+        let root = patch.root();
+        let nested: Vec<_> = patch.fields_by_number(root, fnn(4)).unwrap().collect();
+        let mut msgs = vec![root];
+        for field in nested {
+            msgs.push(patch.parse_child_message(field).unwrap());
+        }
+        bench("patch_read_walk_100k", large.len(), || {
+            let mut acc = 0u64;
+            for &msg in &msgs {
+                for field in patch.message_fields(msg).unwrap() {
+                    match patch.field_tag(field).unwrap().wire_type() {
+                        WireType::Varint => {
+                            acc = acc.wrapping_add(patch.varint(field).unwrap());
+                        }
+                        WireType::I32 => {
+                            acc = acc.wrapping_add(u64::from(patch.i32_bits(field).unwrap()));
+                        }
+                        WireType::I64 => {
+                            acc = acc.wrapping_add(patch.i64_bits(field).unwrap());
+                        }
+                        WireType::Len => {
+                            acc = acc.wrapping_add(patch.bytes(field).unwrap().len() as u64);
+                        }
+                        #[allow(unreachable_patterns)]
+                        _ => {}
+                    }
+                }
+            }
+            black_box(acc);
         });
     }
 

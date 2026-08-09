@@ -69,6 +69,19 @@ impl DoubleEndedIterator for MessageFields<'_> {
 
 impl FusedIterator for MessageFields<'_> {}
 
+/// Cold sink for spans-contract violations. The spans a read re-derives
+/// were recorded by the parse pass over these very bytes, and neither
+/// the spans nor the backing bytes mutate afterwards (edits live in the
+/// side pool) — so reaching this is a `Patch`-invariant bug, not an
+/// input condition. Debug builds panic; release builds prune the path.
+#[inline(always)]
+fn spans_contract_violated() -> ! {
+    debug_assert!(false, "parse-validated spans failed to re-derive");
+    // SAFETY: per the type-level contract above — the parse pass
+    // established validity and the inputs are immutable afterwards.
+    unsafe { core::hint::unreachable_unchecked() }
+}
+
 impl Patch {
     /// Enables per-field caches for read APIs.
     ///
@@ -193,11 +206,11 @@ impl Patch {
             return Err(TreeError::InvalidId);
         };
         let msg_bytes = self.message_bytes(node.msg)?;
-        let ValueSpans::Varint { value } = spans.value_spans(WireType::Varint)? else {
-            return Err(TreeError::Corrupted);
+        let Ok(ValueSpans::Varint { value }) = spans.value_spans(WireType::Varint) else {
+            spans_contract_violated()
         };
-        let data = slice_span(msg_bytes, value)?;
-        let (v, _used) = crate::varint::decode64(data).ok_or(TreeError::Corrupted)?;
+        let Ok(data) = slice_span(msg_bytes, value) else { spans_contract_violated() };
+        let Some((v, _used)) = crate::varint::decode64(data) else { spans_contract_violated() };
         self.read_cache.set_varint(field_idx, v);
         Ok(v)
     }
@@ -214,11 +227,11 @@ impl Patch {
             return Err(TreeError::InvalidId);
         };
         let msg_bytes = self.message_bytes(node.msg)?;
-        let ValueSpans::I32 { value } = spans.value_spans(WireType::I32)? else {
-            return Err(TreeError::Corrupted);
+        let Ok(ValueSpans::I32 { value }) = spans.value_spans(WireType::I32) else {
+            spans_contract_violated()
         };
-        let data = slice_span(msg_bytes, value)?;
-        let b: [u8; 4] = data.try_into().map_err(|_| TreeError::Corrupted)?;
+        let Ok(data) = slice_span(msg_bytes, value) else { spans_contract_violated() };
+        let Ok(b) = <[u8; 4]>::try_from(data) else { spans_contract_violated() };
         Ok(u32::from_le_bytes(b))
     }
 
@@ -234,11 +247,11 @@ impl Patch {
             return Err(TreeError::InvalidId);
         };
         let msg_bytes = self.message_bytes(node.msg)?;
-        let ValueSpans::I64 { value } = spans.value_spans(WireType::I64)? else {
-            return Err(TreeError::Corrupted);
+        let Ok(ValueSpans::I64 { value }) = spans.value_spans(WireType::I64) else {
+            spans_contract_violated()
         };
-        let data = slice_span(msg_bytes, value)?;
-        let b: [u8; 8] = data.try_into().map_err(|_| TreeError::Corrupted)?;
+        let Ok(data) = slice_span(msg_bytes, value) else { spans_contract_violated() };
+        let Ok(b) = <[u8; 8]>::try_from(data) else { spans_contract_violated() };
         Ok(u64::from_le_bytes(b))
     }
 
@@ -258,8 +271,9 @@ impl Patch {
             return Err(TreeError::InvalidId);
         };
         let msg_bytes = self.message_bytes(node.msg)?;
-        let payload = spans.payload_span(wire)?;
-        slice_span(msg_bytes, payload)
+        let Ok(payload) = spans.payload_span(wire) else { spans_contract_violated() };
+        let Ok(data) = slice_span(msg_bytes, payload) else { spans_contract_violated() };
+        Ok(data)
     }
 
     pub(crate) fn message(&self, id: MessageId) -> Result<&MessageNode, TreeError> {
