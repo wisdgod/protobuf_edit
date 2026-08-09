@@ -158,6 +158,48 @@ fn main() {
         });
     }
 
+    // Clean save: zero edits, the span-merge/bulk-copy upper bound.
+    {
+        let patch = BorrowedPatch::from_bytes(&large).unwrap();
+        bench("patch_save_clean_100k", large.len(), || {
+            black_box(patch.save().unwrap());
+        });
+    }
+
+    // Deep tree, one leaf edit: exercises per-level frame rewriting.
+    {
+        fn build_deep(levels: usize) -> Vec<u8> {
+            let mut leaf = protobuf_edit::Document::new();
+            let _ = leaf.push_varint(fnn(1), 42).unwrap();
+            let mut cur = leaf.to_buf().unwrap();
+            for _ in 0..levels {
+                let mut doc = protobuf_edit::Document::new();
+                let _ = doc.push_varint(fnn(2), 7).unwrap();
+                let _ = doc.push_length_delimited(fnn(3), cur).unwrap();
+                let _ = doc
+                    .push_length_delimited(fnn(4), Buf::from_static(b"sibling payload"))
+                    .unwrap();
+                cur = doc.to_buf().unwrap();
+            }
+            cur.into_vec()
+        }
+
+        let deep = build_deep(32);
+        let mut patch = BorrowedPatch::from_bytes(&deep).unwrap();
+        let mut msg = patch.root();
+        loop {
+            let Some(next) = patch.fields_by_number(msg, fnn(3)).unwrap().next() else {
+                break;
+            };
+            msg = patch.parse_child_message(next).unwrap();
+        }
+        let leaf_field = patch.fields_by_number(msg, fnn(1)).unwrap().next().unwrap();
+        patch.set_varint(leaf_field, 1).unwrap();
+        bench("patch_save_deep32_one_edit", deep.len(), || {
+            black_box(patch.save().unwrap());
+        });
+    }
+
     // Dense re-encode for comparison.
     {
         let doc = Document::from_bytes(&large).unwrap();

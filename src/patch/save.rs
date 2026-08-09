@@ -1,21 +1,26 @@
+#[cfg(test)]
 use alloc::vec::Vec;
 
 use crate::buf::Buf;
+use crate::encode::rev::RevBuf;
 use crate::error::TreeError;
 use crate::wire::WireType;
 
 use super::{slice_span, FieldId, FieldNode, MessageId, Patch, PayloadEdit, Span, StoredSpans};
 
+#[cfg(test)]
 #[derive(Clone, Copy)]
 struct MessageSaveInfo {
     len: u32,
     dirty: bool,
 }
 
+#[cfg(test)]
 struct SavePlan {
     messages: Vec<Option<MessageSaveInfo>>,
 }
 
+#[cfg(test)]
 impl SavePlan {
     fn new(messages_len: usize) -> Result<Self, TreeError> {
         let mut messages = Vec::new();
@@ -38,7 +43,29 @@ impl SavePlan {
 }
 
 impl Patch {
+    /// Serializes the tree in one reverse pass.
+    ///
+    /// Unmodified spans copy verbatim (consecutive clean fields merge
+    /// into one copy); edited fields re-encode. A nested message's
+    /// length prefix is the cursor travel of its just-written body —
+    /// no measuring pass, no per-save plan allocation. The
+    /// `subtree_dirty` bit maintained by the edit entry points is what
+    /// lets the walk keep whole clean subtrees on the bulk-copy path.
     pub fn save(&self) -> Result<Buf, TreeError> {
+        // Size prior: output length is the source length plus edit
+        // deltas, so one up-front block almost always suffices.
+        let mut rb = RevBuf::with_capacity(self.source.len() as usize + 16);
+        self.write_message_rev(self.root, &mut rb)?;
+        if rb.finish().is_err() {
+            return Err(TreeError::CapacityExceeded);
+        }
+        rb.take_buf().map_err(|_| TreeError::CapacityExceeded)
+    }
+
+    /// Forward two-pass save kept as the differential-testing oracle
+    /// while the reverse pass beds in.
+    #[cfg(test)]
+    pub(crate) fn save_forward(&self) -> Result<Buf, TreeError> {
         let mut plan = SavePlan::new(self.messages.len())?;
         let root_info = self.save_message_info(self.root, &mut plan)?;
         let mut out = Buf::with_capacity(root_info.len)?;
@@ -51,6 +78,186 @@ impl Patch {
         Self::from_buf(self.save()?)
     }
 
+    /// Writes one message body backwards: fields in reverse output
+    /// order, each value before its frame. Clean fields accumulate a
+    /// pending span (in reverse, the next span ends where the pending
+    /// one starts) flushed as one copy.
+    fn write_message_rev(&self, msg: MessageId, rb: &mut RevBuf) -> Result<(), TreeError> {
+        let msg_node = self.message(msg)?;
+        let msg_bytes = msg_node.source.bytes(self.source.as_slice());
+
+        let mut pending: Option<Span> = None;
+        let flush = |rb: &mut RevBuf, pending: &mut Option<Span>| -> Result<(), TreeError> {
+            if let Some(span) = pending.take() {
+                rb.put_bytes(slice_span(msg_bytes, span)?);
+            }
+            Ok(())
+        };
+
+        for field_id in msg_node.field_ids().rev() {
+            let field = self.field(field_id)?;
+            if field.deleted {
+                // A deleted field's bytes sit between the neighbouring
+                // spans; they must not merge across it.
+                flush(rb, &mut pending)?;
+                continue;
+            }
+
+            let child_dirty = match field.child {
+                Some(child) => self.message(child)?.subtree_dirty,
+                None => false,
+            };
+
+            if field.edit.is_none()
+                && !child_dirty
+                && let Some(spans) = field.spans()
+            {
+                let span = spans.field;
+                pending = match pending {
+                    Some(prev) if span.end() == prev.start() => Some(
+                        Span::new(span.start(), prev.end()).ok_or(TreeError::Corrupted)?,
+                    ),
+                    Some(prev) => {
+                        rb.put_bytes(slice_span(msg_bytes, prev)?);
+                        Some(span)
+                    }
+                    None => Some(span),
+                };
+                continue;
+            }
+
+            flush(rb, &mut pending)?;
+            self.write_field_rev(msg_bytes, field_id, rb)?;
+        }
+
+        flush(rb, &mut pending)
+    }
+
+    /// Writes one re-encoded field backwards: value, then tag.
+    fn write_field_rev(
+        &self,
+        msg_bytes: &[u8],
+        field: FieldId,
+        rb: &mut RevBuf,
+    ) -> Result<(), TreeError> {
+        let node = self.field(field)?;
+
+        match node.tag.wire_type() {
+            WireType::Varint => {
+                let Some(PayloadEdit::Varint(edit)) = self.field_edit(node) else {
+                    return Err(TreeError::Corrupted);
+                };
+                let (bytes, len) = edit.raw.to_array();
+                rb.put_bytes(&bytes[..len]);
+            }
+            WireType::I32 => {
+                let Some(PayloadEdit::I32(bits)) = self.field_edit(node) else {
+                    return Err(TreeError::Corrupted);
+                };
+                rb.put_bytes(&bits.to_le_bytes());
+            }
+            WireType::I64 => {
+                let Some(PayloadEdit::I64(bits)) = self.field_edit(node) else {
+                    return Err(TreeError::Corrupted);
+                };
+                rb.put_bytes(&bits.to_le_bytes());
+            }
+            WireType::Len => {
+                self.write_len_field_rev(msg_bytes, node, rb)?;
+            }
+            #[cfg(feature = "group")]
+            WireType::SGroup => {
+                self.write_group_field_rev(msg_bytes, node, rb)?;
+            }
+            #[cfg(feature = "group")]
+            WireType::EGroup => return Err(TreeError::Corrupted),
+        }
+
+        match node.spans() {
+            Some(spans) => {
+                let tag_span = spans.tag_span()?;
+                rb.put_bytes(slice_span(msg_bytes, tag_span)?);
+            }
+            None => {
+                if node.raw_tag.is_empty() {
+                    rb.put_varint32(node.tag.get());
+                } else {
+                    let (bytes, len) = node.raw_tag.to_array();
+                    rb.put_bytes(&bytes[..len]);
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Writes a Len field backwards: body first (its travel is the
+    /// length), then the prefix — original prefix bytes verbatim when
+    /// the length is unchanged (preserving over-wide encodings),
+    /// re-encoded otherwise.
+    fn write_len_field_rev(
+        &self,
+        msg_bytes: &[u8],
+        node: &FieldNode,
+        rb: &mut RevBuf,
+    ) -> Result<(), TreeError> {
+        let (orig_len_span, orig_payload_len) = match node.spans() {
+            Some(spans) => (Some(stored_len_prefix_span(spans)?), spans.payload_len),
+            None => (None, 0),
+        };
+
+        let mark = rb.written();
+        if let Some(child) = node.child {
+            self.write_message_rev(child, rb)?;
+        } else {
+            let Some(PayloadEdit::Bytes(payload)) = self.field_edit(node) else {
+                return Err(TreeError::Corrupted);
+            };
+            rb.put_bytes(payload.as_slice());
+        }
+        let payload_len = rb.body_len(mark);
+
+        match orig_len_span {
+            Some(len_span) if payload_len == orig_payload_len as usize => {
+                rb.put_bytes(slice_span(msg_bytes, len_span)?);
+            }
+            _ => rb.put_len(payload_len),
+        }
+        Ok(())
+    }
+
+    /// Writes a group field backwards: end tag first, then the body
+    /// (the start tag is the caller's tag write).
+    #[cfg(feature = "group")]
+    fn write_group_field_rev(
+        &self,
+        msg_bytes: &[u8],
+        node: &FieldNode,
+        rb: &mut RevBuf,
+    ) -> Result<(), TreeError> {
+        match node.spans() {
+            Some(spans) => {
+                let end_span = stored_group_end_tag_span(spans)?;
+                rb.put_bytes(slice_span(msg_bytes, end_span)?);
+            }
+            None => {
+                let (field_number, _wire_type) = node.tag.split();
+                let end = crate::Tag::from_parts(field_number, WireType::EGroup);
+                rb.put_varint32(end.get());
+            }
+        }
+
+        if let Some(child) = node.child {
+            self.write_message_rev(child, rb)?;
+        } else {
+            let Some(PayloadEdit::Bytes(body)) = self.field_edit(node) else {
+                return Err(TreeError::Corrupted);
+            };
+            rb.put_bytes(body.as_slice());
+        }
+        Ok(())
+    }
+
+    #[cfg(test)]
     fn save_message_info(
         &self,
         msg: MessageId,
@@ -102,6 +309,7 @@ impl Patch {
         Ok(info)
     }
 
+    #[cfg(test)]
     fn save_field_len(&self, node: &FieldNode, plan: &mut SavePlan) -> Result<u32, TreeError> {
         let tag_len = match node.spans() {
             Some(spans) => u32::from(spans.tag_len),
@@ -178,6 +386,7 @@ impl Patch {
         tag_len.checked_add(value_len).ok_or(TreeError::CapacityExceeded)
     }
 
+    #[cfg(test)]
     fn write_message(
         &self,
         msg: MessageId,
@@ -237,6 +446,7 @@ impl Patch {
         Ok(())
     }
 
+    #[cfg(test)]
     fn write_field(
         &self,
         msg_bytes: &[u8],
@@ -294,6 +504,7 @@ impl Patch {
         Ok(())
     }
 
+    #[cfg(test)]
     fn write_len_field(
         &self,
         msg_bytes: &[u8],
@@ -337,7 +548,7 @@ impl Patch {
         Ok(())
     }
 
-    #[cfg(feature = "group")]
+    #[cfg(all(test, feature = "group"))]
     fn write_group_field(
         &self,
         msg_bytes: &[u8],

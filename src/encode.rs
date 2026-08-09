@@ -22,7 +22,7 @@ use crate::buf::Buf;
 use crate::varint;
 use crate::wire::{FieldNumber, Tag, WireType};
 
-mod rev;
+pub(crate) mod rev;
 
 /// Maximum nesting depth accepted by the encoder.
 pub const MAX_ENCODE_DEPTH: usize = 100;

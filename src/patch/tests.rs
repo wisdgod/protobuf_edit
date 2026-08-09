@@ -434,6 +434,107 @@ fn rollback_restores_pre_transaction_edit_values() {
     assert_eq!(patch.varint(field).unwrap(), 10);
 }
 
+/// Differential oracle for the reverse save: random edit sequences on a
+/// three-level tree must serialize byte-identically through the reverse
+/// one-pass writer and the forward two-pass writer.
+#[test]
+fn reverse_save_matches_forward_save_under_random_edits() {
+    struct Rng(u64);
+    impl Rng {
+        fn next(&mut self) -> u64 {
+            let mut x = self.0;
+            x ^= x << 13;
+            x ^= x >> 7;
+            x ^= x << 17;
+            self.0 = x;
+            x
+        }
+    }
+
+    fn build() -> Buf {
+        let mut leaf = Document::new();
+        let _ = leaf.push_varint(fnn(1), 300).unwrap();
+        let _ = leaf.push_fixed32(fnn(2), 0xAABB).unwrap();
+        let mut mid = Document::new();
+        let _ = mid.push_varint(fnn(1), 7).unwrap();
+        let _ = mid.push_length_delimited(fnn(3), leaf.to_buf().unwrap()).unwrap();
+        let _ = mid.push_fixed64(fnn(4), 0x11_2233_4455).unwrap();
+        let _ = mid.push_length_delimited(fnn(5), buf_from_slice(b"payload")).unwrap();
+        let mut root = Document::new();
+        let _ = root.push_varint(fnn(1), 1).unwrap();
+        let _ = root.push_length_delimited(fnn(2), mid.to_buf().unwrap()).unwrap();
+        let _ = root.push_varint(fnn(6), u64::MAX).unwrap();
+        let _ = root.push_length_delimited(fnn(2), mid.to_buf().unwrap()).unwrap();
+        let _ = root.push_fixed32(fnn(7), 42).unwrap();
+        root.to_buf().unwrap()
+    }
+
+    let bytes = build();
+    let mut rng = Rng(0x9E37_79B9_7F4A_7C15);
+
+    for round in 0..8u32 {
+        let mut tree = Patch::from_bytes(bytes.as_slice()).unwrap();
+
+        for step in 0..40u32 {
+            let field_count = tree.fields.len() as u32;
+            let pick = super::FieldId::new(rng.next() as u32 % field_count).unwrap();
+            let wire = tree.field_tag(pick).unwrap().wire_type();
+
+            match rng.next() % 10 {
+                0..=3 => {
+                    // Overwrite the payload by wire type; random byte
+                    // lengths cover both the reused (equal-length) and
+                    // re-encoded length-prefix paths.
+                    let _ = match wire {
+                        WireType::Varint => tree.set_varint(pick, rng.next()),
+                        WireType::I32 => tree.set_i32_bits(pick, rng.next() as u32),
+                        WireType::I64 => tree.set_i64_bits(pick, rng.next()),
+                        _ => {
+                            let len = (rng.next() % 24) as usize;
+                            let payload = alloc::vec![0xC3u8; len];
+                            tree.set_bytes(pick, buf_from_slice(&payload))
+                        }
+                    };
+                }
+                4 | 5 => {
+                    // Lazy descent; fails harmlessly on non-message payloads.
+                    let _ = tree.parse_child_message(pick);
+                }
+                6 => {
+                    let _ = tree.delete_field(pick);
+                }
+                7 => {
+                    let _ = tree.clear_field_edit(pick);
+                }
+                _ => {
+                    let msg_count = tree.messages.len() as u32;
+                    let msg = super::MessageId::new(rng.next() as u32 % msg_count).unwrap();
+                    let number = fnn(1 + (rng.next() as u32 % 12));
+                    let _ = match rng.next() % 3 {
+                        0 => tree
+                            .insert_varint(msg, Tag::from_parts(number, WireType::Varint), rng.next())
+                            .map(|_| ()),
+                        1 => tree
+                            .insert_i32_bits(msg, Tag::from_parts(number, WireType::I32), 9)
+                            .map(|_| ()),
+                        _ => tree
+                            .insert_bytes(msg, Tag::from_parts(number, WireType::Len), buf_from_slice(b"ins"))
+                            .map(|_| ()),
+                    };
+                }
+            }
+
+            let forward = tree.save_forward().unwrap();
+            let reverse = tree.save().unwrap();
+            assert_eq!(
+                forward.as_slice(),
+                reverse.as_slice(),
+                "divergence at round {round} step {step}",
+            );
+        }
+    }
+}
+
 #[test]
 fn message_fields_iterate_backwards() {
     let mut doc = Document::new();
