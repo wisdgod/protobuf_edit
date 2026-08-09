@@ -34,6 +34,40 @@ fn decode_truncated() {
 }
 
 #[test]
+fn decode_terminates_mid_slice_with_trailing_continuation_byte() {
+    // The slice is shorter than the 10-byte maximum and its last byte
+    // carries a continuation bit, so the constant-bound fast path's
+    // precondition fails — the bounds-checked fallback must find the
+    // mid-slice terminator instead of misreporting truncation.
+    assert_eq!(decode::<u64>(&[0x80, 0x80, 0x01, 0xFF]), Some((0x4000, 3)));
+    assert_eq!(decode::<u32>(&[0x80, 0x01, 0xFF]), Some((0x80, 2)));
+}
+
+#[test]
+fn decode_truncated_short_slice() {
+    // Same shape but genuinely truncated: every byte continues.
+    assert!(decode::<u64>(&[0x80, 0x80, 0x80]).is_none());
+    assert!(decode::<u32>(&[0x80, 0x80]).is_none());
+}
+
+#[test]
+fn decode_rejects_all_continuation_at_max_len() {
+    assert!(decode::<u64>(&[0x80; 10]).is_none());
+    assert!(decode::<u64>(&[0x80; 11]).is_none());
+    assert!(decode::<u32>(&[0x80; 5]).is_none());
+}
+
+#[test]
+fn decode64_rejects_overlong() {
+    // 10-byte encoding whose final byte exceeds the u64 last-byte cap.
+    let buf = [0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x02];
+    assert!(decode::<u64>(&buf).is_none());
+    // Same prefix with a valid final byte is u64::MAX-domain and decodes.
+    let buf = [0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0x01];
+    assert_eq!(decode::<u64>(&buf), Some((u64::MAX, 10)));
+}
+
+#[test]
 fn encoded_len_values() {
     assert_eq!(encoded_len(0u64), 1);
     assert_eq!(encoded_len(127u64), 1);

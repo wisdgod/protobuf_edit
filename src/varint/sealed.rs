@@ -29,6 +29,29 @@ macro_rules! impl_varint {
                 const OVERLONG_MAX: u8 =
                     unsafe { 1u8.unchecked_shl(<$ty>::MAX.bit_width() % 7).unchecked_sub(1) };
 
+                // Bounds-checked fallback: `data` is shorter than `MAX_LEN`
+                // and its last byte carries a continuation bit. The varint
+                // may still terminate mid-slice (trailing bytes belong to
+                // later fields), so each step checks bounds; running out of
+                // bytes here is genuine truncation. The terminator index
+                // stays below `MAX_LEN - 1` (len < MAX_LEN), so the fast
+                // path's overlong check is unreachable and omitted.
+                #[cold]
+                #[inline(never)]
+                const fn slow(data: &[u8]) -> Option<($ty, u32)> {
+                    let mut value: $ty = 0;
+                    let mut i = 0u32;
+                    while (i as usize) < data.len() {
+                        let byte = data[i as usize];
+                        value |= ((byte & 0x7F) as $ty) << (i * 7);
+                        if byte < 0x80 {
+                            return Some((value, i + 1));
+                        }
+                        i += 1;
+                    }
+                    None
+                }
+
                 if unlikely(data.is_empty()) {
                     return None;
                 }
@@ -40,31 +63,35 @@ macro_rules! impl_varint {
                     return Some((first as $ty, 1));
                 }
 
-                // Multi-byte: cold. Byte 0 already consumed (continuation bit set).
-                let data_len = data.len();
-                let data_len = if data_len <= u32::MAX as usize {
-                    data_len as u32
-                } else {
-                    return None;
-                };
-                let limit = if data_len < Self::MAX_LEN { data_len } else { Self::MAX_LEN };
-                let mut value = (first & 0x7F) as $ty;
+                // Fast path precondition: the slice holds a maximum-length
+                // encoding, or its last byte lacks a continuation bit so the
+                // loop exits at or before it. Either way every `ptr.add(i)`
+                // read below is in bounds, and the loop bound is a
+                // compile-time constant — unrollable, no per-byte bounds
+                // check (a runtime `min(len, MAX_LEN)` bound defeats both).
+                if likely(
+                    data.len() >= Self::MAX_LEN as usize || data[data.len() - 1] < 0x80,
+                ) {
+                    let mut value = (first & 0x7F) as $ty;
+                    let mut i = 1;
+                    while i < Self::MAX_LEN {
+                        // SAFETY: in bounds by the precondition above.
+                        let byte = unsafe { ptr.add(i as usize).read() };
+                        value |= ((byte & 0x7F) as $ty) << (i * 7);
 
-                let mut i = 1;
-                while i < limit {
-                    let byte = unsafe { ptr.add(i as usize).read() };
-                    value |= ((byte & 0x7F) as $ty) << (i * 7);
-
-                    if likely(byte < 0x80) {
-                        if i == const { Self::MAX_LEN - 1 } && byte > OVERLONG_MAX {
-                            return None;
+                        if likely(byte < 0x80) {
+                            if i == const { Self::MAX_LEN - 1 } && byte > OVERLONG_MAX {
+                                return None;
+                            }
+                            return Some((value, i + 1));
                         }
-                        return Some((value, i + 1));
+                        i += 1;
                     }
-                    i += 1;
+                    // MAX_LEN continuation bytes: no terminator within the width.
+                    return None;
                 }
 
-                None
+                slow(data)
             }
             #[inline]
             fn encode(buf: &mut Buffer, mut value: $ty) -> u32 {
