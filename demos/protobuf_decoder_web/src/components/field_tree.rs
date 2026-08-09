@@ -199,20 +199,30 @@ fn format_len_summary(bytes: &[u8]) -> String {
     let mut prefix = len.to_string();
     prefix.push('B');
 
-    if let Ok(s) = core::str::from_utf8(bytes) {
-        let looks_printable = s.chars().all(|c| c.is_ascii_graphic() || c == ' ');
-        if looks_printable {
-            let preview: String = s.chars().take(32).collect();
-            prefix.push_str(" \"");
-            prefix.push_str(&preview);
-            if preview.len() != s.len() {
-                prefix.push('…');
-            }
-            prefix.push('"');
+    if let Some(text) = printable_ascii(bytes) {
+        let cut = text.len().min(32);
+        prefix.push_str(" \"");
+        prefix.push_str(&text[..cut]);
+        if cut != text.len() {
+            prefix.push('…');
         }
+        prefix.push('"');
     }
 
     prefix
+}
+
+/// Views `bytes` as a string when every byte is printable ASCII
+/// (0x20..=0x7E) — the summary-preview gate. Runs on every rendered
+/// Len field, so it is one byte scan with early exit instead of a
+/// UTF-8 pass plus a per-char printability pass: all-printable-ASCII
+/// input is valid UTF-8 by construction.
+fn printable_ascii(bytes: &[u8]) -> Option<&str> {
+    if bytes.iter().any(|&b| !matches!(b, 0x20..=0x7E)) {
+        return None;
+    }
+    // SAFETY: ASCII-only bytes are valid UTF-8.
+    Some(unsafe { core::str::from_utf8_unchecked(bytes) })
 }
 
 fn fixed32_bits(patch: &Patch, field: FieldId) -> Result<u32, TreeError> {

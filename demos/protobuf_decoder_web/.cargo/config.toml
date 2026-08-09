@@ -1,3 +1,8 @@
 [unstable]
 build-std = ["std", "panic_abort", "core", "alloc"]
 trim-paths = true
+
+# simd128 has been baseline in all major browsers since 2023; build-std
+# above means std itself is rebuilt with it too.
+[target.wasm32-unknown-unknown]
+rustflags = ["-C", "target-feature=+simd128"]

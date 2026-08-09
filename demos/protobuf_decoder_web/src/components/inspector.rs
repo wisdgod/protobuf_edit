@@ -62,7 +62,7 @@ fn bytes_hint(bytes: &[u8], current: BytesView) -> String {
     let mut parts: Vec<String> = Vec::new();
     parts.push(format!("{} byte(s)", bytes.len()));
 
-    let utf8_result = core::str::from_utf8(bytes);
+    let utf8_result = is_valid_utf8::validate_utf8(bytes);
     let readable = utf8_result.is_ok_and(is_readable_utf8);
 
     if current != BytesView::Utf8 {
@@ -192,7 +192,7 @@ pub(crate) fn InspectorDrawer() -> impl IntoView {
             }
             WireType::Len => {
                 if let Ok(bytes) = patch.bytes(fid) {
-                    match core::str::from_utf8(bytes) {
+                    match is_valid_utf8::validate_utf8(bytes) {
                         Ok(s) if is_readable_utf8(s) => {
                             bytes_view.set(BytesView::Utf8);
                             bytes_text.set(s.to_string());
@@ -1139,7 +1139,7 @@ fn decode_bytes_view(text: &str, view: BytesView) -> Result<Vec<u8>, UiError> {
 fn encode_bytes_view(bytes: &[u8], view: BytesView) -> Result<String, &'static str> {
     match view {
         BytesView::Hex => Ok(hex::encode(bytes)),
-        BytesView::Utf8 => core::str::from_utf8(bytes)
+        BytesView::Utf8 => is_valid_utf8::validate_utf8(bytes)
             .map(std::string::ToString::to_string)
             .map_err(|_| "Bytes are not valid UTF-8."),
         BytesView::Base64 => Ok(base64::engine::general_purpose::STANDARD.encode(bytes)),

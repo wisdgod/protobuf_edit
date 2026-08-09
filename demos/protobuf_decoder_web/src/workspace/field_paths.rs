@@ -265,7 +265,7 @@ fn try_decode_and_parse(patch: &mut Patch, field: FieldId) -> Result<bool, TreeE
     // The copy is required: `set_bytes` below needs `&mut patch` while the
     // original payload borrows it.
     let bytes = patch.bytes(field)?.to_vec();
-    let Ok(text) = core::str::from_utf8(&bytes) else {
+    let Ok(text) = is_valid_utf8::validate_utf8(&bytes) else {
         return Ok(false);
     };
 

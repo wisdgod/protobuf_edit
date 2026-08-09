@@ -10,6 +10,10 @@ crate-type = ["cdylib", "rlib"]
 [dependencies]
 protobuf_edit = { path = "../..", features = ["nightly"] }
 rustc-hash = { version = "2", features = ["nightly"] }
+# Vendored SIMD UTF-8 validation (encoding_rs extract); wasm simd128 path
+# added locally. Explicit SIMD matters here: opt-level = "z" disables
+# LLVM auto-vectorization.
+is_valid_utf8 = { path = "crates/is_valid_utf8" }
 
 # Leptos (CSR)
 leptos = { version = "0.8", features = ["csr", "nightly"] }

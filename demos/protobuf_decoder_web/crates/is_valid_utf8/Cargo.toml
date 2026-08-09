@@ -1,0 +1,15 @@
+[package]
+name = "is_valid_utf8"
+version = "0.1.0"
+edition = "2024"
+authors = ["Henri Sivonen <hsivonen@hsivonen.fi>"]
+license = "(Apache-2.0 OR MIT) AND BSD-3-Clause"
+description = "Fast UTF-8 validation extracted from encoding_rs"
+publish = false
+
+[dependencies]
+cfg-if = "1"
+
+[features]
+default = ["nightly"]
+nightly = []
