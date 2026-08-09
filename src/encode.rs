@@ -1,13 +1,19 @@
-//! Borrowed message encoder with exact-length, single-allocation output.
+//! Borrowed message encoder with reverse one-pass output.
 //!
 //! Build a message as a borrowed tree of [`Field`]s (nested messages borrow
 //! their child slices; no intermediate buffers exist), then:
-//! - [`encoded_len`] computes the exact wire size,
-//! - [`encode`] produces a `Buf` with exactly one allocation,
-//! - [`encode_into`] appends to an existing `Buf`.
+//! - [`encode`] produces a `Buf` in one reverse pass,
+//! - [`encode_into`] appends to an existing `Buf`,
+//! - [`encoded_len`] computes the exact wire size when only the size is
+//!   needed.
 //!
-//! Length computation walks nested messages recursively, so the cost is
-//! O(fields × nesting depth). Depth is capped at 100 levels, matching the
+//! Encoding walks the tree once, backwards ([`rev::RevBuf`]): a nested
+//! message's body is written before its frame, so its length prefix is the
+//! cursor's travel — no measuring pass, no per-level length re-derivation.
+//! The output block grows geometrically (amortized allocation) instead of
+//! being sized by a length pre-pass. [`encoded_len`] remains the recursive
+//! measurement, costing O(fields × nesting depth) — pay it only when the
+//! size itself is the product. Depth is capped at 100 levels, matching the
 //! stream walkers.
 
 use core::fmt;
@@ -15,6 +21,8 @@ use core::fmt;
 use crate::buf::Buf;
 use crate::varint;
 use crate::wire::{FieldNumber, Tag, WireType};
+
+mod rev;
 
 /// Maximum nesting depth accepted by the encoder.
 pub const MAX_ENCODE_DEPTH: usize = 100;
@@ -150,58 +158,65 @@ fn message_len(fields: &[Field<'_>], depth: usize) -> Result<u32, EncodeError> {
     Ok(total)
 }
 
-/// Encodes `fields` into a fresh `Buf` sized with exactly one allocation.
+/// Encodes `fields` into a fresh `Buf` in one reverse pass.
+///
+/// The output block is grown geometrically during the walk; its spare
+/// capacity rides along ([`Buf::shrink_to_fit`] reclaims it when the
+/// result is held long-term).
 ///
 /// # Errors
-/// Same conditions as [`encoded_len`], plus `AllocFailed` if the single
-/// allocation is refused.
+/// `LengthOverflow` if any message or the total exceeds `i32::MAX` bytes;
+/// `DepthLimitExceeded` past [`MAX_ENCODE_DEPTH`] levels; `AllocFailed`
+/// if growth is refused.
 pub fn encode(fields: &[Field<'_>]) -> Result<Buf, EncodeError> {
-    let len = encoded_len(fields)?;
-    let mut out = Buf::with_capacity(len)?;
-    write_message(fields, 0, &mut out)?;
-    debug_assert_eq!(out.len(), len);
-    Ok(out)
+    let mut rb = rev::RevBuf::new();
+    write_message_rev(fields, 0, &mut rb)?;
+    rb.finish()?;
+    rb.take_buf()
 }
 
-/// Appends the encoded message to `out`, reserving the exact extra capacity
-/// up front.
+/// Appends the encoded message to `out`.
 ///
 /// # Errors
 /// Same conditions as [`encode`].
 pub fn encode_into(fields: &[Field<'_>], out: &mut Buf) -> Result<(), EncodeError> {
-    let len = encoded_len(fields)?;
-    let start = out.len();
-    out.try_reserve(len)?;
-    write_message(fields, 0, out)?;
-    debug_assert_eq!(out.len(), start + len);
+    let mut rb = rev::RevBuf::new();
+    write_message_rev(fields, 0, &mut rb)?;
+    out.extend_from_slice(rb.finish()?)?;
     Ok(())
 }
 
-/// Writes one message body; length validation already happened in
-/// `message_len`, so buffer writes cannot exceed the reserved capacity.
-fn write_message(fields: &[Field<'_>], depth: usize, out: &mut Buf) -> Result<(), EncodeError> {
-    debug_assert!(depth <= MAX_ENCODE_DEPTH, "depth checked by message_len");
+/// Writes one message body backwards: fields in reverse order, each
+/// value before its tag, so the finished tail reads forward. A nested
+/// message's length prefix is the cursor travel of its body — measured,
+/// not recomputed. Cap and allocation failures poison the buffer and
+/// surface once in `RevBuf::finish`; only the depth check errors here.
+fn write_message_rev(
+    fields: &[Field<'_>],
+    depth: usize,
+    rb: &mut rev::RevBuf,
+) -> Result<(), EncodeError> {
+    if depth > MAX_ENCODE_DEPTH {
+        return Err(EncodeError::DepthLimitExceeded);
+    }
 
-    for field in fields {
+    for field in fields.iter().rev() {
         let tag = Tag::from_parts(field.number, field.value.wire_type());
-        varint::encode32(out, tag.get())?;
         match field.value {
-            Value::Varint(v) => {
-                varint::encode64(out, v)?;
-            }
-            Value::Fixed32(v) => out.extend_from_slice(&v.to_le_bytes())?,
-            Value::Fixed64(v) => out.extend_from_slice(&v.to_le_bytes())?,
+            Value::Varint(v) => rb.put_varint64(v),
+            Value::Fixed32(v) => rb.put_bytes(&v.to_le_bytes()),
+            Value::Fixed64(v) => rb.put_bytes(&v.to_le_bytes()),
             Value::Bytes(bytes) => {
-                // Length fits u32: proven by the message_len pass.
-                varint::encode32(out, bytes.len() as u32)?;
-                out.extend_from_slice(bytes)?;
+                rb.put_bytes(bytes);
+                rb.put_len(bytes.len());
             }
             Value::Message(inner) => {
-                let len = message_len(inner, depth + 1)?;
-                varint::encode32(out, len)?;
-                write_message(inner, depth + 1, out)?;
+                let mark = rb.written();
+                write_message_rev(inner, depth + 1, rb)?;
+                rb.put_len(rb.body_len(mark));
             }
         }
+        rb.put_varint32(tag.get());
     }
     Ok(())
 }

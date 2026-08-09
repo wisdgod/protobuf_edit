@@ -7,6 +7,11 @@ pub const trait Varint: Copy {
     fn encoded_len(self) -> u32;
     fn decode(data: &[u8]) -> Option<(Self, u32)>;
     fn encode(buf: &mut Buffer, value: Self) -> u32;
+    /// Writes the LEB128 bytes of `value` forward at `ptr`, returning the count.
+    ///
+    /// # Safety
+    /// `ptr` must be valid for writes of `encoded_len(value)` bytes.
+    unsafe fn encode_to_ptr(ptr: *mut u8, value: Self) -> u32;
 }
 
 macro_rules! impl_varint {
@@ -94,10 +99,15 @@ macro_rules! impl_varint {
                 slow(data)
             }
             #[inline]
-            fn encode(buf: &mut Buffer, mut value: $ty) -> u32 {
+            fn encode(buf: &mut Buffer, value: $ty) -> u32 {
+                // SAFETY: `Buffer` is 10 bytes, `encoded_len <= MAX_LEN <= 10`.
+                unsafe { Self::encode_to_ptr(buf.as_mut_ptr().cast::<u8>(), value) }
+            }
+
+            #[inline]
+            unsafe fn encode_to_ptr(ptr: *mut u8, mut value: $ty) -> u32 {
                 let len = Self::encoded_len(value);
                 unsafe {
-                    let ptr = buf.as_mut_ptr().cast::<u8>();
                     let limit = (len - 1) as usize;
                     let mut i = 0;
                     while i < limit {
@@ -131,6 +141,11 @@ impl Varint for bool {
     #[inline]
     fn encode(buf: &mut Buffer, value: Self) -> u32 {
         let ptr = buf.as_mut_ptr().cast::<u8>();
+        unsafe { ptr.write(u8::from(value)) };
+        1
+    }
+    #[inline]
+    unsafe fn encode_to_ptr(ptr: *mut u8, value: Self) -> u32 {
         unsafe { ptr.write(u8::from(value)) };
         1
     }

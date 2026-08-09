@@ -186,7 +186,7 @@ fn main() {
         });
     }
 
-    // Borrowed encoder: small nested message, one exact allocation.
+    // Borrowed encoder: small nested message.
     {
         let inner = [
             Field::new(field_number!(1), Value::Varint(150)),
@@ -200,6 +200,29 @@ fn main() {
         let encoded_len = encode::encode(&fields).unwrap().len() as usize;
         bench("encode_borrowed_small", encoded_len, || {
             black_box(encode::encode(black_box(&fields)).unwrap());
+        });
+    }
+
+    // Borrowed encoder: deep nesting. A forward encoder re-measures each
+    // subtree once per enclosing level (O(fields x depth)); the reverse
+    // pass visits each field once.
+    {
+        fn nest_and_encode(levels: usize, inner: &[Field<'_>]) -> protobuf_edit::Buf {
+            if levels == 0 {
+                return encode::encode(inner).unwrap();
+            }
+            let level = [
+                Field::new(field_number!(1), Value::Message(inner)),
+                Field::new(field_number!(2), Value::Varint(0x3FFF)),
+                Field::new(field_number!(3), Value::Bytes(b"depth payload")),
+            ];
+            nest_and_encode(levels - 1, &level)
+        }
+
+        let leaf = [Field::new(field_number!(4), Value::Varint(1))];
+        let encoded_len = nest_and_encode(64, &leaf).len() as usize;
+        bench("encode_borrowed_deep64", encoded_len, || {
+            black_box(nest_and_encode(64, black_box(&leaf)));
         });
     }
 }

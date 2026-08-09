@@ -90,7 +90,9 @@ fn encode_into_appends_after_existing_bytes() {
 }
 
 #[test]
-fn encode_allocates_exactly_once() {
+fn encode_matches_encoded_len() {
+    // The reverse write pass and the recursive measuring pass are
+    // independent implementations; their lengths must agree.
     let payload = [0x55u8; 300];
     let inner = [Field::new(field_number!(2), Value::Bytes(&payload))];
     let fields = [
@@ -101,8 +103,6 @@ fn encode_allocates_exactly_once() {
     let len = encoded_len(&fields).unwrap();
     let out = encode(&fields).unwrap();
     assert_eq!(out.len(), len);
-    // Exactly the reserved capacity: no growth happened during the write.
-    assert_eq!(out.capacity(), len);
 }
 
 #[test]
@@ -115,9 +115,23 @@ fn depth_limit_is_enforced() {
         nest_and_measure(levels - 1, &level)
     }
 
+    fn nest_and_encode(levels: usize, inner: &[Field<'_>]) -> Result<Buf, EncodeError> {
+        if levels == 0 {
+            return encode(inner);
+        }
+        let level = [Field::new(field_number!(1), Value::Message(inner))];
+        nest_and_encode(levels - 1, &level)
+    }
+
     let leaf = [Field::new(field_number!(2), Value::Varint(1))];
     assert!(nest_and_measure(MAX_ENCODE_DEPTH, &leaf).is_ok());
     assert_eq!(nest_and_measure(MAX_ENCODE_DEPTH + 1, &leaf), Err(EncodeError::DepthLimitExceeded));
+
+    assert!(nest_and_encode(MAX_ENCODE_DEPTH, &leaf).is_ok());
+    assert!(matches!(
+        nest_and_encode(MAX_ENCODE_DEPTH + 1, &leaf),
+        Err(EncodeError::DepthLimitExceeded)
+    ));
 }
 
 #[test]
