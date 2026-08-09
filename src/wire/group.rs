@@ -5,6 +5,15 @@ use crate::varint;
 use super::codec::decode_tag;
 use super::tag::{FieldNumber, WireType};
 
+/// Finds the end-group tag matching `group_field_number`, scanning from
+/// `body_start`.
+///
+/// Returns `(end_tag_start, end_after)`: the matching end tag's start offset
+/// and the offset right after it. Every step is validated against
+/// `data.len()` before advancing, so
+/// `body_start <= end_tag_start < end_after <= data.len()`. Returns `None`
+/// on malformed or truncated content, or when a non-matching end-group tag
+/// closes the scan.
 pub fn find_group_end(
     data: &[u8],
     body_start: usize,

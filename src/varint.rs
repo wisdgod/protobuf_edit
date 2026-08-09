@@ -53,6 +53,10 @@ pub const fn encoded_len64(value: u64) -> u32 {
 
 /// Decode a varint from the start of `data`.
 /// Returns `(value, bytes_consumed)`, or `None` if data is truncated/invalid.
+///
+/// On success `bytes_consumed` is in `1..=data.len()`: a decoder never
+/// reports more bytes than the input holds, so callers may re-slice past the
+/// varint without re-checking bounds.
 #[inline]
 #[must_use]
 pub fn decode<N: sealed::Varint>(data: &[u8]) -> Option<(N, u32)> {

@@ -187,40 +187,45 @@ fn parse_field(data: &[u8], start: usize) -> Result<(RawField<'_>, usize), Curso
     let Some(tag) = Tag::new(raw_tag) else {
         return Err(CursorError::new(start, CursorErrorKind::InvalidTag));
     };
+    // SAFETY: `varint::decode` guarantees the consumed count never exceeds
+    // the input length, so `tag_len <= rest.len()`.
+    let after_tag = unsafe { rest.get_unchecked(tag_len as usize..) };
     let pos = start + tag_len as usize;
 
     let (value, end) = match tag.wire_type() {
         WireType::Varint => {
-            let rest = &data[pos..];
-            let Some((v, n)) = varint::decode64(rest) else {
-                return Err(varint_failure(pos, rest.len(), MAX_VARINT64_LEN));
+            let Some((v, n)) = varint::decode64(after_tag) else {
+                return Err(varint_failure(pos, after_tag.len(), MAX_VARINT64_LEN));
             };
             (WireValue::Varint(v), pos + n as usize)
         }
         WireType::I32 => {
-            let Some(bytes) = data[pos..].first_chunk::<4>() else {
+            let Some(bytes) = after_tag.first_chunk::<4>() else {
                 return Err(CursorError::new(pos, CursorErrorKind::Truncated));
             };
             (WireValue::I32(*bytes), pos + 4)
         }
         WireType::I64 => {
-            let Some(bytes) = data[pos..].first_chunk::<8>() else {
+            let Some(bytes) = after_tag.first_chunk::<8>() else {
                 return Err(CursorError::new(pos, CursorErrorKind::Truncated));
             };
             (WireValue::I64(*bytes), pos + 8)
         }
         WireType::Len => {
-            let rest = &data[pos..];
-            let Some((len, n)) = varint::decode32(rest) else {
-                return Err(varint_failure(pos, rest.len(), MAX_VARINT32_LEN));
+            let Some((len, n)) = varint::decode32(after_tag) else {
+                return Err(varint_failure(pos, after_tag.len(), MAX_VARINT32_LEN));
             };
+            // SAFETY: `varint::decode` guarantees the consumed count never
+            // exceeds the input length, so `n <= after_tag.len()`.
+            let after_len = unsafe { after_tag.get_unchecked(n as usize..) };
             let payload_start = pos + n as usize;
             let len = len as usize;
-            if data.len() - payload_start < len {
+            if after_len.len() < len {
                 return Err(CursorError::new(payload_start, CursorErrorKind::Truncated));
             }
-            let payload_end = payload_start + len;
-            (WireValue::Len(&data[payload_start..payload_end]), payload_end)
+            // SAFETY: `len <= after_len.len()` was checked right above.
+            let payload = unsafe { after_len.get_unchecked(..len) };
+            (WireValue::Len(payload), payload_start + len)
         }
         #[cfg(feature = "group")]
         WireType::SGroup => {
@@ -237,7 +242,12 @@ fn parse_field(data: &[u8], start: usize) -> Result<(RawField<'_>, usize), Curso
         }
     };
 
-    Ok((RawField { tag, value, raw: &data[start..end], offset: start }, end))
+    // SAFETY: `start <= end <= data.len()` in every arm — Varint by the
+    // `varint::decode` consumed-count contract, I32/I64 by the `first_chunk`
+    // length check, Len by the payload check above, SGroup by
+    // `find_group_end`'s offset guarantee — so `end - start <= rest.len()`.
+    let raw = unsafe { rest.get_unchecked(..end - start) };
+    Ok((RawField { tag, value, raw, offset: start }, end))
 }
 
 #[cfg(test)]

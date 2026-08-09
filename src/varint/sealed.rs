@@ -5,6 +5,12 @@ use super::Buffer;
 pub const trait Varint: Copy {
     const MAX_LEN: u32;
     fn encoded_len(self) -> u32;
+    /// Decodes a varint from the start of `data`, returning the value and
+    /// the consumed byte count.
+    ///
+    /// On success the count is in `1..=data.len()`: implementations must
+    /// never report more consumed bytes than the input holds. Callers rely
+    /// on this to re-slice past the varint without bounds checks.
     fn decode(data: &[u8]) -> Option<(Self, u32)>;
     fn encode(buf: &mut Buffer, value: Self) -> u32;
     /// Writes the LEB128 bytes of `value` forward at `ptr`, returning the count.
@@ -74,9 +80,7 @@ macro_rules! impl_varint {
                 // read below is in bounds, and the loop bound is a
                 // compile-time constant — unrollable, no per-byte bounds
                 // check (a runtime `min(len, MAX_LEN)` bound defeats both).
-                if likely(
-                    data.len() >= Self::MAX_LEN as usize || data[data.len() - 1] < 0x80,
-                ) {
+                if likely(data.len() >= Self::MAX_LEN as usize || data[data.len() - 1] < 0x80) {
                     let mut value = (first & 0x7F) as $ty;
                     let mut i = 1;
                     while i < Self::MAX_LEN {
