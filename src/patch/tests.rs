@@ -433,3 +433,118 @@ fn rollback_restores_pre_transaction_edit_values() {
     patch.txn_rollback();
     assert_eq!(patch.varint(field).unwrap(), 10);
 }
+
+#[test]
+fn dirty_propagates_to_ancestors_only() {
+    // root { f10: mid { f10: leaf { f2: varint } }, f11: sibling { f2 } }
+    let mut leaf = Document::new();
+    let _ = leaf.push_varint(fnn(2), 7).unwrap();
+    let mut mid = Document::new();
+    let _ = mid.push_length_delimited(fnn(10), leaf.to_buf().unwrap()).unwrap();
+    let mut sibling = Document::new();
+    let _ = sibling.push_varint(fnn(2), 8).unwrap();
+    let mut root = Document::new();
+    let _ = root.push_length_delimited(fnn(10), mid.to_buf().unwrap()).unwrap();
+    let _ = root.push_length_delimited(fnn(11), sibling.to_buf().unwrap()).unwrap();
+    let bytes = root.to_buf().unwrap();
+
+    let mut tree = Patch::from_bytes(bytes.as_slice()).unwrap();
+    let root_msg = tree.root();
+    let mid_field = tree.fields_by_number(root_msg, fnn(10)).unwrap().next().unwrap();
+    let mid_msg = tree.parse_child_message(mid_field).unwrap();
+    let leaf_field = tree.fields_by_number(mid_msg, fnn(10)).unwrap().next().unwrap();
+    let leaf_msg = tree.parse_child_message(leaf_field).unwrap();
+    let sib_field = tree.fields_by_number(root_msg, fnn(11)).unwrap().next().unwrap();
+    let sib_msg = tree.parse_child_message(sib_field).unwrap();
+
+    // Lazy child parsing is not an edit: everything stays clean.
+    for msg in [root_msg, mid_msg, leaf_msg, sib_msg] {
+        assert!(!tree.message(msg).unwrap().subtree_dirty);
+    }
+
+    let value_field = tree.fields_by_number(leaf_msg, fnn(2)).unwrap().next().unwrap();
+    tree.set_varint(value_field, 99).unwrap();
+
+    assert!(tree.message(leaf_msg).unwrap().subtree_dirty);
+    assert!(tree.message(mid_msg).unwrap().subtree_dirty);
+    assert!(tree.message(root_msg).unwrap().subtree_dirty);
+    assert!(!tree.message(sib_msg).unwrap().subtree_dirty, "siblings stay clean");
+}
+
+#[test]
+fn rollback_restores_exact_dirty_set() {
+    let mut child_a = Document::new();
+    let _ = child_a.push_varint(fnn(2), 1).unwrap();
+    let mut child_b = Document::new();
+    let _ = child_b.push_varint(fnn(2), 3).unwrap();
+    let mut root = Document::new();
+    let _ = root.push_length_delimited(fnn(10), child_a.to_buf().unwrap()).unwrap();
+    let _ = root.push_length_delimited(fnn(11), child_b.to_buf().unwrap()).unwrap();
+    let bytes = root.to_buf().unwrap();
+
+    let mut tree = Patch::from_bytes(bytes.as_slice()).unwrap();
+    let root_msg = tree.root();
+    let fa = tree.fields_by_number(root_msg, fnn(10)).unwrap().next().unwrap();
+    let fb = tree.fields_by_number(root_msg, fnn(11)).unwrap().next().unwrap();
+    let msg_a = tree.parse_child_message(fa).unwrap();
+    let msg_b = tree.parse_child_message(fb).unwrap();
+
+    // Pre-transaction edit dirties subtree A and the root.
+    let field_a = tree.fields_by_number(msg_a, fnn(2)).unwrap().next().unwrap();
+    tree.set_varint(field_a, 100).unwrap();
+
+    // The in-transaction edit propagates through B and stops at the
+    // already-dirty root, so rollback must clear exactly B.
+    tree.txn_begin();
+    let field_b = tree.fields_by_number(msg_b, fnn(2)).unwrap().next().unwrap();
+    tree.set_varint(field_b, 200).unwrap();
+    assert!(tree.message(msg_b).unwrap().subtree_dirty);
+    tree.txn_rollback();
+
+    assert!(!tree.message(msg_b).unwrap().subtree_dirty, "txn flip must roll back");
+    assert!(tree.message(msg_a).unwrap().subtree_dirty, "pre-txn dirty survives");
+    assert!(tree.message(root_msg).unwrap().subtree_dirty, "pre-txn dirty survives");
+}
+
+#[test]
+fn dirty_from_every_edit_entry_point() {
+    let mut doc = Document::new();
+    let _ = doc.push_varint(fnn(1), 5).unwrap();
+    let _ = doc.push_length_delimited(fnn(2), buf_from_slice(b"abc")).unwrap();
+    let bytes = doc.to_buf().unwrap();
+    let fresh = || Patch::from_bytes(bytes.as_slice()).unwrap();
+
+    let mut t = fresh();
+    let f = t.fields_by_number(t.root(), fnn(1)).unwrap().next().unwrap();
+    t.set_varint(f, 6).unwrap();
+    assert!(t.message(t.root()).unwrap().subtree_dirty, "set_varint");
+
+    let mut t = fresh();
+    let f = t.fields_by_number(t.root(), fnn(2)).unwrap().next().unwrap();
+    t.set_bytes(f, buf_from_slice(b"xy")).unwrap();
+    assert!(t.message(t.root()).unwrap().subtree_dirty, "set_bytes");
+
+    let mut t = fresh();
+    let f = t.fields_by_number(t.root(), fnn(1)).unwrap().next().unwrap();
+    t.delete_field(f).unwrap();
+    assert!(t.message(t.root()).unwrap().subtree_dirty, "delete_field");
+
+    let mut t = fresh();
+    let tag = Tag::from_parts(fnn(3), WireType::Varint);
+    let _ = t.insert_varint(t.root(), tag, 1).unwrap();
+    assert!(t.message(t.root()).unwrap().subtree_dirty, "insert");
+
+    // clear_field_edit keeps the bit set (conservative direction: the
+    // bit records that an edit happened, not that state differs).
+    let mut t = fresh();
+    let f = t.fields_by_number(t.root(), fnn(1)).unwrap().next().unwrap();
+    t.set_varint(f, 6).unwrap();
+    t.clear_field_edit(f).unwrap();
+    assert!(t.message(t.root()).unwrap().subtree_dirty, "clear keeps the bit");
+
+    // The clone carries the bits; a fresh reparse starts clean.
+    let cloned = t.clone();
+    assert!(cloned.message(cloned.root()).unwrap().subtree_dirty);
+    let reparsed = t.save_and_reparse().unwrap();
+    assert!(!reparsed.message(reparsed.root()).unwrap().subtree_dirty);
+}

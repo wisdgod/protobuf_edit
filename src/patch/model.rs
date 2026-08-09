@@ -146,6 +146,14 @@ pub struct MessageNode {
     /// Fields inserted after parse, in insertion order. `Vec::new()` never
     /// allocates, so only messages that actually receive inserts pay for one.
     pub(crate) inserted: Vec<FieldId>,
+    /// Some edit (payload overlay, delete, insert) happened in this
+    /// subtree since parse. Maintained eagerly by the edit entry points
+    /// (`Patch::mark_subtree_dirty`) under the invariant "dirty implies
+    /// all ancestors dirty"; save reads it to decide span reuse without
+    /// a measuring pass. Conservative: clearing an edit does not clear
+    /// the bit (only a transaction rollback restores it), which can only
+    /// cost span-merge efficiency, never correctness.
+    pub(crate) subtree_dirty: bool,
 }
 
 /// Head/tail links and length of one same-field-number chain.
@@ -272,6 +280,10 @@ pub enum UndoAction {
     FieldDeleted { field: FieldId, prev: bool },
     FieldChild { field: FieldId, prev: Option<MessageId> },
     InsertField { msg: MessageId, field: FieldId },
+    /// A clean->dirty flip of `msg` by `mark_subtree_dirty`; rollback
+    /// clears the bit. At most one per message per transaction (the
+    /// propagation stops at already-dirty ancestors).
+    MarkDirty { msg: MessageId },
 }
 
 #[derive(Clone)]

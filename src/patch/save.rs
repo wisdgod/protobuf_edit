@@ -89,6 +89,14 @@ impl Patch {
             len = len.checked_add(field_len).ok_or(TreeError::CapacityExceeded)?;
         }
 
+        // Migration safety net for the eagerly propagated bit: measured
+        // dirtiness must imply `subtree_dirty` (the bit may over-report
+        // after a cleared edit, never under-report).
+        debug_assert!(
+            !dirty || msg_node.subtree_dirty,
+            "measured dirty without subtree_dirty: eager propagation missed an edit path",
+        );
+
         let info = MessageSaveInfo { len, dirty };
         plan.set(msg, info)?;
         Ok(info)

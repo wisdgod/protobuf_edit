@@ -245,6 +245,7 @@ impl Patch {
                 parent_field,
                 parsed: FieldRange { start: fields_start, end: fields_end },
                 inserted: Vec::new(),
+                subtree_dirty: false,
             });
             Ok(msg_id)
         })();

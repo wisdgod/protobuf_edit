@@ -108,6 +108,14 @@ impl Patch {
                         debug_assert!(false, "txn undo field child out of bounds");
                     }
                 }
+                UndoAction::MarkDirty { msg } => {
+                    let idx = msg.as_inner() as usize;
+                    if let Some(node) = self.messages.get_mut(idx) {
+                        node.subtree_dirty = false;
+                    } else {
+                        debug_assert!(false, "txn undo mark dirty out of bounds");
+                    }
+                }
                 UndoAction::InsertField { msg, field } => {
                     let field_idx = field.as_inner() as usize;
                     let Some(field_node) = self.fields.get(field_idx) else {

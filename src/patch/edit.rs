@@ -6,6 +6,30 @@ use crate::Buf;
 use super::{FieldId, FieldNode, MessageId, Patch, PayloadEdit, UndoAction, VarintEdit};
 
 impl Patch {
+    /// Marks `msg` and its ancestors dirty, stopping at the first already
+    /// dirty message — the invariant "dirty implies all ancestors dirty"
+    /// makes the walk amortized O(1). Each clean->dirty flip is recorded
+    /// in the undo log so rollback restores the exact pre-transaction
+    /// dirty set. Every edit entry point funnels through this.
+    pub(crate) fn mark_subtree_dirty(&mut self, msg: MessageId) -> Result<(), TreeError> {
+        let mut cur = msg;
+        loop {
+            let node = self.message_mut(cur)?;
+            if node.subtree_dirty {
+                return Ok(());
+            }
+            node.subtree_dirty = true;
+            let parent_field = node.parent_field;
+            if let Some(state) = self.txn.as_mut() {
+                state.undo_log.push(UndoAction::MarkDirty { msg: cur });
+            }
+            let Some(field) = parent_field else {
+                return Ok(());
+            };
+            cur = self.field(field)?.msg;
+        }
+    }
+
     pub fn clear_field_edit(&mut self, field: FieldId) -> Result<(), TreeError> {
         if self.field(field)?.spans().is_none() {
             return self.delete_field(field);
@@ -19,6 +43,7 @@ impl Patch {
         if prev_edit.is_none() {
             return Ok(());
         }
+        let msg = node.msg;
         if let Some(state) = txn.as_mut() {
             state.undo_log.push(UndoAction::FieldEdit { field, prev: prev_edit });
         }
@@ -39,7 +64,7 @@ impl Patch {
             }
             _ => {}
         }
-        Ok(())
+        self.mark_subtree_dirty(msg)
     }
 
     pub fn delete_field(&mut self, field: FieldId) -> Result<(), TreeError> {
@@ -47,6 +72,7 @@ impl Patch {
         let Self { txn, fields, .. } = self;
         let node = fields.get_mut(idx).ok_or(TreeError::InvalidId)?;
 
+        let msg = node.msg;
         let prev_deleted = core::mem::replace(&mut node.deleted, true);
         let prev_edit = node.edit.take();
         let prev_child = node.child.take();
@@ -56,7 +82,7 @@ impl Patch {
             state.undo_log.push(UndoAction::FieldEdit { field, prev: prev_edit });
             state.undo_log.push(UndoAction::FieldChild { field, prev: prev_child });
         }
-        Ok(())
+        self.mark_subtree_dirty(msg)
     }
 
     pub fn insert_varint(
@@ -134,20 +160,22 @@ impl Patch {
     }
 
     pub fn set_varint(&mut self, field: FieldId, value: u64) -> Result<(), TreeError> {
-        self.set_edit_checked(field, PayloadEdit::Varint(VarintEdit::new(value)), |w| {
-            w == WireType::Varint
-        })?;
-        Ok(())
+        let msg = self
+            .set_edit_checked(field, PayloadEdit::Varint(VarintEdit::new(value)), |w| {
+                w == WireType::Varint
+            })?
+            .msg;
+        self.mark_subtree_dirty(msg)
     }
 
     pub fn set_i32_bits(&mut self, field: FieldId, bits: u32) -> Result<(), TreeError> {
-        self.set_edit_checked(field, PayloadEdit::I32(bits), |w| w == WireType::I32)?;
-        Ok(())
+        let msg = self.set_edit_checked(field, PayloadEdit::I32(bits), |w| w == WireType::I32)?.msg;
+        self.mark_subtree_dirty(msg)
     }
 
     pub fn set_i64_bits(&mut self, field: FieldId, bits: u64) -> Result<(), TreeError> {
-        self.set_edit_checked(field, PayloadEdit::I64(bits), |w| w == WireType::I64)?;
-        Ok(())
+        let msg = self.set_edit_checked(field, PayloadEdit::I64(bits), |w| w == WireType::I64)?.msg;
+        self.mark_subtree_dirty(msg)
     }
 
     pub fn set_bytes(&mut self, field: FieldId, payload: Buf) -> Result<(), TreeError> {
@@ -157,11 +185,12 @@ impl Patch {
             WireType::SGroup => true,
             _ => false,
         })?;
+        let msg = node.msg;
         let prev_child = node.child.take();
         if let Some(state) = self.txn.as_mut() {
             state.undo_log.push(UndoAction::FieldChild { field, prev: prev_child });
         }
-        Ok(())
+        self.mark_subtree_dirty(msg)
     }
 
     fn insert_field_with_edit(
@@ -212,6 +241,7 @@ impl Patch {
         if let Some(state) = self.txn.as_mut() {
             state.undo_log.push(UndoAction::InsertField { msg, field: field_id });
         }
+        self.mark_subtree_dirty(msg)?;
         Ok(field_id)
     }
 }
