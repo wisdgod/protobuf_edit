@@ -53,6 +53,20 @@ impl ExactSizeIterator for MessageFields<'_> {
     }
 }
 
+impl DoubleEndedIterator for MessageFields<'_> {
+    #[inline]
+    fn next_back(&mut self) -> Option<Self::Item> {
+        if let Some(&id) = self.inserted.next_back() {
+            return Some(id);
+        }
+        self.parsed.next_back().map(|raw| {
+            // SAFETY: parsed-range ids come from `alloc_field`, which
+            // rejects indices at `FieldId::MAX`.
+            unsafe { FieldId::new_unchecked(raw) }
+        })
+    }
+}
+
 impl FusedIterator for MessageFields<'_> {}
 
 impl Patch {

@@ -435,6 +435,25 @@ fn rollback_restores_pre_transaction_edit_values() {
 }
 
 #[test]
+fn message_fields_iterate_backwards() {
+    let mut doc = Document::new();
+    let _ = doc.push_varint(fnn(1), 1).unwrap();
+    let _ = doc.push_varint(fnn(2), 2).unwrap();
+    let bytes = doc.to_buf().unwrap();
+
+    let mut tree = Patch::from_bytes(bytes.as_slice()).unwrap();
+    let root = tree.root();
+    let tag = Tag::from_parts(fnn(3), WireType::Varint);
+    let inserted = tree.insert_varint(root, tag, 3).unwrap();
+
+    let forward: alloc::vec::Vec<_> = tree.message_fields(root).unwrap().collect();
+    let mut backward: alloc::vec::Vec<_> = tree.message_fields(root).unwrap().rev().collect();
+    backward.reverse();
+    assert_eq!(forward, backward);
+    assert_eq!(*forward.last().unwrap(), inserted, "inserted fields follow parsed ones");
+}
+
+#[test]
 fn dirty_propagates_to_ancestors_only() {
     // root { f10: mid { f10: leaf { f2: varint } }, f11: sibling { f2 } }
     let mut leaf = Document::new();

@@ -57,6 +57,18 @@ impl RevBuf {
         Self { buf: Vec::new(), pos: 0, poison: None }
     }
 
+    /// Creates a buffer with at least `cap` bytes of headroom — one
+    /// allocation up front for callers with a size prior. Allocation
+    /// failure poisons the buffer (reported by [`finish`](Self::finish)),
+    /// as it would on any write.
+    pub(crate) fn with_capacity(cap: usize) -> Self {
+        let mut rb = Self::new();
+        if cap > 0 {
+            let _ = rb.grow(cap);
+        }
+        rb
+    }
+
     /// Bytes written so far — the stable mark coordinate: growth rebases
     /// the internal cursor but never the written count. Take a mark
     /// before a body, pass it to [`body_len`](Self::body_len) after.
@@ -333,6 +345,17 @@ mod tests {
         rb.put_len(MAX_LEN + 1);
         rb.put_varint32(0x0A); // ignored: poisoned
         assert_eq!(rb.finish(), Err(EncodeError::LengthOverflow));
+    }
+
+    #[test]
+    fn with_capacity_preallocates() {
+        let mut rb = RevBuf::with_capacity(128);
+        for i in 0..100u8 {
+            rb.put_byte(i);
+        }
+        let out = rb.finish().unwrap();
+        assert_eq!(out.len(), 100);
+        assert_eq!(out[0], 99, "writes read forward");
     }
 
     #[test]
