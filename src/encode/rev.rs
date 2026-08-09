@@ -57,14 +57,26 @@ impl RevBuf {
         Self { buf: Vec::new(), pos: 0, poison: None }
     }
 
-    /// Creates a buffer with at least `cap` bytes of headroom — one
-    /// allocation up front for callers with a size prior. Allocation
-    /// failure poisons the buffer (reported by [`finish`](Self::finish)),
-    /// as it would on any write.
+    /// Creates a buffer with exactly `cap` bytes of headroom — one
+    /// allocation up front for callers with a size prior. Exposes
+    /// exactly `cap` (allocator rounding stays hidden in the block's
+    /// spare capacity), so an *exact* prior finishes at `pos == 0` and
+    /// [`take_buf`](Self::take_buf) skips its move. Allocation failure
+    /// poisons the buffer (reported by [`finish`](Self::finish)), as it
+    /// would on any write.
     pub(crate) fn with_capacity(cap: usize) -> Self {
         let mut rb = Self::new();
         if cap > 0 {
-            let _ = rb.grow(cap);
+            let mut buf: Vec<MaybeUninit<u8>> = Vec::new();
+            if buf.try_reserve_exact(cap).is_err() {
+                rb.poison(EncodeError::AllocFailed);
+                return rb;
+            }
+            // SAFETY: `MaybeUninit` imposes no validity requirement, and
+            // the capacity was just reserved.
+            unsafe { buf.set_len(cap) };
+            rb.pos = cap;
+            rb.buf = buf;
         }
         rb
     }
@@ -261,7 +273,12 @@ impl RevBuf {
             return Ok(out);
         }
         let mut block = core::mem::take(&mut self.buf);
-        block.copy_within(self.pos.., 0);
+        if self.pos != 0 {
+            // An exact capacity prior lands the tail at the block start,
+            // making this move (the only O(bytes) overhead of the
+            // reverse form) vanish.
+            block.copy_within(self.pos.., 0);
+        }
         self.pos = 0;
         let ptr = block.as_mut_ptr();
         let cap = block.capacity();
