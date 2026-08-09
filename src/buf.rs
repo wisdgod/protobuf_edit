@@ -434,6 +434,27 @@ impl Buf {
         t.set_len(new_len);
     }
 
+    /// Reserves `additional` bytes and returns the write pointer one past
+    /// the current payload end, for in-place tail encoding without a
+    /// scratch copy. Bytes written there become visible only after a
+    /// matching [`set_len`](Self::set_len).
+    ///
+    /// The storage is owned on return: `additional >= 1` forces a
+    /// borrowed payload through the reserve path, which copies it out.
+    ///
+    /// # Errors
+    /// Returns `CapacityOverflow` if growth would exceed the hard cap.
+    #[inline]
+    pub(crate) fn reserve_tail(&mut self, additional: u32) -> Result<*mut u8, BufAllocError> {
+        debug_assert!(additional >= 1, "reserve_tail needs a non-empty window");
+        self.try_reserve(additional)?;
+        let t = self.triple_mut();
+        debug_assert!(!t.borrowed);
+        // SAFETY: `try_reserve` guaranteed `len + additional <= cap`, so
+        // one-past-the-payload stays inside the allocation.
+        Ok(unsafe { t.ptr().add(t.len() as usize) })
+    }
+
     /// Resets the payload length to zero without touching capacity.
     #[inline]
     pub const fn clear(&mut self) {

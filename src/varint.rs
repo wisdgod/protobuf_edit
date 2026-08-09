@@ -77,12 +77,21 @@ pub fn decode64(data: &[u8]) -> Option<(u64, u32)> {
 
 /// Encode a varint value, appending bytes to `buf`.
 /// Returns the number of bytes written.
+///
+/// Encodes in place at the buffer tail — no scratch buffer, no second
+/// copy: the length is known branchlessly up front, so the reserved
+/// window is exact.
 #[inline]
 pub fn encode<N: sealed::Varint>(buf: &mut Buf, value: N) -> Result<u32, BufAllocError> {
-    let mut buffer = [MaybeUninit::uninit(); 10];
-    let len = <N as sealed::Varint>::encode(&mut buffer, value);
-    let data = unsafe { core::slice::from_raw_parts(buffer.as_ptr().cast::<u8>(), len as _) };
-    buf.extend_from_slice(data)?;
+    let len = <N as sealed::Varint>::encoded_len(value);
+    let ptr = buf.reserve_tail(len)?;
+    // SAFETY: `reserve_tail` provided `len` writable bytes at `ptr`, and
+    // the kernel writes exactly `encoded_len` bytes (its contract).
+    unsafe {
+        let written = <N as sealed::Varint>::encode_to_ptr(ptr, value);
+        debug_assert_eq!(written, len);
+        buf.set_len(buf.len() + written);
+    }
     Ok(len)
 }
 
