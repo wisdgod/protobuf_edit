@@ -73,12 +73,17 @@ fn FieldRow(field: FieldId, depth: usize) -> AnyView {
     // No payload pre-scan: the answer is revealed lazily.
     let is_failed = Memo::new(move |_| parse_failed.with(|s| s.contains(&field)));
 
-    let has_child = Memo::new(move |_| {
+    // Deliberately not a memo: expansion parses the child through
+    // `try_update_untracked` (no patch_state notification, to avoid a
+    // whole-tree rerender), which would leave a memo stale on collapse.
+    // The icon closure re-runs on every `expanded` change and reads the
+    // current child then.
+    let has_child = move || {
         patch_state.with(|p| {
             p.as_ref()
                 .is_some_and(|patch| matches!(patch.field_child_message(field), Ok(Some(_))))
         })
-    });
+    };
 
     let is_expandable = Memo::new(move |_| {
         matches!(tag_info.get().map(|(_, wt)| wt), Some(WireType::Len)) && !is_failed.get()
@@ -191,7 +196,7 @@ fn FieldRow(field: FieldId, depth: usize) -> AnyView {
                         // Hollow glyph alone is hard to tell from the
                         // solid one at this size; the dimmed class is
                         // the second, load-bearing signal.
-                        if is_expandable.get() && !is_expanded() && !has_child.get() {
+                        if is_expandable.get() && !is_expanded() && !has_child() {
                             "expand-icon expand-icon--maybe"
                         } else {
                             "expand-icon"
@@ -202,7 +207,7 @@ fn FieldRow(field: FieldId, depth: usize) -> AnyView {
                                 ""
                             } else if is_expanded() {
                                 "▾"
-                            } else if has_child.get() {
+                            } else if has_child() {
                                 "▸"
                             } else {
                                 // Undetermined: hollow (same-size white
