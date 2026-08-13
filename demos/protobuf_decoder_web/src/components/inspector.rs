@@ -113,6 +113,7 @@ pub(crate) fn InspectorDrawer() -> impl IntoView {
     let selected = workspace.selected;
     let expanded = workspace.expanded;
     let dirty_fields = workspace.dirty_fields;
+    let parse_failed = workspace.parse_failed;
     let inspector_open = workspace.inspector_open;
     let toast = ui.toast;
     let locale = ui.locale;
@@ -393,6 +394,13 @@ pub(crate) fn InspectorDrawer() -> impl IntoView {
                 match edit_patch(patch_state, |patch| patch.set_bytes(fid, buf)) {
                     Ok(()) => {
                         expanded.update(|s| {
+                            s.remove(&fid);
+                            for d in &descendants {
+                                s.remove(d);
+                            }
+                        });
+                        // New payload, undetermined expandability again.
+                        parse_failed.update(|s| {
                             s.remove(&fid);
                             for d in &descendants {
                                 s.remove(d);

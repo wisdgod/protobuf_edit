@@ -49,6 +49,7 @@ fn FieldRow(field: FieldId, depth: usize) -> AnyView {
     let selected = workspace.selected;
     let hovered = workspace.hovered;
     let expanded = workspace.expanded;
+    let parse_failed = workspace.parse_failed;
     let dirty_fields = workspace.dirty_fields;
     let toast = ui.toast;
 
@@ -66,8 +67,22 @@ fn FieldRow(field: FieldId, depth: usize) -> AnyView {
     let is_expanded = move || expanded.with(|s| s.contains(&field));
     let is_dirty = move || dirty_fields.with(|s| s.contains(&field));
 
-    let is_expandable =
-        Memo::new(move |_| matches!(tag_info.get().map(|(_, wt)| wt), Some(WireType::Len)));
+    // The expand affordance of a Len field is three-state: undetermined
+    // until a click settles it (a successful parse leaves a child, a
+    // failed one lands in `parse_failed`), then definitely yes or no.
+    // No payload pre-scan: the answer is revealed lazily.
+    let is_failed = Memo::new(move |_| parse_failed.with(|s| s.contains(&field)));
+
+    let has_child = Memo::new(move |_| {
+        patch_state.with(|p| {
+            p.as_ref()
+                .is_some_and(|patch| matches!(patch.field_child_message(field), Ok(Some(_))))
+        })
+    });
+
+    let is_expandable = Memo::new(move |_| {
+        matches!(tag_info.get().map(|(_, wt)| wt), Some(WireType::Len)) && !is_failed.get()
+    });
 
     let child_msg = Memo::new(move |_| {
         if !is_expanded() {
@@ -150,7 +165,13 @@ fn FieldRow(field: FieldId, depth: usize) -> AnyView {
             Ok(_child) => expanded.update(|s| {
                 s.insert(field);
             }),
-            Err(e) => toast.show(ToastKind::Alert, format!("Failed to parse child message: {e:?}")),
+            Err(e) => {
+                // Settle the affordance as "no": the arrow disappears.
+                parse_failed.update(|s| {
+                    s.insert(field);
+                });
+                toast.show(ToastKind::Alert, format!("Failed to parse child message: {e:?}"));
+            }
         }
     };
 
@@ -166,14 +187,28 @@ fn FieldRow(field: FieldId, depth: usize) -> AnyView {
             >
                 <span class="expand-toggle" on:click=on_toggle_expand>
                     <span class="dirty-dot">{move || if is_dirty() { "●" } else { "" }}</span>
-                    <span class="expand-icon">
+                    <span class=move || {
+                        // Hollow glyph alone is hard to tell from the
+                        // solid one at this size; the dimmed class is
+                        // the second, load-bearing signal.
+                        if is_expandable.get() && !is_expanded() && !has_child.get() {
+                            "expand-icon expand-icon--maybe"
+                        } else {
+                            "expand-icon"
+                        }
+                    }>
                         {move || {
                             if !is_expandable.get() {
                                 ""
                             } else if is_expanded() {
                                 "▾"
-                            } else {
+                            } else if has_child.get() {
                                 "▸"
+                            } else {
+                                // Undetermined: hollow (same-size white
+                                // variant of U+25B8) until a click
+                                // settles it as solid or gone.
+                                "▹"
                             }
                         }}
                     </span>

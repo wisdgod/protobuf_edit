@@ -51,6 +51,10 @@ pub(crate) struct WorkspaceState {
     pub selected: RwSignal<Option<FieldId>>,
     pub hovered: RwSignal<Option<FieldId>>,
     pub expanded: RwSignal<FxHashSet<FieldId>>,
+    /// Len fields whose child parse failed: their expand affordance is
+    /// settled as "no" (a fresh Len field shows an undetermined arrow
+    /// until a click settles it one way or the other).
+    pub parse_failed: RwSignal<FxHashSet<FieldId>>,
     pub dirty_fields: RwSignal<FxHashSet<FieldId>>,
     pub hex_text_mode: RwSignal<HexTextMode>,
     pub hex_selection: RwSignal<Option<(usize, usize)>>,
@@ -80,6 +84,7 @@ impl WorkspaceState {
         let selected: RwSignal<Option<FieldId>> = RwSignal::new(None);
         let hovered: RwSignal<Option<FieldId>> = RwSignal::new(None);
         let expanded: RwSignal<FxHashSet<FieldId>> = RwSignal::new(FxHashSet::default());
+        let parse_failed: RwSignal<FxHashSet<FieldId>> = RwSignal::new(FxHashSet::default());
         let dirty_fields: RwSignal<FxHashSet<FieldId>> = RwSignal::new(FxHashSet::default());
         let hex_text_mode: RwSignal<HexTextMode> = RwSignal::new(HexTextMode::Ascii);
         let hex_selection: RwSignal<Option<(usize, usize)>> = RwSignal::new(None);
@@ -144,6 +149,7 @@ impl WorkspaceState {
             selected,
             hovered,
             expanded,
+            parse_failed,
             dirty_fields,
             hex_text_mode,
             hex_selection,
@@ -163,6 +169,7 @@ impl WorkspaceState {
         self.selected.set(None);
         self.hovered.set(None);
         self.expanded.set(FxHashSet::default());
+        self.parse_failed.set(FxHashSet::default());
         self.dirty_fields.set(FxHashSet::default());
         self.hex_selection.set(None);
         self.inspector_open.set(false);
@@ -176,6 +183,7 @@ impl WorkspaceState {
         self.selected.set(new_selected);
         self.hovered.set(None);
         self.expanded.set(new_expanded);
+        self.parse_failed.set(FxHashSet::default());
         self.dirty_fields.set(FxHashSet::default());
         self.hex_selection.set(None);
     }

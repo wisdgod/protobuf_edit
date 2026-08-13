@@ -56,6 +56,13 @@
   text-align: center;
 }
 
+/* Undetermined expandability (hollow glyph, not yet probed): the
+   dimming carries the distinction at small sizes where the hollow
+   triangle's counter fills in. */
+.expand-icon--maybe {
+  opacity: 0.45;
+}
+
 .tag-badge {
   font-family: var(--font-mono);
   font-size: var(--font-size-xs);
