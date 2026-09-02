@@ -4,7 +4,7 @@ use crate::state::{MessageCatalogState, TabsState, WorkspaceState};
 use crate::toast::{ToastKind, ToastManager};
 use crate::workspace::{
     build_selection_path, confirm_discard_edits as confirm_workspace_discard_edits,
-    encode_selection_path, load_patch_from_view as load_patch_into_session,
+    encode_selection_path, load_session_from_view as load_document_into_workspace,
     revert_pending_edits as revert_workspace_edits, save_and_reparse as save_workspace_and_reparse,
     SaveReparseInfo,
 };
@@ -33,12 +33,12 @@ impl WorkspaceService {
     /// Save pending edits, reparse the protobuf, and persist updated bytes
     /// to IDB for the active tab's message. Returns the save info on success
     /// so callers can decide whether to refresh the message list.
-    pub(crate) fn save_reparse(&self) -> Result<SaveReparseInfo, protobuf_edit::TreeError> {
+    pub(crate) fn save_reparse(&self) -> Result<SaveReparseInfo, String> {
         let Some(tab) = self.tabs.active_tab_untracked() else {
-            return Err(protobuf_edit::TreeError::InvalidId);
+            return Err("no active tab".to_string());
         };
         let Some(ws) = tab.message_ws() else {
-            return Err(protobuf_edit::TreeError::InvalidId);
+            return Err("active tab is not a message workspace".to_string());
         };
         let message_id = tab.message_id;
         let before_len = ws.bytes_count.get_untracked().unwrap_or(0);
@@ -68,14 +68,14 @@ impl WorkspaceService {
                 Ok(info)
             }
             Err(err) => {
-                toast.show(ToastKind::Alert, format!("Save & reparse failed: {err:?}"));
+                toast.show(ToastKind::Alert, format!("Save & reparse failed: {err}"));
                 Err(err)
             }
         }
     }
 
-    /// Revert all pending field edits in the active tab, restoring the patch
-    /// to its last saved state.
+    /// Revert all pending field edits in the active tab, restoring the
+    /// session to its last saved state.
     pub(crate) fn revert_edits(&self) {
         let Some(ws) = self.tabs.active_ws_untracked() else {
             return;
@@ -89,7 +89,7 @@ impl WorkspaceService {
             Ok(()) => {
                 self.toast.show(ToastKind::Notice, format!("Reverted {pending} pending edit(s)."));
             }
-            Err(err) => self.toast.show(ToastKind::Alert, format!("Undo failed: {err:?}")),
+            Err(err) => self.toast.show(ToastKind::Alert, format!("Undo failed: {err}")),
         }
     }
 
@@ -112,12 +112,12 @@ impl WorkspaceService {
             return;
         };
 
-        let Some(mut paths) = ws.patch_state.with_untracked(|p| {
-            let patch = p.as_ref()?;
+        let Some(mut paths) = ws.session.with_untracked(|s| {
+            let session = s.as_ref()?;
             Some(ws.expanded.with_untracked(|expanded| {
                 let mut paths = Vec::new();
-                for &fid in expanded {
-                    let Some(path) = build_selection_path(patch, fid) else {
+                for &handle in expanded {
+                    let Some(path) = build_selection_path(session, handle) else {
                         continue;
                     };
                     paths.push(encode_selection_path(&path));
@@ -150,16 +150,16 @@ impl WorkspaceService {
         });
     }
 
-    /// Load a protobuf patch (or fall back to raw bytes) into a specific
+    /// Load a protobuf document (or fall back to raw bytes) into a specific
     /// tab's workspace.
-    pub(crate) fn load_patch_into(
+    pub(crate) fn load_document_into(
         &self,
         ws: &WorkspaceState,
         label: &str,
         bytes: ByteView,
         auto_expand_paths: Vec<String>,
     ) {
-        load_patch_into_session(ws, label, bytes, auto_expand_paths, &self.toast);
+        load_document_into_workspace(ws, label, bytes, auto_expand_paths, &self.toast);
     }
 
     /// If the given workspace has pending edits, ask the user to confirm

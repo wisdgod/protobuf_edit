@@ -1,0 +1,44 @@
+# The no-alloc consumer probe: the fixed-scratch family's
+# feature-form judge (see src/main.rs and judge.sh). Standalone by
+# the empty [workspace] table — never a member of the library's
+# build graph.
+[package]
+name = "no-alloc-consumer"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[workspace]
+
+[dependencies]
+protobuf_edit = { path = "../..", default-features = false }
+
+[features]
+# The judged set: every fixed-scratch cell, nothing else.
+default = ["fixed"]
+fixed = [
+    "protobuf_edit/fixed-inplace-grouped",
+    "protobuf_edit/fixed-inplace-groupless",
+    "protobuf_edit/fixed-inspect-grouped",
+    "protobuf_edit/fixed-inspect-groupless",
+    "protobuf_edit/fixed-patch-grouped",
+    "protobuf_edit/fixed-patch-groupless",
+]
+# The red control: one heap cell (the in-place host) pulls the
+# alloc crate back into the graph, so the judged build must fail
+# naming the allocator obligation.
+alloc-control = ["protobuf_edit/inplace-grouped"]
+# The tightness control: the heap-hosted cell that allocates
+# nothing (the groupless traversal cursor walks borrowed bytes
+# with no working set) joins the graph, and the allocator-free
+# build must keep holding — the alloc gate not re-growing over an
+# allocation-free cell is a judged fact, not a memory.
+alloc-free-cell = ["protobuf_edit/traverse-groupless"]
+
+# The bare-metal target has no unwinder; say so rather than rely on
+# the target's default.
+[profile.dev]
+panic = "abort"
+
+[profile.release]
+panic = "abort"

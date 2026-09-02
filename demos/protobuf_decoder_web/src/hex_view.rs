@@ -1,6 +1,6 @@
 use leptos::html;
 use leptos::prelude::*;
-use protobuf_edit::WireType;
+use protobuf_edit::wire::grouped::RecordKind;
 use std::cmp::min;
 
 use crate::bytes::ByteView;
@@ -177,8 +177,8 @@ pub fn HexGrid(container_ref: NodeRef<html::Div>) -> impl IntoView {
     let workspace = expect_context::<WorkspaceState>();
     let export_svc = expect_context::<ExportService>();
     let locale = expect_context::<UiState>().locale;
-    let patch_state = workspace.patch_state;
-    let patch_bytes = workspace.patch_bytes;
+    let session_state = workspace.session;
+    let doc_bytes = workspace.doc_bytes;
     let raw_bytes = workspace.raw_bytes;
     let selected_highlights = workspace.selected_highlights;
     let hovered_range = workspace.hovered_range;
@@ -212,17 +212,17 @@ pub fn HexGrid(container_ref: NodeRef<html::Div>) -> impl IntoView {
         (clamped_row, target_scroll as i32)
     };
 
-    // The grid renders bytes, and patch_bytes mirrors the patch's root bytes,
-    // so nothing here needs to subscribe to patch_state mutations.
+    // The grid renders bytes, and doc_bytes mirrors the session's document
+    // bytes, so nothing here needs to subscribe to session mutations.
     let total_rows = move || {
-        patch_bytes
+        doc_bytes
             .with(|b| b.as_ref().map(ByteView::len))
             .or_else(|| raw_bytes.with(|b| b.as_ref().map(ByteView::len)))
             .map_or(0, |len| len.div_ceil(BYTES_PER_ROW))
     };
 
     let total_rows_untracked = move || {
-        patch_bytes
+        doc_bytes
             .with_untracked(|b| b.as_ref().map(ByteView::len))
             .or_else(|| raw_bytes.with_untracked(|b| b.as_ref().map(ByteView::len)))
             .map_or(0, |len| len.div_ceil(BYTES_PER_ROW))
@@ -235,13 +235,10 @@ pub fn HexGrid(container_ref: NodeRef<html::Div>) -> impl IntoView {
     };
 
     let selected_root_span = Memo::new(move |_| {
-        patch_state.with(|p| {
-            let patch = p.as_ref()?;
-            let fid = selected.get()?;
-            match patch.field_root_spans(fid) {
-                Ok(Some(spans)) => Some(spans.field),
-                _ => None,
-            }
+        session_state.with(|s| {
+            let session = s.as_ref()?;
+            let handle = selected.get()?;
+            session.span(handle).ok().flatten()
         })
     });
 
@@ -249,10 +246,10 @@ pub fn HexGrid(container_ref: NodeRef<html::Div>) -> impl IntoView {
         let Some(idx) = cell_index_of(&ev) else {
             return;
         };
-        // Drilldown only fills the lazy child-parse cache; visibility flows
-        // through `expanded`/`selected`, so skip the patch_state notification.
-        let outcome = patch_state
-            .try_update_untracked(|p| p.as_mut().map(|patch| drilldown_byte(patch, idx)))
+        // Drilldown only materializes container interiors; visibility flows
+        // through `expanded`/`selected`, so skip the session notification.
+        let outcome = session_state
+            .try_update_untracked(|s| s.as_mut().map(|session| drilldown_byte(session, idx)))
             .flatten();
         let Some((selected_field, to_expand)) = outcome else {
             return;
@@ -329,7 +326,7 @@ pub fn HexGrid(container_ref: NodeRef<html::Div>) -> impl IntoView {
     });
 
     let bytes_key = Memo::new(move |_| {
-        patch_bytes
+        doc_bytes
             .with(|b| {
                 b.as_ref().map(|view| {
                     let bytes = view.as_slice();
@@ -407,7 +404,7 @@ pub fn HexGrid(container_ref: NodeRef<html::Div>) -> impl IntoView {
                     children=move |row| view! {
                         <HexRow
                             row_index=row
-                            patch_bytes=patch_bytes
+                            doc_bytes=doc_bytes
                             raw_bytes=raw_bytes
                             selected_highlights=selected_highlights
                             hovered_range=hovered_range
@@ -439,7 +436,7 @@ pub fn HexGrid(container_ref: NodeRef<html::Div>) -> impl IntoView {
 #[component]
 fn HexRow(
     row_index: usize,
-    patch_bytes: RwSignal<Option<ByteView>, LocalStorage>,
+    doc_bytes: RwSignal<Option<ByteView>, LocalStorage>,
     raw_bytes: RwSignal<Option<ByteView>, LocalStorage>,
     selected_highlights: Memo<Vec<HighlightRange>>,
     hovered_range: Memo<Option<HighlightRange>>,
@@ -517,7 +514,7 @@ fn HexRow(
                 out
             };
 
-            patch_bytes.with(|b| {
+            doc_bytes.with(|b| {
                 b.as_ref().map_or_else(
                     || {
                         raw_bytes
@@ -540,12 +537,19 @@ fn HexRow(
             Some(HighlightKind::Hovered) => "hex-byte hex-byte--hovered",
             Some(HighlightKind::SelectedTag) => "hex-byte hex-byte--tag",
             Some(HighlightKind::SelectedLenPrefix) => "hex-byte hex-byte--selected-len-prefix",
-            Some(HighlightKind::SelectedField(WireType::Varint)) => {
+            Some(HighlightKind::SelectedField(RecordKind::Varint)) => {
                 "hex-byte hex-byte--selected-varint"
             }
-            Some(HighlightKind::SelectedField(WireType::I64)) => "hex-byte hex-byte--selected-i64",
-            Some(HighlightKind::SelectedField(WireType::Len)) => "hex-byte hex-byte--selected-len",
-            Some(HighlightKind::SelectedField(WireType::I32)) => "hex-byte hex-byte--selected-i32",
+            Some(HighlightKind::SelectedField(RecordKind::I64)) => {
+                "hex-byte hex-byte--selected-i64"
+            }
+            // Groups borrow the LEN palette: both are containers.
+            Some(HighlightKind::SelectedField(RecordKind::Len | RecordKind::Group)) => {
+                "hex-byte hex-byte--selected-len"
+            }
+            Some(HighlightKind::SelectedField(RecordKind::I32)) => {
+                "hex-byte hex-byte--selected-i32"
+            }
         }
     };
 

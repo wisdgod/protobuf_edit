@@ -8,7 +8,7 @@ publish = false
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
-protobuf_edit = { path = "../..", features = ["nightly"] }
+protobuf_edit = { path = "../..", features = ["session-grouped", "scalar"] }
 rustc-hash = { version = "2", features = ["nightly"] }
 # Vendored SIMD UTF-8 validation (encoding_rs extract); wasm simd128 path
 # added locally. Explicit SIMD matters here: opt-level = "z" disables

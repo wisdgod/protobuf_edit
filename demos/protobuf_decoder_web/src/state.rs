@@ -6,11 +6,12 @@ use crate::i18n::Locale;
 use crate::messages::{MessageId, MessageMeta, PersistedTab};
 use crate::toast::ToastManager;
 use crate::workspace::{
-    collect_visible_fields, compute_hovered_range, compute_selected_highlights, HighlightRange,
+    collect_visible_fields, compute_hovered_range, compute_selected_highlights, shown_children,
+    HighlightRange,
 };
 use leptos::prelude::*;
-use protobuf_edit::patch::FieldId;
-use protobuf_edit::Patch;
+use protobuf_edit::session::grouped::Session;
+use protobuf_edit::session::Handle;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Theme {
@@ -44,18 +45,21 @@ pub(crate) fn parse_theme(raw: &str) -> Option<Theme> {
 
 #[derive(Clone)]
 pub(crate) struct WorkspaceState {
-    pub patch_state: RwSignal<Option<Patch>, LocalStorage>,
-    pub patch_bytes: RwSignal<Option<ByteView>, LocalStorage>,
+    pub session: RwSignal<Option<Session>, LocalStorage>,
+    /// Mirror of the session's opened document bytes, for the hex
+    /// grid: rendering reads this signal only, so per-record edits
+    /// (which notify `session`) never touch the byte rows.
+    pub doc_bytes: RwSignal<Option<ByteView>, LocalStorage>,
     pub raw_bytes: RwSignal<Option<ByteView>, LocalStorage>,
 
-    pub selected: RwSignal<Option<FieldId>>,
-    pub hovered: RwSignal<Option<FieldId>>,
-    pub expanded: RwSignal<FxHashSet<FieldId>>,
-    /// Len fields whose child parse failed: their expand affordance is
-    /// settled as "no" (a fresh Len field shows an undetermined arrow
+    pub selected: RwSignal<Option<Handle>>,
+    pub hovered: RwSignal<Option<Handle>>,
+    pub expanded: RwSignal<FxHashSet<Handle>>,
+    /// Containers whose descend faulted: their expand affordance is
+    /// settled as "no" (a fresh LEN record shows an undetermined arrow
     /// until a click settles it one way or the other).
-    pub parse_failed: RwSignal<FxHashSet<FieldId>>,
-    pub dirty_fields: RwSignal<FxHashSet<FieldId>>,
+    pub parse_failed: RwSignal<FxHashSet<Handle>>,
+    pub dirty_fields: RwSignal<FxHashSet<Handle>>,
     pub hex_text_mode: RwSignal<HexTextMode>,
     pub hex_selection: RwSignal<Option<(usize, usize)>>,
     /// Whether the inspector drawer was opened manually (without selection).
@@ -66,26 +70,26 @@ pub(crate) struct WorkspaceState {
     pub selected_highlights: Memo<Vec<HighlightRange>>,
     pub hovered_range: Memo<Option<HighlightRange>>,
     pub highlight_range_count: Memo<usize>,
-    /// Fields in tree display order (expanded subtrees inlined), for
+    /// Records in tree display order (expanded subtrees inlined), for
     /// keyboard navigation.
-    pub visible_fields: Memo<Vec<FieldId>>,
+    pub visible_fields: Memo<Vec<Handle>>,
     pub bytes_count: Memo<Option<usize>>,
-    /// Live fields of the root message only; nested fields are not counted.
+    /// Live records of the top layer only; nested records are not counted.
     pub root_field_count: Memo<Option<usize>>,
     pub dirty_count: Memo<usize>,
 }
 
 impl WorkspaceState {
     pub fn new() -> Self {
-        let patch_state = RwSignal::new_local(None::<Patch>);
-        let patch_bytes = RwSignal::new_local(None::<ByteView>);
+        let session = RwSignal::new_local(None::<Session>);
+        let doc_bytes = RwSignal::new_local(None::<ByteView>);
         let raw_bytes = RwSignal::new_local(None::<ByteView>);
 
-        let selected: RwSignal<Option<FieldId>> = RwSignal::new(None);
-        let hovered: RwSignal<Option<FieldId>> = RwSignal::new(None);
-        let expanded: RwSignal<FxHashSet<FieldId>> = RwSignal::new(FxHashSet::default());
-        let parse_failed: RwSignal<FxHashSet<FieldId>> = RwSignal::new(FxHashSet::default());
-        let dirty_fields: RwSignal<FxHashSet<FieldId>> = RwSignal::new(FxHashSet::default());
+        let selected: RwSignal<Option<Handle>> = RwSignal::new(None);
+        let hovered: RwSignal<Option<Handle>> = RwSignal::new(None);
+        let expanded: RwSignal<FxHashSet<Handle>> = RwSignal::new(FxHashSet::default());
+        let parse_failed: RwSignal<FxHashSet<Handle>> = RwSignal::new(FxHashSet::default());
+        let dirty_fields: RwSignal<FxHashSet<Handle>> = RwSignal::new(FxHashSet::default());
         let hex_text_mode: RwSignal<HexTextMode> = RwSignal::new(HexTextMode::Ascii);
         let hex_selection: RwSignal<Option<(usize, usize)>> = RwSignal::new(None);
         let inspector_open: RwSignal<bool> = RwSignal::new(false);
@@ -94,57 +98,46 @@ impl WorkspaceState {
         // Hover changes at mouse frequency; keep it out of the (heavier)
         // selection-derived ranges so hovering never recomputes them.
         let selected_highlights = Memo::new(move |_| {
-            patch_state.with(|p| {
-                let Some(patch) = p.as_ref() else {
+            session.with(|s| {
+                let Some(session) = s.as_ref() else {
                     return Vec::new();
                 };
-                compute_selected_highlights(patch, selected.get())
+                compute_selected_highlights(session, selected.get())
             })
         });
         let hovered_range = Memo::new(move |_| {
-            patch_state.with(|p| compute_hovered_range(p.as_ref()?, hovered.get()))
+            session.with(|s| compute_hovered_range(s.as_ref()?, hovered.get()))
         });
         let highlight_range_count = Memo::new(move |_| {
             selected_highlights.with(Vec::len) + usize::from(hovered_range.get().is_some())
         });
         let visible_fields = Memo::new(move |_| {
-            patch_state.with(|p| {
-                let Some(patch) = p.as_ref() else {
+            session.with(|s| {
+                let Some(session) = s.as_ref() else {
                     return Vec::new();
                 };
                 expanded.with(|exp| {
                     let mut out = Vec::new();
-                    collect_visible_fields(patch, patch.root(), exp, &mut out);
+                    collect_visible_fields(session, None, exp, &mut out);
                     out
                 })
             })
         });
         let bytes_count = Memo::new(move |_| {
-            // patch_bytes mirrors the patch's root bytes; reading it keeps
-            // this memo off the patch_state invalidation path.
-            patch_bytes
+            // doc_bytes mirrors the session's document bytes; reading it
+            // keeps this memo off the session invalidation path.
+            doc_bytes
                 .with(|b| b.as_ref().map(ByteView::len))
                 .or_else(|| raw_bytes.with(|b| b.as_ref().map(ByteView::len)))
         });
         let root_field_count = Memo::new(move |_| {
-            patch_state.with(|p| {
-                let patch = p.as_ref()?;
-                let fields = patch.message_fields(patch.root()).ok()?;
-                let mut live: usize = 0;
-                for fid in fields {
-                    if matches!(patch.field_is_deleted(fid), Ok(true)) {
-                        continue;
-                    }
-                    live = live.saturating_add(1);
-                }
-                Some(live)
-            })
+            session.with(|s| Some(shown_children(s.as_ref()?, None).count()))
         });
         let dirty_count = Memo::new(move |_| dirty_fields.with(std::collections::HashSet::len));
 
         Self {
-            patch_state,
-            patch_bytes,
+            session,
+            doc_bytes,
             raw_bytes,
             selected,
             hovered,
@@ -177,8 +170,8 @@ impl WorkspaceState {
 
     pub(crate) fn reset_ui_state_keep_selected(
         &self,
-        new_selected: Option<FieldId>,
-        new_expanded: FxHashSet<FieldId>,
+        new_selected: Option<Handle>,
+        new_expanded: FxHashSet<Handle>,
     ) {
         self.selected.set(new_selected);
         self.hovered.set(None);
@@ -189,30 +182,28 @@ impl WorkspaceState {
     }
 
     pub(crate) fn clear_loaded_data(&self) {
-        self.patch_state.set(None);
-        self.patch_bytes.set(None);
+        self.session.set(None);
+        self.doc_bytes.set(None);
         self.raw_bytes.set(None);
         self.reset_ui_state();
     }
 
-    pub(crate) fn show_root_patch(
+    pub(crate) fn show_root_session(
         &self,
-        patch: Patch,
+        session: Session,
         bytes: ByteView,
-        new_selected: Option<FieldId>,
-        new_expanded: FxHashSet<FieldId>,
+        new_selected: Option<Handle>,
+        new_expanded: FxHashSet<Handle>,
     ) {
-        // Order matters: the old Patch borrows the old ByteView's backing
-        // bytes, so the borrower must be replaced before its backing drops.
-        self.patch_state.set(Some(patch));
-        self.patch_bytes.set(Some(bytes));
+        self.session.set(Some(session));
+        self.doc_bytes.set(Some(bytes));
         self.raw_bytes.set(None);
         self.reset_ui_state_keep_selected(new_selected, new_expanded);
     }
 
     pub(crate) fn show_root_raw_bytes(&self, bytes: ByteView) {
-        self.patch_state.set(None);
-        self.patch_bytes.set(None);
+        self.session.set(None);
+        self.doc_bytes.set(None);
         self.raw_bytes.set(Some(bytes));
         self.reset_ui_state();
     }
@@ -236,8 +227,7 @@ impl EnvelopeTabState {
         }
     }
 
-    /// Frees loaded data; the preview `Patch` is cleared before the envelope
-    /// bytes backing it drop.
+    /// Frees loaded data (the preview session owns its own bytes).
     pub(crate) fn clear_loaded_data(&self) {
         self.preview.clear_loaded_data();
         self.view.set(None);
@@ -400,8 +390,7 @@ impl TabsState {
         self.sync_mirror();
     }
 
-    /// Closes a tab, freeing its loaded data first (the `Patch` must be
-    /// dropped before the `ByteView` backing it).
+    /// Closes a tab, freeing its loaded byte buffers and session first.
     pub(crate) fn close(&self, tab_id: TabId) {
         let Some(tab) = self.get(tab_id) else {
             return;

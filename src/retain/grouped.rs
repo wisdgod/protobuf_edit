@@ -1,0 +1,1822 @@
+//! The grouped retained inspector: groups walk structurally.
+//!
+//! One parse over the moved-in buffer builds a preorder row table;
+//! every later query is a table lookup over the product's own
+//! bytes. The product is total: a faulted document is not an error
+//! case but the legal prefix, open containers clipped, plus exactly
+//! one [`Fault`]. Detection is blind to commitment — the same bytes
+//! produce the same judgments whether speculated or committed;
+//! advice only moves where a fault surfaces (this is what makes
+//! supply sound). The product owns source and rows together —
+//! movable, cacheable, `Send + Sync` — and rows address the source
+//! by `u32` coordinates, so ownership adds no self-reference.
+//!
+//! Coordinates: read · buffered · offline · grouped · Standard (value-level) · owned.
+//!
+//! # Examples
+//!
+//! ```
+//! use protobuf_edit::DepthLimit;
+//! use protobuf_edit::retain::NoAdvice;
+//! use protobuf_edit::retain::grouped::Retained;
+//!
+//! // varint f1=150 · group f2 { varint f3=1 }
+//! let msg = vec![0x08, 0x96, 0x01, 0x13, 0x18, 0x01, 0x14];
+//! let tree = Retained::parse(msg, DepthLimit::REFERENCE, &mut NoAdvice).unwrap();
+//! assert!(tree.is_complete());
+//!
+//! let roots: Vec<_> = tree.top().collect();
+//! assert_eq!(roots.len(), 2);
+//! assert_eq!(tree.varint_word(roots[0]), Some(150));
+//!
+//! // The group's interior is indexed by the same parse.
+//! let kids: Vec<_> = tree.children(roots[1]).collect();
+//! assert_eq!(kids.len(), 1);
+//! assert_eq!(tree.field(kids[0]).as_inner(), 3);
+//! assert_eq!(tree.varint_word(kids[0]), Some(1));
+//! ```
+
+// Reading order for this file: the law (what can be refused) → the
+// machine (what is stored) → the product (what is promised) → the
+// queries (how promises are redeemed) → the machine (how the
+// evidence is built).
+
+use alloc::boxed::Box;
+use alloc::vec::Vec;
+use core::iter::FusedIterator;
+
+use super::{
+    Advice, Advisor, Ancestry, NodeId, Oversize, Stage, admit, frames_reserve, mint, row_u32,
+    rows_reserve,
+};
+use crate::admission::{Coord, Extent, usize_of};
+use crate::varint::slice::{self, ReadFault};
+use crate::varint::{WordWidth, encoded_len32, encoded_len64};
+use crate::wire::grouped::{RecordKind, TagClass, classify};
+use crate::wire::{FieldNumber, Low3, PayloadLen};
+use crate::{DepthLimit, FaultClass, Span, Standard};
+// ─── the law ───
+
+/// The comparable construction state: rows as scalar tuples, the
+/// indexed end, and the fault's position beside its `Debug` form.
+/// Test-only — the stream collector's differential names it, so it
+/// compiles with that cell's tests.
+#[cfg(all(test, feature = "collect-grouped"))]
+pub(crate) type Snapshot = (
+    Vec<(u32, u32, Option<u32>, u32, FieldNumber, RecordKind, u8, Option<u8>)>,
+    u32,
+    Option<(u32, alloc::string::String)>,
+);
+
+/// One law violation: where, and which law.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct Fault {
+    at: u32,
+    kind: FaultKind,
+}
+
+impl Fault {
+    /// First byte of the offending wire construct. `GroupUnclosed`
+    /// reports the extent end that arrived first (may equal the
+    /// input length, one past the last byte).
+    #[inline]
+    #[must_use]
+    pub const fn at(self) -> u32 {
+        self.at
+    }
+
+    /// The violated law.
+    #[inline]
+    #[must_use]
+    pub const fn kind(self) -> FaultKind {
+        self.kind
+    }
+}
+
+impl core::fmt::Display for Fault {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        write!(f, "{} at byte {}", self.kind, self.at)
+    }
+}
+
+impl core::error::Error for Fault {
+    #[inline]
+    fn source(&self) -> Option<&(dyn core::error::Error + 'static)> {
+        Some(&self.kind)
+    }
+}
+
+/// The refusal classes, sectioned by [`FaultClass`] (grammar
+/// sites, then policy); [`class`](Self::class) answers the
+/// section.
+///
+/// Wire-declared quantities are quoted as their wire types; a bad
+/// record never reaches the row table, so its field number travels
+/// with the fault — inside the [`Stage`] coordinate for varint
+/// reads (the tag stage carries none: no field exists yet), on the
+/// variant elsewhere.
+#[non_exhaustive]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum FaultKind {
+    // ─ grammar: varint sites ─
+    /// A varint construct refused at one of the record's stages
+    /// (tag: five-byte window, u32 word class; length prefix:
+    /// five-byte window, 2^31 − 1 length class; value: ten-byte
+    /// window, u64 class).
+    Read {
+        /// The construct the read was serving.
+        stage: Stage,
+        /// The kernel's refusal.
+        cause: ReadFault,
+    },
+    /// A tag decoded to field number zero.
+    FieldZero {
+        /// The code bits the zero-field tag carried.
+        code: Low3,
+    },
+    /// A tag carried a code unassigned by the format (6 or 7).
+    Unassigned {
+        /// The tag's field number (judged before the code).
+        field: FieldNumber,
+        /// The unassigned code.
+        code: Low3,
+    },
+    /// A declared length punctures the enclosing seal.
+    LenOverrun {
+        /// The record's field number.
+        field: FieldNumber,
+        /// The declared payload length.
+        declared: PayloadLen,
+        /// Bytes actually left in the enclosing extent.
+        zone_left: u32,
+    },
+    // ─ grammar: fixed value site ─
+    /// The extent ended inside a fixed-width payload.
+    FixedTruncated {
+        /// The record's field number.
+        field: FieldNumber,
+        /// The width the kind requires (4 or 8).
+        needed: u8,
+    },
+    // ─ grammar: group framing ─
+    /// An end-of-group tag with no group open in this extent.
+    GroupEndOrphan {
+        /// The end tag's field number.
+        found: FieldNumber,
+    },
+    /// An end-of-group tag whose field differs from the innermost
+    /// open group's.
+    GroupEndMismatch {
+        /// The innermost open group's field.
+        open: FieldNumber,
+        /// The end tag's field.
+        found: FieldNumber,
+    },
+    /// The extent ended around an open group: its end tag never
+    /// appeared (groups may not cross LEN boundaries).
+    GroupUnclosed {
+        /// The open group's field.
+        open: FieldNumber,
+    },
+    // ─ policy: the caller's bound and the declared standard ─
+    /// Opening this container would exceed the caller's declared
+    /// [`DepthLimit`]. `Advice::Speculate` sites demote to opaque
+    /// instead; this fault is for `Advice::Commit` claims and
+    /// groups.
+    DepthExceeded {
+        /// The container's field number.
+        field: FieldNumber,
+        /// The bound that refused.
+        limit: DepthLimit,
+    },
+    /// A tag wider than minimal ([`Retained::parse_standard`] under
+    /// [`Standard::CanonicalMinimal`] only; speculation absorbs it
+    /// like any wire fault).
+    NonMinimalTag,
+    /// A length prefix wider than minimal (canonical parses only).
+    NonMinimalLen {
+        /// The record's field number.
+        field: FieldNumber,
+    },
+    /// A value varint wider than minimal (canonical parses only).
+    NonMinimalValue {
+        /// The record's field number.
+        field: FieldNumber,
+    },
+}
+
+impl FaultKind {
+    /// The refusal's [`FaultClass`] — which repair the fault asks
+    /// for. Policy membership names its configuration datum on the
+    /// variant (the [`DepthLimit`] bound; the `NonMinimal*` family
+    /// is the parse's declared [`Standard`]); this dialect has no
+    /// capability member (its language is the format's whole code
+    /// alphabet).
+    #[inline]
+    pub const fn class(self) -> FaultClass {
+        match self {
+            Self::Read { .. }
+            | Self::FieldZero { .. }
+            | Self::Unassigned { .. }
+            | Self::LenOverrun { .. }
+            | Self::FixedTruncated { .. }
+            | Self::GroupEndOrphan { .. }
+            | Self::GroupEndMismatch { .. }
+            | Self::GroupUnclosed { .. } => FaultClass::Grammar,
+            Self::DepthExceeded { .. }
+            | Self::NonMinimalTag
+            | Self::NonMinimalLen { .. }
+            | Self::NonMinimalValue { .. } => FaultClass::Policy,
+        }
+    }
+}
+
+impl core::fmt::Display for FaultKind {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match *self {
+            Self::Read { stage, cause } => {
+                let (window, class) = match stage {
+                    Stage::Tag => {
+                        f.write_str("tag")?;
+                        ("five", "u32 word class")
+                    }
+                    Stage::LenPrefix { field } => {
+                        write!(f, "length prefix of field {}", field.as_inner())?;
+                        ("five", "length class")
+                    }
+                    Stage::Value { field } => {
+                        write!(f, "varint value of field {}", field.as_inner())?;
+                        ("ten", "u64 class")
+                    }
+                };
+                match cause {
+                    ReadFault::Truncated => f.write_str(" truncated by its extent"),
+                    ReadFault::TooWide => {
+                        write!(f, " continues past the {window}-byte window")
+                    }
+                    ReadFault::OutOfClass => write!(f, " exceeds the {class}"),
+                }
+            }
+            Self::FieldZero { code } => {
+                write!(f, "tag names field zero (code {})", code.as_inner())
+            }
+            Self::Unassigned { field, code } => {
+                write!(f, "field {} carries unassigned code {}", field.as_inner(), code.as_inner())
+            }
+            Self::LenOverrun { field, declared, zone_left } => write!(
+                f,
+                "field {} declares {} payload bytes but its extent holds {zone_left}",
+                field.as_inner(),
+                declared.as_inner()
+            ),
+            Self::FixedTruncated { field, needed } => write!(
+                f,
+                "field {} needs {needed} fixed payload bytes past its extent",
+                field.as_inner()
+            ),
+            Self::GroupEndOrphan { found } => {
+                write!(f, "end tag of field {} with no group open", found.as_inner())
+            }
+            Self::GroupEndMismatch { open, found } => write!(
+                f,
+                "end tag names field {} while group field {} is open",
+                found.as_inner(),
+                open.as_inner()
+            ),
+            Self::GroupUnclosed { open } => {
+                write!(f, "group of field {} never closes", open.as_inner())
+            }
+            Self::DepthExceeded { field, limit } => write!(
+                f,
+                "container of field {} nests beyond the bound of {}",
+                field.as_inner(),
+                limit.as_inner()
+            ),
+            Self::NonMinimalTag => f.write_str("tag is wider than its minimal encoding"),
+            Self::NonMinimalLen { field } => write!(
+                f,
+                "length prefix of field {} is wider than its minimal encoding",
+                field.as_inner()
+            ),
+            Self::NonMinimalValue { field } => write!(
+                f,
+                "varint value of field {} is wider than its minimal encoding",
+                field.as_inner()
+            ),
+        }
+    }
+}
+
+impl core::error::Error for FaultKind {}
+
+// ─── the machine ───
+
+/// One record, packed to 24 bytes. Private: the product projects
+/// it.
+///
+/// Partition theorem (every span method cites it): a record's bytes
+/// are `tag ⊎ delim ⊎ payload`, pairwise disjoint, union the whole
+/// record, order kind-dependent — so the record span is one formula
+/// for all kinds (`start + tag + delim + payload`, the group end
+/// tag commuting into the sum), while the payload's *position*
+/// dispatches on kind (LEN's delimiter precedes the payload, a
+/// group's follows it). Widths are stored input facts: padding is
+/// accepted and span arithmetic must reproduce it byte-exactly.
+/// Declaration order fixes the memory order: the coordinate columns
+/// tie with the parent link on niche size, so the stable field sort
+/// keeps them exactly here.
+#[derive(Clone, Copy)]
+struct Row {
+    /// Payload extent. LEN: declared; Varint: the value's encoded
+    /// width; I32/I64: 4/8; Group: interior span. All in the
+    /// coordinate class (declared lengths are sealed, scalar widths
+    /// ≤ 10, group interiors ≤ input length).
+    payload_len: Extent,
+    /// Enclosing container (`None`: root level — the niche is the
+    /// sentinel, typed).
+    parent: Option<NodeId>,
+    /// Head tag's first byte.
+    start: Coord,
+    /// Rows in this row's subtree, excluding itself. Preorder
+    /// contiguity: the subtree is exactly the next `descendants`
+    /// rows; the next sibling is `i + 1 + descendants`.
+    descendants: u32,
+    /// The head tag's field number.
+    field: FieldNumber,
+    /// The record kind (the dialect table's vocabulary, verbatim).
+    kind: RecordKind,
+    /// The head tag's actual input width.
+    tag_width: WordWidth,
+    /// The second framing word's actual width. LEN: the length
+    /// prefix. Group: the end tag, recorded at close — `None` while
+    /// open and for clipped groups whose end tag never appeared.
+    /// Scalars: `None` (self-delimiting payloads).
+    delim_width: Option<WordWidth>,
+}
+
+const _: () = assert!(core::mem::size_of::<Option<NodeId>>() == 4);
+const _: () = assert!(core::mem::size_of::<Row>() == 24);
+const _: () = assert!(core::mem::size_of::<Fault>() == 20);
+
+impl Row {
+    /// Widths as coordinate-class integers.
+    fn tag_w(&self) -> u32 {
+        u32::from(self.tag_width.as_inner())
+    }
+
+    fn delim_w(&self) -> u32 {
+        self.delim_width.map_or(0, |w| u32::from(w.as_inner()))
+    }
+
+    /// The whole-record span (head tag through the record's last
+    /// byte): one formula for all kinds — the partition theorem
+    /// commutes the group end tag into the sum.
+    fn span(&self) -> Span {
+        // SAFETY: the partition theorem — the record's segments tile
+        // its span inside the admitted input, so the width sum is in
+        // class.
+        let width = unsafe {
+            Extent::new_unchecked(self.tag_w() + self.delim_w() + self.payload_len.as_inner())
+        };
+        Span::of(self.start, width)
+    }
+
+    /// The payload span (varint value bytes, fixed bytes, LEN
+    /// payload, or group interior). The one kind dispatch: LEN's
+    /// delimiter precedes its payload, a group's follows it.
+    fn payload_span(&self) -> Span {
+        let start = match self.kind {
+            RecordKind::Len => self.start.as_inner() + self.tag_w() + self.delim_w(),
+            _ => self.start.as_inner() + self.tag_w(),
+        };
+        // SAFETY: the partition theorem — the payload starts inside
+        // the record's span, which lies in the admitted input.
+        Span::of(unsafe { Coord::new_unchecked(start) }, self.payload_len)
+    }
+}
+
+// ─── the product ───
+
+/// Where a record's bytes lie in the source, split by role.
+///
+/// One call, kind-indexed: segments that do not exist for the record's
+/// kind do not exist in the type, and each variant's segments
+/// partition the record's span exactly. A clipped group (fault
+/// boundary before its end tag) is its own variant.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum RecordSpans {
+    /// A varint record: head tag, value bytes.
+    Varint {
+        /// The head tag.
+        tag: Span,
+        /// The value bytes.
+        value: Span,
+    },
+    /// A fixed 64-bit record: head tag, eight value bytes.
+    I64 {
+        /// The head tag.
+        tag: Span,
+        /// The value bytes.
+        value: Span,
+    },
+    /// A LEN record: head tag, length prefix, payload.
+    Len {
+        /// The head tag.
+        tag: Span,
+        /// The length prefix.
+        prefix: Span,
+        /// The payload bytes.
+        payload: Span,
+    },
+    /// A group: head tag, interior records, end tag.
+    Group {
+        /// The head tag.
+        tag: Span,
+        /// The interior bytes.
+        interior: Span,
+        /// The end tag.
+        end_tag: Span,
+    },
+    /// A group cut by the fault boundary: no end tag on the wire.
+    ClippedGroup {
+        /// The head tag.
+        tag: Span,
+        /// The interior bytes, ending at the cut.
+        interior: Span,
+    },
+    /// A fixed 32-bit record: head tag, four value bytes.
+    I32 {
+        /// The head tag.
+        tag: Span,
+        /// The value bytes.
+        value: Span,
+    },
+}
+
+/// The parse product: the moved-in source and a preorder row table
+/// over it, plus at most one fault — self-contained, `Send + Sync`
+/// (an immutable owned index), movable and cacheable for free.
+///
+/// A faulted product is not an error case — it is the legal
+/// prefix, open containers clipped to the fault boundary, and the
+/// fault.
+///
+/// The type is its own provenance proof: `source` and `rows` are
+/// private, minted together by the one parse, and immutable for the
+/// product's life — the unsafe discharges in the value queries cite
+/// exactly this invariant. Rows hold `u32` coordinates, never
+/// pointers, so moving the product moves nothing but the two
+/// owners.
+///
+/// Node ids are plain indices in parse order. Queries index with
+/// them, slice-style: passing an id at or beyond
+/// [`node_count`](Self::node_count) panics. `Option` returns carry
+/// domain answers (no parent, kind-gated reads), never id
+/// validation.
+pub struct Retained {
+    source: Vec<u8>,
+    rows: Box<[Row]>,
+    /// End of the indexed prefix: every retained judgment lies
+    /// below it (clipped LEN rows keep their declared, sealed
+    /// spans, which may extend past it).
+    indexed_end: u32,
+    fault: Option<Fault>,
+}
+
+impl Retained {
+    /// Parses the moved-in buffer. Total past admission: the one
+    /// refusal is the coordinate class (`i32::MAX` bytes), and it
+    /// returns the buffer untouched; wire faults are product, not
+    /// error.
+    ///
+    /// `advice` is consulted at every LEN record head (empty
+    /// payloads included); `depth` bounds container nesting with no
+    /// default.
+    ///
+    /// # Errors
+    ///
+    /// `(source, Oversize)` — the untouched buffer beside the mark
+    /// — iff `source.len() > i32::MAX`.
+    ///
+    /// # Examples
+    ///
+    /// A faulted document is the legal prefix plus the fault:
+    ///
+    /// ```
+    /// use protobuf_edit::DepthLimit;
+    /// use protobuf_edit::retain::{NoAdvice, Stage};
+    /// use protobuf_edit::retain::grouped::{FaultKind, Retained};
+    ///
+    /// // A varint tag, then nothing: the value cannot complete.
+    /// let msg = vec![0x08];
+    /// let tree = Retained::parse(msg, DepthLimit::REFERENCE, &mut NoAdvice).unwrap();
+    /// assert!(!tree.is_complete());
+    /// let fault = tree.fault().unwrap();
+    /// assert_eq!(fault.at(), 1);
+    /// assert!(matches!(
+    ///     fault.kind(),
+    ///     FaultKind::Read { stage: Stage::Value { .. }, .. }
+    /// ));
+    /// // The bad record never reached the table.
+    /// assert!(tree.is_empty());
+    /// assert_eq!(tree.indexed_end(), 0);
+    /// ```
+    pub fn parse<A: Advisor>(
+        source: Vec<u8>,
+        depth: DepthLimit,
+        advice: &mut A,
+    ) -> Result<Self, (Vec<u8>, Oversize)> {
+        Self::parse_standard(source, Standard::Tolerant, depth, advice)
+    }
+
+    /// [`Retained::parse`] under a declared acceptance
+    /// [`Standard`]: the standard picks a monomorphized engine
+    /// instance once at this entry, so a tolerant parse pays no
+    /// width comparison and a canonical one judges every varint
+    /// word — group framing tags included — against its minimal
+    /// encoding: the `NonMinimal*` faults, at the construct's
+    /// first byte, exactly where the stream scanner's canonical
+    /// validator judges them.
+    ///
+    /// Width storage is unchanged under both standards: rows keep
+    /// actual input widths because span geometry needs them either
+    /// way. Minimality inside a speculated payload absorbs like
+    /// any other wire fault — the payload concludes "bytes" — so
+    /// the standard governs exactly what the committed zone
+    /// promises.
+    ///
+    /// # Errors
+    ///
+    /// As [`Retained::parse`].
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use protobuf_edit::retain::NoAdvice;
+    /// use protobuf_edit::retain::grouped::{FaultKind, Retained};
+    /// use protobuf_edit::{DepthLimit, Standard};
+    ///
+    /// // group f1 whose end tag is continuation-padded: accepted
+    /// // tolerant, refused canonical at the end tag's head.
+    /// let msg = [0x0B, 0x8C, 0x80, 0x00];
+    ///
+    /// let tolerant = Retained::parse_standard(
+    ///     msg.to_vec(),
+    ///     Standard::Tolerant,
+    ///     DepthLimit::REFERENCE,
+    ///     &mut NoAdvice,
+    /// )
+    /// .unwrap();
+    /// assert!(tolerant.is_complete());
+    ///
+    /// let canonical = Retained::parse_standard(
+    ///     msg.to_vec(),
+    ///     Standard::CanonicalMinimal,
+    ///     DepthLimit::REFERENCE,
+    ///     &mut NoAdvice,
+    /// )
+    /// .unwrap();
+    /// let fault = canonical.fault().unwrap();
+    /// assert_eq!(fault.at(), 1);
+    /// assert!(matches!(fault.kind(), FaultKind::NonMinimalTag));
+    /// ```
+    pub fn parse_standard<A: Advisor>(
+        source: Vec<u8>,
+        standard: Standard,
+        depth: DepthLimit,
+        advice: &mut A,
+    ) -> Result<Self, (Vec<u8>, Oversize)> {
+        let Some(len) = admit(source.len()) else {
+            return Err((source, Oversize));
+        };
+        let machine = Machine {
+            bytes: &source,
+            cursor: 0,
+            zone: len,
+            nearest_absorber: None,
+            stack: Vec::with_capacity(frames_reserve(depth)),
+            path: Vec::new(),
+            rows: Vec::with_capacity(rows_reserve(len)),
+            limit: depth,
+            advice,
+        };
+        let parts = match standard {
+            Standard::Tolerant => machine.run::<false>(),
+            Standard::CanonicalMinimal => machine.run::<true>(),
+        };
+        Ok(Self { source, rows: parts.rows, indexed_end: parts.indexed_end, fault: parts.fault })
+    }
+
+    /// The fault, if the committed zone stopped the parse early.
+    #[inline]
+    #[must_use]
+    pub const fn fault(&self) -> Option<Fault> {
+        self.fault
+    }
+
+    /// True when the whole source parsed without a fault.
+    #[inline]
+    #[must_use]
+    pub const fn is_complete(&self) -> bool {
+        self.fault.is_none()
+    }
+
+    /// The owned source bytes; all spans index into these.
+    #[inline]
+    #[must_use]
+    pub fn bytes(&self) -> &[u8] {
+        &self.source
+    }
+
+    /// Releases the source buffer — the move-in door's inverse,
+    /// zero copies. The index is dropped; spans and ids taken
+    /// earlier remain plain numbers over the returned bytes.
+    #[inline]
+    #[must_use]
+    pub fn into_bytes(self) -> Vec<u8> {
+        self.source
+    }
+
+    /// End of the indexed prefix (equals the source length iff the
+    /// parse consumed everything).
+    #[inline]
+    #[must_use]
+    pub const fn indexed_end(&self) -> u32 {
+        self.indexed_end
+    }
+
+    /// Number of rows; valid ids are `0..node_count`.
+    #[inline]
+    #[must_use]
+    pub const fn node_count(&self) -> u32 {
+        row_u32(self.rows.len())
+    }
+
+    /// True when no records were indexed.
+    #[inline]
+    #[must_use]
+    pub const fn is_empty(&self) -> bool {
+        self.rows.is_empty()
+    }
+
+    /// The public id gate: every id-taking query passes here, and
+    /// the slice index is the documented forgery panic.
+    #[track_caller]
+    fn row(&self, id: NodeId) -> &Row {
+        &self.rows[id.index()]
+    }
+
+    /// The row of an internally proven id.
+    ///
+    /// # Safety
+    /// `id` must be in-table: minted by this parse (row pushes,
+    /// partition points) or read out of a row's parent link.
+    unsafe fn row_unchecked(&self, id: NodeId) -> &Row {
+        // SAFETY: the caller's proof, restated.
+        unsafe { self.rows.get_unchecked(id.index()) }
+    }
+
+    // ─ navigation ─
+
+    /// Iterates the top-layer records.
+    #[inline]
+    pub fn top(&self) -> Children<'_> {
+        Children { rows: &self.rows, next: 0, end: self.node_count() }
+    }
+
+    /// Iterates `id`'s direct children (empty for leaves and
+    /// unparsed payloads).
+    ///
+    /// # Panics
+    ///
+    /// Panics if `id >= self.node_count()` — node ids are slice-style
+    /// indices into this product.
+    #[inline]
+    #[track_caller]
+    pub fn children(&self, id: NodeId) -> Children<'_> {
+        let r = self.row(id);
+        let first = id.as_inner() + 1;
+        Children { rows: &self.rows, next: first, end: first + r.descendants }
+    }
+
+    /// The enclosing container (`None`: root level).
+    ///
+    /// # Panics
+    ///
+    /// Panics if `id >= self.node_count()` — node ids are slice-style
+    /// indices into this product.
+    #[inline]
+    #[must_use]
+    #[track_caller]
+    pub fn parent(&self, id: NodeId) -> Option<NodeId> {
+        self.row(id).parent
+    }
+
+    /// Walks the parent chain from `id` (exclusive) to a root.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `id >= self.node_count()` — node ids are slice-style
+    /// indices into this product.
+    #[inline]
+    #[track_caller]
+    pub fn ancestors(&self, id: NodeId) -> Ancestors<'_> {
+        Ancestors { rows: &self.rows, cur: self.row(id).parent }
+    }
+
+    /// The record's field number.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `id >= self.node_count()` — node ids are slice-style
+    /// indices into this product.
+    #[inline]
+    #[track_caller]
+    pub fn field(&self, id: NodeId) -> FieldNumber {
+        self.row(id).field
+    }
+
+    /// The record's wire kind.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `id >= self.node_count()` — node ids are slice-style
+    /// indices into this product.
+    #[inline]
+    #[must_use]
+    #[track_caller]
+    pub fn kind(&self, id: NodeId) -> RecordKind {
+        self.row(id).kind
+    }
+
+    /// Iterates all records in parse (preorder) order.
+    #[inline]
+    pub const fn nodes(&self) -> Nodes<'_> {
+        Nodes { next: 0, end: self.node_count(), _rows: core::marker::PhantomData }
+    }
+
+    /// Iterates `id`'s whole subtree, excluding `id` itself.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `id >= self.node_count()` — node ids are slice-style
+    /// indices into this product.
+    #[inline]
+    #[track_caller]
+    pub fn descendants(&self, id: NodeId) -> Nodes<'_> {
+        let r = self.row(id);
+        let first = id.as_inner() + 1;
+        Nodes { next: first, end: first + r.descendants, _rows: core::marker::PhantomData }
+    }
+
+    /// The narrowest record whose span contains `pos` (`None`: the
+    /// byte belongs to no indexed record).
+    ///
+    /// Preorder starts increase strictly (a parent's head precedes
+    /// its first child's), so binary search finds the last row
+    /// starting at or before `pos`; every container of `pos` is on
+    /// that row's parent chain (record spans nest or are disjoint —
+    /// seals and pairing forbid partial overlap), and the narrowest
+    /// is the first chain member whose span contains `pos`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use protobuf_edit::DepthLimit;
+    /// use protobuf_edit::retain::NoAdvice;
+    /// use protobuf_edit::retain::grouped::Retained;
+    ///
+    /// // varint f1=150 · group f2 { varint f3=1 }
+    /// let msg = vec![0x08, 0x96, 0x01, 0x13, 0x18, 0x01, 0x14];
+    /// let tree = Retained::parse(msg, DepthLimit::REFERENCE, &mut NoAdvice).unwrap();
+    /// let group = tree.top().nth(1).unwrap();
+    /// let inner = tree.children(group).next().unwrap();
+    ///
+    /// // Byte 5 is the interior varint's value byte.
+    /// assert_eq!(tree.narrowest(5), Some(inner));
+    /// // Byte 6 is the group's end tag: the group is the cover.
+    /// assert_eq!(tree.narrowest(6), Some(group));
+    /// // Past the input: no record.
+    /// assert_eq!(tree.narrowest(7), None);
+    /// ```
+    #[inline]
+    #[must_use]
+    pub fn narrowest(&self, pos: u32) -> Option<NodeId> {
+        let started_before = self.rows.partition_point(|r| r.start.as_inner() <= pos);
+        let mut cur = mint(row_u32(started_before.checked_sub(1)?));
+        loop {
+            // SAFETY: the first id is minted from a nonzero
+            // partition point over the table; every later id is a
+            // row's parent link, minted in-table by the parse.
+            let r = unsafe { self.row_unchecked(cur) };
+            if pos < r.span().end() {
+                return Some(cur);
+            }
+            cur = r.parent?;
+        }
+    }
+
+    // ─ spans ─
+
+    /// The whole-record span (head tag through the record's last
+    /// byte, group end tag included). One formula for all kinds:
+    /// the partition theorem commutes the group end tag into the
+    /// sum. A clipped group's span ends at the fault boundary; a
+    /// clipped LEN keeps its declared, sealed span.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `id >= self.node_count()` — node ids are slice-style
+    /// indices into this product.
+    #[inline]
+    #[track_caller]
+    pub fn span(&self, id: NodeId) -> Span {
+        self.row(id).span()
+    }
+
+    /// The record's geometry: every segment in one kind-indexed
+    /// answer. Widths are the stored input facts (padded encodings
+    /// reproduce byte-exactly); a clipped group is its own variant
+    /// — the missing end tag does not exist in the type.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `id >= self.node_count()` — node ids are slice-style
+    /// indices into this product.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use protobuf_edit::DepthLimit;
+    /// use protobuf_edit::retain::NoAdvice;
+    /// use protobuf_edit::retain::grouped::{RecordSpans, Retained};
+    ///
+    /// // group f2 { varint f3=1 }
+    /// let msg = vec![0x13, 0x18, 0x01, 0x14];
+    /// let tree = Retained::parse(msg, DepthLimit::REFERENCE, &mut NoAdvice).unwrap();
+    /// let group = tree.top().next().unwrap();
+    /// let RecordSpans::Group { tag, interior, end_tag } = tree.source_spans(group) else {
+    ///     unreachable!()
+    /// };
+    /// assert_eq!((tag.start(), tag.end()), (0, 1));
+    /// assert_eq!((interior.start(), interior.end()), (1, 3));
+    /// assert_eq!((end_tag.start(), end_tag.end()), (3, 4));
+    /// ```
+    #[inline]
+    #[must_use]
+    #[track_caller]
+    pub fn source_spans(&self, id: NodeId) -> RecordSpans {
+        let r = self.row(id);
+        // SAFETY (all mints below): the partition theorem — the
+        // record's segments tile its span inside the admitted input,
+        // so every segment bound is in class.
+        let tag = Span::of(r.start, Extent::from_width(r.tag_width.as_inner()));
+        let payload = r.payload_len;
+        let value = Span::of(unsafe { Coord::new_unchecked(tag.end()) }, payload);
+        match r.kind {
+            RecordKind::Varint => RecordSpans::Varint { tag, value },
+            RecordKind::I64 => RecordSpans::I64 { tag, value },
+            RecordKind::I32 => RecordSpans::I32 { tag, value },
+            RecordKind::Len => {
+                let prefix = Span::of(
+                    unsafe { Coord::new_unchecked(tag.end()) },
+                    // The prefix width is a stored input fact; a LEN
+                    // always met one.
+                    Extent::from_width(r.delim_width.map_or(0, WordWidth::as_inner)),
+                );
+                RecordSpans::Len {
+                    tag,
+                    prefix,
+                    payload: Span::of(unsafe { Coord::new_unchecked(prefix.end()) }, payload),
+                }
+            }
+            RecordKind::Group => {
+                let interior = value;
+                r.delim_width.map_or(RecordSpans::ClippedGroup { tag, interior }, |delim| {
+                    RecordSpans::Group {
+                        tag,
+                        interior,
+                        end_tag: Span::of(
+                            unsafe { Coord::new_unchecked(interior.end()) },
+                            Extent::from_width(delim.as_inner()),
+                        ),
+                    }
+                })
+            }
+        }
+    }
+
+    // ─ bytes and words ─
+
+    /// The record's bytes (borrows the product's own source).
+    ///
+    /// # Panics
+    ///
+    /// Panics if `id >= self.node_count()` — node ids are slice-style
+    /// indices into this product.
+    #[inline]
+    #[must_use]
+    #[track_caller]
+    pub fn record_bytes(&self, id: NodeId) -> &[u8] {
+        let span = self.row(id).span();
+        // SAFETY: the product invariant — rows were minted by the
+        // parse over these same admitted, immutable bytes, and
+        // record spans lie within them.
+        unsafe { self.source.get_unchecked(span.as_range()) }
+    }
+
+    /// The payload bytes (borrows the product's own source).
+    ///
+    /// # Panics
+    ///
+    /// Panics if `id >= self.node_count()` — node ids are slice-style
+    /// indices into this product.
+    #[inline]
+    #[must_use]
+    #[track_caller]
+    pub fn payload_bytes(&self, id: NodeId) -> &[u8] {
+        let span = self.row(id).payload_span();
+        // SAFETY: as `record_bytes` — payload spans are sub-spans of
+        // record spans.
+        unsafe { self.source.get_unchecked(span.as_range()) }
+    }
+
+    /// The record's structural group nesting for a designation:
+    /// zero for non-groups, one plus the deepest nested group for a
+    /// group closure. Rows inside a LEN interior sit under an
+    /// opacity boundary and contribute nothing, so only chains of
+    /// group parents count. Every row here is an original source
+    /// occurrence (the product never edits), so the fact is
+    /// source-derived by construction.
+    fn structural_nesting(&self, id: NodeId) -> u32 {
+        let root = self.row(id);
+        if !matches!(root.kind, RecordKind::Group) {
+            return 0;
+        }
+        let mut deepest: u32 = 1;
+        let first = id.as_inner() + 1;
+        for index in first..first + root.descendants {
+            let sub = mint(index);
+            // SAFETY: `index` walks the root's own preorder subtree,
+            // whose rows the parse minted in-table.
+            let row = unsafe { self.row_unchecked(sub) };
+            if !matches!(row.kind, RecordKind::Group) {
+                continue;
+            }
+            // Chain length from this group up to the designated
+            // root; a LEN on the way is an opacity boundary.
+            let mut depth: u32 = 2;
+            let mut cur = row.parent;
+            let structural = loop {
+                let Some(parent) = cur else {
+                    unreachable!("subtree parent chains reach the designated root")
+                };
+                if parent == id {
+                    break true;
+                }
+                // SAFETY: parent links are minted in-table.
+                let up = unsafe { self.row_unchecked(parent) };
+                if !matches!(up.kind, RecordKind::Group) {
+                    break false;
+                }
+                depth += 1;
+                cur = up.parent;
+            };
+            if structural && depth > deepest {
+                deepest = depth;
+            }
+        }
+        deepest
+    }
+
+    /// Designates the record for cross-machine transfer: the exact
+    /// record bytes — a group's whole closure with its end tag —
+    /// bound to their proved field, kind, framing geometry, and
+    /// structural group depth (borrows the product's own source, so
+    /// a consumer retaining the designation cannot outlive this
+    /// product). Completeness is part of the designation's
+    /// contract, so only records whose whole extent lies inside the
+    /// indexed prefix mint, and a clipped group (no end tag)
+    /// refuses; the canonical proof is not carried — a consumer
+    /// that needs it asks `try_canonical` on the designation
+    /// itself.
+    ///
+    /// # Errors
+    ///
+    /// [`Fault::IncompleteRecord`](crate::source::grouped::Fault::IncompleteRecord)
+    /// when the record's extent runs past the indexed prefix or a
+    /// group's end tag never appeared (a clipped row at the fault
+    /// boundary).
+    ///
+    /// # Panics
+    ///
+    /// Panics if `id >= self.node_count()` — node ids are slice-style
+    /// indices into this product.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use protobuf_edit::DepthLimit;
+    /// use protobuf_edit::retain::NoAdvice;
+    /// use protobuf_edit::retain::grouped::Retained;
+    ///
+    /// // Group f1 { varint f2=5 }: the closure travels whole.
+    /// let msg = vec![0x0B, 0x10, 0x05, 0x0C];
+    /// let tree = Retained::parse(msg, DepthLimit::REFERENCE, &mut NoAdvice).unwrap();
+    /// let record = tree.record_ref(tree.top().next().unwrap()).unwrap();
+    /// assert_eq!(record.group_depth(), 1);
+    /// ```
+    #[track_caller]
+    pub fn record_ref(
+        &self,
+        id: NodeId,
+    ) -> Result<crate::source::grouped::RecordRef<'_>, crate::source::grouped::Fault> {
+        let r = self.row(id);
+        let clipped_group = matches!(r.kind, RecordKind::Group) && r.delim_width.is_none();
+        if r.span().end() > self.indexed_end || clipped_group {
+            return Err(crate::source::grouped::Fault::IncompleteRecord { at: self.indexed_end });
+        }
+        Ok(crate::source::grouped::RecordRef::mint(
+            self.record_bytes(id),
+            r.field,
+            r.kind,
+            r.tag_width,
+            r.delim_width,
+            r.payload_len.as_inner(),
+            self.structural_nesting(id),
+            false,
+        ))
+    }
+
+    /// The varint value as a raw wire word (`None`: not a VARINT
+    /// record), tolerant of the source's padding. `crate::scalar`
+    /// maps wire words to schema-typed values.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `id >= self.node_count()` — node ids are slice-style
+    /// indices into this product.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use protobuf_edit::DepthLimit;
+    /// use protobuf_edit::retain::NoAdvice;
+    /// use protobuf_edit::retain::grouped::Retained;
+    ///
+    /// // 150 continuation-padded to three bytes: lawful wire.
+    /// let msg = vec![0x08, 0x96, 0x81, 0x00];
+    /// let tree = Retained::parse(msg, DepthLimit::REFERENCE, &mut NoAdvice).unwrap();
+    /// let id = tree.top().next().unwrap();
+    /// assert_eq!(tree.varint_word(id), Some(150));
+    /// // The stored width is the input fact, byte-exact.
+    /// assert_eq!(tree.span(id).len(), 4);
+    /// // Kind-gated: a varint has no fixed 32-bit reading.
+    /// assert_eq!(tree.i32_bits(id), None);
+    /// ```
+    #[inline]
+    #[must_use]
+    #[track_caller]
+    pub fn varint_word(&self, id: NodeId) -> Option<u64> {
+        let r = self.row(id);
+        if !matches!(r.kind, RecordKind::Varint) {
+            return None;
+        }
+        let at = r.start.as_inner() + r.tag_w();
+        // SAFETY: the product invariant — a Varint row's payload is
+        // the window a bounded in-class read admitted during the
+        // parse, over these same immutable bytes.
+        Some(unsafe { slice::value64_unchecked(&self.source, usize_of(at)) })
+    }
+
+    /// The eight little-endian payload bytes as raw bits (`None`:
+    /// not an I64 record). `crate::scalar` interprets them.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `id >= self.node_count()` — node ids are slice-style
+    /// indices into this product.
+    #[inline]
+    #[must_use]
+    #[track_caller]
+    pub fn i64_bits(&self, id: NodeId) -> Option<u64> {
+        let r = self.row(id);
+        if !matches!(r.kind, RecordKind::I64) {
+            return None;
+        }
+        let at = usize_of(r.start.as_inner() + r.tag_w());
+        // SAFETY: the product invariant — I64 rows are minted only
+        // after the parse proved eight in-extent payload bytes.
+        // `[u8; 8]` aligns to 1.
+        let bits = unsafe { self.source.as_ptr().add(at).cast::<[u8; 8]>().read() };
+        Some(u64::from_le_bytes(bits))
+    }
+
+    /// The four little-endian payload bytes as raw bits (`None`:
+    /// not an I32 record). `crate::scalar` interprets them.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `id >= self.node_count()` — node ids are slice-style
+    /// indices into this product.
+    #[inline]
+    #[must_use]
+    #[track_caller]
+    pub fn i32_bits(&self, id: NodeId) -> Option<u32> {
+        let r = self.row(id);
+        if !matches!(r.kind, RecordKind::I32) {
+            return None;
+        }
+        let at = usize_of(r.start.as_inner() + r.tag_w());
+        // SAFETY: as `i64_bits`, four proven bytes.
+        let bits = unsafe { self.source.as_ptr().add(at).cast::<[u8; 4]>().read() };
+        Some(u32::from_le_bytes(bits))
+    }
+
+    /// The whole private construction state as comparable scalars:
+    /// every row field in table order, the indexed end, and the
+    /// fault (position plus its exact `Debug` form). Test-only —
+    /// the stream collector's finished-index differential compares
+    /// it against its identically shaped snapshot, so it compiles
+    /// with that cell's tests.
+    #[cfg(all(test, feature = "collect-grouped"))]
+    pub(crate) fn snapshot(&self) -> Snapshot {
+        let rows = self
+            .rows
+            .iter()
+            .map(|r| {
+                (
+                    r.start.as_inner(),
+                    r.payload_len.as_inner(),
+                    r.parent.map(NodeId::as_inner),
+                    r.descendants,
+                    r.field,
+                    r.kind,
+                    r.tag_width.as_inner(),
+                    r.delim_width.map(WordWidth::as_inner),
+                )
+            })
+            .collect();
+        let fault = self.fault.map(|f| (f.at(), alloc::format!("{:?}", f.kind())));
+        (rows, self.indexed_end, fault)
+    }
+}
+
+// ─── iterators ───
+
+/// Walks one sibling run by subtree hops
+/// (`next = cur + 1 + descendants`).
+///
+/// `ExactSizeIterator` and `DoubleEndedIterator` are structurally
+/// unavailable: the sibling count is not O(1), and the last
+/// sibling has no O(1) address.
+#[must_use]
+#[derive(Clone)]
+pub struct Children<'t> {
+    rows: &'t [Row],
+    next: u32,
+    end: u32,
+}
+
+impl<'t> Children<'t> {
+    /// Narrows to the records of one field, preserving wire order.
+    /// A field with no records in the run yields nothing.
+    #[inline]
+    pub fn by_field(self, field: FieldNumber) -> impl Iterator<Item = NodeId> + 't {
+        let rows = self.rows;
+        self.filter(move |id| {
+            // SAFETY: `Children` yields in-table ids only (see
+            // `next`).
+            unsafe { rows.get_unchecked(id.index()) }.field == field
+        })
+    }
+}
+
+impl Iterator for Children<'_> {
+    type Item = NodeId;
+
+    #[inline]
+    fn next(&mut self) -> Option<NodeId> {
+        if self.next >= self.end {
+            return None;
+        }
+        let id = self.next;
+        // SAFETY: `id < end`, and `end <= rows.len()` by
+        // construction — a run is bounded by its enclosing subtree
+        // range, whose rows the parse physically pushed.
+        let descendants = unsafe { self.rows.get_unchecked(usize_of(id)) }.descendants;
+        self.next = id + 1 + descendants;
+        Some(mint(id))
+    }
+
+    #[inline]
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        // Nonempty runs yield at least one sibling; each sibling
+        // occupies at least one row, bounding from above.
+        let width = usize_of(self.end.saturating_sub(self.next));
+        (usize::from(width > 0), Some(width))
+    }
+}
+
+impl FusedIterator for Children<'_> {}
+
+/// Walks the parent chain (a node's ancestors, nearest first).
+/// Parent indices strictly decrease, bounding `size_hint` from
+/// above; the exact length needs the walk, so no
+/// `ExactSizeIterator`.
+#[must_use]
+#[derive(Clone)]
+pub struct Ancestors<'t> {
+    rows: &'t [Row],
+    cur: Option<NodeId>,
+}
+
+impl Iterator for Ancestors<'_> {
+    type Item = NodeId;
+
+    #[inline]
+    fn next(&mut self) -> Option<NodeId> {
+        let id = self.cur?;
+        // SAFETY: the chain starts at a checked row's parent link
+        // and every later id is again a parent link — all minted
+        // in-table by the parse.
+        self.cur = unsafe { self.rows.get_unchecked(id.index()) }.parent;
+        Some(id)
+    }
+
+    #[inline]
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        self.cur.map_or((0, Some(0)), |id| (1, Some(id.index() + 1)))
+    }
+}
+
+impl FusedIterator for Ancestors<'_> {}
+
+/// Walks a contiguous preorder row range: the whole table
+/// ([`Retained::nodes`]) or one subtree ([`Retained::descendants`])
+/// — two demands, one shape. Exact: the range width is the count.
+#[must_use]
+#[derive(Clone)]
+pub struct Nodes<'t> {
+    next: u32,
+    end: u32,
+    _rows: core::marker::PhantomData<&'t [Row]>,
+}
+
+impl Iterator for Nodes<'_> {
+    type Item = NodeId;
+
+    #[inline]
+    fn next(&mut self) -> Option<NodeId> {
+        if self.next >= self.end {
+            return None;
+        }
+        let id = self.next;
+        self.next += 1;
+        Some(mint(id))
+    }
+
+    #[inline]
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        let n = usize_of(self.end - self.next);
+        (n, Some(n))
+    }
+}
+
+impl DoubleEndedIterator for Nodes<'_> {
+    #[inline]
+    fn next_back(&mut self) -> Option<NodeId> {
+        if self.next >= self.end {
+            return None;
+        }
+        self.end -= 1;
+        Some(mint(self.end))
+    }
+}
+
+impl ExactSizeIterator for Nodes<'_> {}
+impl FusedIterator for Nodes<'_> {}
+
+// ─── the machine ───
+
+/// Open-container frame kind. Which close law applies at the extent
+/// end: a LEN closes clean, a group there is unterminated.
+#[derive(Clone, Copy)]
+enum FrameKind {
+    Group,
+    Len,
+}
+
+/// One open container. The frame simultaneously carries the parent
+/// link (`row`), the open field, the close law, and the restore
+/// state for the two live registers ([`Machine::zone`],
+/// [`Machine::nearest_absorber`]) — pushing saves them, popping
+/// restores them, and no walk ever recomputes them.
+#[derive(Clone, Copy)]
+struct Frame {
+    row: NodeId,
+    /// The open container's field (what a matching end tag must
+    /// name, what `GroupUnclosed` quotes, and what the machine
+    /// lends to [`Ancestry`]).
+    field: FieldNumber,
+    /// The enclosing extent's end, restored on close (a LEN seals a
+    /// new zone; a group saves the value it inherits unchanged).
+    prev_zone: u32,
+    /// The enclosing nearest-absorber register, restored on close.
+    prev_absorber: Option<usize>,
+    kind: FrameKind,
+}
+
+/// A judged violation, plus where the uncommitted transaction
+/// began. `fault.at` is the diagnostic position (the offending
+/// construct's first byte); `cut` is where the failed record
+/// started — clipping uses `cut`, so a container never swallows the
+/// bad record's tag bytes.
+struct Failure {
+    fault: Fault,
+    cut: u32,
+}
+
+/// What the parse walk hands back for the product to own beside
+/// the source it borrowed.
+struct Parts {
+    rows: Box<[Row]>,
+    indexed_end: u32,
+    fault: Option<Fault>,
+}
+
+/// Detection is blind to commitment: judgment code reads bytes,
+/// bounds, and grammar state, never the absorber register —
+/// disposition alone reads it. This structural split is what
+/// guarantees that advice only moves where a fault surfaces, never
+/// how bytes are judged. The machine borrows the buffer the door
+/// admitted; the product assembles from its parts once the borrow
+/// ends.
+struct Machine<'a, 'v, A: Advisor> {
+    bytes: &'a [u8],
+    cursor: u32,
+    /// The innermost extent's exclusive end (the top frame's zone;
+    /// the admitted length at root level) — maintained by open and
+    /// close, never recomputed.
+    zone: u32,
+    /// Stack index of the innermost `Advice::Speculate` LEN (the
+    /// frame a speculation failure unwinds to), maintained by open
+    /// and close for an O(1) dispose. `Commit` frames are not
+    /// absorbing — under a speculating ancestor their promise is
+    /// conditional and evaporates with the unwind; on a committed
+    /// chain no absorber exists and the fault stops the parse (the
+    /// root is implicitly committed).
+    nearest_absorber: Option<usize>,
+    stack: Vec<Frame>,
+    /// The open containers' fields, materialized lazily from the
+    /// frame stack when an advisor is consulted (`path[i]` mirrors
+    /// `stack[i].field` for every materialized index); closes
+    /// truncate it back in step.
+    path: Vec<FieldNumber>,
+    rows: Vec<Row>,
+    limit: DepthLimit,
+    advice: &'v mut A,
+}
+
+/// A committed-zone failure: stop the parse and clip.
+struct Stop(Failure);
+
+impl<A: Advisor> Machine<'_, '_, A> {
+    fn parent_row(&self) -> Option<NodeId> {
+        self.stack.last().map(|f| f.row)
+    }
+
+    /// One frame per nesting level: the frame count is the depth.
+    fn at_depth_limit(&self) -> bool {
+        self.stack.len() >= usize::from(self.limit.as_inner())
+    }
+
+    /// Consults the advisor, materializing the enclosing fields it
+    /// is owed. Amortized O(1): each frame's field is copied at
+    /// most once per residency on the stack.
+    fn consult(&mut self, field: FieldNumber) -> Advice {
+        if self.path.len() < self.stack.len() {
+            self.path.extend(self.stack[self.path.len()..].iter().map(|f| f.field));
+        }
+        self.advice.advise(Ancestry::new(&self.path), field)
+    }
+
+    /// Pushes an open container and saves the live registers in it.
+    fn open(
+        &mut self,
+        row: NodeId,
+        field: FieldNumber,
+        kind: FrameKind,
+        zone: u32,
+        absorbing: bool,
+    ) {
+        self.stack.push(Frame {
+            row,
+            field,
+            prev_zone: self.zone,
+            prev_absorber: self.nearest_absorber,
+            kind,
+        });
+        self.zone = zone;
+        if absorbing {
+            self.nearest_absorber = Some(self.stack.len() - 1);
+        }
+    }
+
+    /// Restores the live registers from a popped frame and keeps
+    /// the materialized path in step.
+    fn restore(&mut self, frame: &Frame) {
+        self.zone = frame.prev_zone;
+        self.nearest_absorber = frame.prev_absorber;
+        self.path.truncate(self.stack.len());
+    }
+
+    /// Terminal write of a closing container: its subtree is
+    /// exactly the rows pushed since it.
+    fn seal_descendants(&mut self, row: NodeId) {
+        let idx = row.index();
+        let descendants = row_u32(self.rows.len() - 1 - idx);
+        // SAFETY: frame rows are in-table (minted before the frame
+        // pushed and never truncated while it lives).
+        unsafe { self.rows.get_unchecked_mut(idx) }.descendants = descendants;
+    }
+
+    /// Clips a group cut before its end tag: the interior ends at
+    /// the cut, and `delim_width` stays `None` — the only honest
+    /// width.
+    fn clip_group_row(&mut self, row: NodeId, cut: u32) {
+        let idx = row.index();
+        let descendants = row_u32(self.rows.len() - 1 - idx);
+        // SAFETY: frame rows are in-table (as `seal_descendants`).
+        let r = unsafe { self.rows.get_unchecked_mut(idx) };
+        let body_start = r.start.as_inner() + r.tag_w();
+        // SAFETY: the cut is at or after the body start (a frame
+        // opens strictly before whatever fails inside it) and
+        // admission-bounded — inside the coordinate class.
+        r.payload_len = unsafe { Extent::new_unchecked(cut - body_start) };
+        r.descendants = descendants;
+    }
+
+    /// Disposes of a judged failure: unwind to the nearest
+    /// absorbing frame (the speculation this failure concludes as
+    /// "bytes"), or stop for the clip. Unwind is truncation —
+    /// `descendants` and group end facts are written only at close,
+    /// so no written state needs repair.
+    fn dispose(&mut self, failure: Failure) -> Result<(), Stop> {
+        let Some(idx) = self.nearest_absorber else {
+            return Err(Stop(failure));
+        };
+        let absorber = self.stack[idx];
+        // The absorber's own zone end: the live zone while it was
+        // innermost — the frame above it saved that as `prev_zone`.
+        let own_zone = self.stack.get(idx + 1).map_or(self.zone, |above| above.prev_zone);
+        // The demoted LEN keeps its row (a sealed leaf: descendants
+        // stayed 0, its declared span is an input fact); everything
+        // it speculated over — rows, inner frames, conditional
+        // Message promises — evaporates.
+        self.rows.truncate(absorber.row.index() + 1);
+        self.cursor = own_zone;
+        self.zone = absorber.prev_zone;
+        self.nearest_absorber = absorber.prev_absorber;
+        self.stack.truncate(idx);
+        self.path.truncate(idx);
+        Ok(())
+    }
+
+    /// Fault disposition sinks: the fault value takes shape here,
+    /// off the parse's hot dispatch — only judged scalars cross
+    /// the call.
+    #[cold]
+    fn halt(&mut self, at: u32, cut: u32, kind: FaultKind) -> Result<(), Stop> {
+        self.dispose(Failure { fault: Fault { at, kind }, cut })
+    }
+
+    /// A varint read refusal at a stage, sunk like [`Self::halt`].
+    #[cold]
+    fn halt_read(&mut self, at: u32, cut: u32, stage: Stage, cause: ReadFault) -> Result<(), Stop> {
+        self.halt(at, cut, FaultKind::Read { stage, cause })
+    }
+
+    /// Closes the frame the extent end popped: LEN closes clean;
+    /// an open group's end tag never appeared.
+    fn close_frame(&mut self, frame: Frame) -> Result<(), Stop> {
+        match frame.kind {
+            FrameKind::Len => {
+                self.seal_descendants(frame.row);
+                self.restore(&frame);
+                Ok(())
+            }
+            FrameKind::Group => {
+                // The popped row is clipped here; dispose and the
+                // final clip only see the remaining stack.
+                let at = self.zone;
+                self.clip_group_row(frame.row, at);
+                self.restore(&frame);
+                self.halt(at, at, FaultKind::GroupUnclosed { open: frame.field })
+            }
+        }
+    }
+
+    fn run<const MINIMAL: bool>(mut self) -> Parts {
+        loop {
+            debug_assert!(self.cursor <= self.zone);
+            if self.cursor == self.zone {
+                let Some(frame) = self.stack.pop() else {
+                    return self.finish(None);
+                };
+                if let Err(stop) = self.close_frame(frame) {
+                    return self.clip(stop.0);
+                }
+                continue;
+            }
+            if let Err(stop) = self.record::<MINIMAL>() {
+                return self.clip(stop.0);
+            }
+        }
+    }
+
+    /// Parses exactly one record at the cursor — or disposes of the
+    /// judgment that refused it. One instance per acceptance
+    /// standard: the tolerant instance folds every minimality test
+    /// away; the canonical one judges each varint word between its
+    /// read and its classification (the stream scanner's order, so
+    /// a padded group, end, or zero-field tag is a width refusal
+    /// first).
+    fn record<const MINIMAL: bool>(&mut self) -> Result<(), Stop> {
+        let at = self.cursor;
+        let bytes = self.bytes;
+        // SAFETY: zone ends are sealed within the admitted source
+        // (a LEN seal is overrun-checked against its enclosing zone
+        // at open, groups inherit, the root is the admitted length),
+        // so `self.zone <= bytes.len()`.
+        let (word, tag_width) =
+            match unsafe { slice::tag_word_trusted(bytes, usize_of(at), usize_of(self.zone)) } {
+                Ok(hit) => hit,
+                Err(fault) => return self.halt_read(at, at, Stage::Tag, fault),
+            };
+        if MINIMAL && u32::from(tag_width) > encoded_len32(word) {
+            return self.halt(at, at, FaultKind::NonMinimalTag);
+        }
+        // Field zero is an identity judgment on the whole tag word
+        // and precedes any kind judgment (corpus-pinned precedence).
+        let low3 = Low3::from_word(word);
+        let Some(field) = FieldNumber::from_word(word) else {
+            return self.halt(at, at, FaultKind::FieldZero { code: low3 });
+        };
+        // SAFETY: the kernel's tag window admits widths 1..=5.
+        let tag_width = unsafe { WordWidth::met_unchecked(tag_width) };
+        match classify(low3) {
+            TagClass::Record(RecordKind::Varint) => {
+                self.varint_record::<MINIMAL>(at, field, tag_width)
+            }
+            TagClass::Record(kind @ (RecordKind::I64 | RecordKind::I32)) => {
+                self.fixed_record(at, field, kind, tag_width)
+            }
+            TagClass::Record(RecordKind::Len) => self.len_record::<MINIMAL>(at, field, tag_width),
+            TagClass::Record(RecordKind::Group) => self.group_open(at, field, tag_width),
+            TagClass::GroupEnd => self.group_close(at, field, tag_width),
+            TagClass::Unassigned => self.halt(at, at, FaultKind::Unassigned { field, code: low3 }),
+        }
+    }
+
+    /// VARINT: the value is sized in place, not kept — rows record
+    /// spans, and `varint_word` re-reads on demand. The canonical
+    /// instance decodes the value to judge its width; the tolerant
+    /// one only sizes it.
+    fn varint_record<const MINIMAL: bool>(
+        &mut self,
+        at: u32,
+        field: FieldNumber,
+        tag_width: WordWidth,
+    ) -> Result<(), Stop> {
+        let after_tag = at + u32::from(tag_width.as_inner());
+        let width = if MINIMAL {
+            // SAFETY: zone ends are sealed within the admitted
+            // source (as in `record`).
+            let (value, width) = match unsafe {
+                slice::value64_trusted(self.bytes, usize_of(after_tag), usize_of(self.zone))
+            } {
+                Ok(hit) => hit,
+                Err(fault) => return self.halt_read(after_tag, at, Stage::Value { field }, fault),
+            };
+            if u32::from(width) > encoded_len64(value) {
+                return self.halt(after_tag, at, FaultKind::NonMinimalValue { field });
+            }
+            width
+        } else {
+            // SAFETY: zone ends are sealed within the admitted
+            // source (as in `record`).
+            match unsafe {
+                slice::width64_trusted(self.bytes, usize_of(after_tag), usize_of(self.zone))
+            } {
+                Ok(hit) => hit,
+                Err(fault) => return self.halt_read(after_tag, at, Stage::Value { field }, fault),
+            }
+        };
+        self.push_leaf(at, field, RecordKind::Varint, tag_width, Extent::from_width(width), None);
+        self.cursor = after_tag + u32::from(width);
+        Ok(())
+    }
+
+    fn fixed_record(
+        &mut self,
+        at: u32,
+        field: FieldNumber,
+        kind: RecordKind,
+        tag_width: WordWidth,
+    ) -> Result<(), Stop> {
+        let after_tag = at + u32::from(tag_width.as_inner());
+        let needed: u8 = if matches!(kind, RecordKind::I64) { 8 } else { 4 };
+        if after_tag + u32::from(needed) > self.zone {
+            return self.halt(after_tag, at, FaultKind::FixedTruncated { field, needed });
+        }
+        self.push_leaf(at, field, kind, tag_width, Extent::from_width(needed), None);
+        self.cursor = after_tag + u32::from(needed);
+        Ok(())
+    }
+
+    fn len_record<const MINIMAL: bool>(
+        &mut self,
+        at: u32,
+        field: FieldNumber,
+        tag_width: WordWidth,
+    ) -> Result<(), Stop> {
+        let after_tag = at + u32::from(tag_width.as_inner());
+        // SAFETY: zone ends are sealed within the admitted source
+        // (as in `record`).
+        let (declared, prefix_width) = match unsafe {
+            slice::len_word_trusted(self.bytes, usize_of(after_tag), usize_of(self.zone))
+        } {
+            Ok(hit) => hit,
+            Err(fault) => {
+                return self.halt_read(after_tag, at, Stage::LenPrefix { field }, fault);
+            }
+        };
+        if MINIMAL && u32::from(prefix_width) > encoded_len32(declared.as_inner()) {
+            return self.halt(after_tag, at, FaultKind::NonMinimalLen { field });
+        }
+        // SAFETY: the kernel's prefix window admits widths 1..=5.
+        let prefix_width = unsafe { WordWidth::met_unchecked(prefix_width) };
+        let payload_start = after_tag + u32::from(prefix_width.as_inner());
+        // Both terms are admission/class-bounded by i32::MAX, so
+        // the sum stays within u32.
+        let payload_end = payload_start + declared.as_inner();
+        if payload_end > self.zone {
+            let zone_left = self.zone - payload_start;
+            return self.halt(after_tag, at, FaultKind::LenOverrun { field, declared, zone_left });
+        }
+        let advice = self.consult(field);
+        match advice {
+            Advice::Opaque => {
+                self.push_leaf(
+                    at,
+                    field,
+                    RecordKind::Len,
+                    tag_width,
+                    Extent::from_len(declared),
+                    Some(prefix_width),
+                );
+                self.cursor = payload_end;
+                Ok(())
+            }
+            Advice::Speculate if self.at_depth_limit() => {
+                // Too deep to speculate: demote to opaque — not a
+                // document fault (the bytes may well be bytes).
+                self.push_leaf(
+                    at,
+                    field,
+                    RecordKind::Len,
+                    tag_width,
+                    Extent::from_len(declared),
+                    Some(prefix_width),
+                );
+                self.cursor = payload_end;
+                Ok(())
+            }
+            Advice::Commit if self.at_depth_limit() => {
+                self.halt(at, at, FaultKind::DepthExceeded { field, limit: self.limit })
+            }
+            Advice::Speculate | Advice::Commit => {
+                let absorbing = matches!(advice, Advice::Speculate);
+                let row = mint(row_u32(self.rows.len()));
+                self.push_leaf(
+                    at,
+                    field,
+                    RecordKind::Len,
+                    tag_width,
+                    Extent::from_len(declared),
+                    Some(prefix_width),
+                );
+                self.open(row, field, FrameKind::Len, payload_end, absorbing);
+                self.cursor = payload_start;
+                Ok(())
+            }
+        }
+    }
+
+    fn group_open(
+        &mut self,
+        at: u32,
+        field: FieldNumber,
+        tag_width: WordWidth,
+    ) -> Result<(), Stop> {
+        if self.at_depth_limit() {
+            return self.halt(at, at, FaultKind::DepthExceeded { field, limit: self.limit });
+        }
+        let row = mint(row_u32(self.rows.len()));
+        self.push_leaf(at, field, RecordKind::Group, tag_width, Extent::from_width(0), None);
+        // A group inherits its opener's zone: it saves and restores
+        // the same value.
+        self.open(row, field, FrameKind::Group, self.zone, false);
+        self.cursor = at + u32::from(tag_width.as_inner());
+        Ok(())
+    }
+
+    /// The end tag must match the innermost open frame, and that
+    /// frame must be a group (a group never spans a LEN boundary).
+    fn group_close(
+        &mut self,
+        at: u32,
+        found: FieldNumber,
+        tag_width: WordWidth,
+    ) -> Result<(), Stop> {
+        let frame = match self.stack.last() {
+            Some(f) if matches!(f.kind, FrameKind::Group) => *f,
+            _ => return self.halt(at, at, FaultKind::GroupEndOrphan { found }),
+        };
+        if frame.field != found {
+            let kind = FaultKind::GroupEndMismatch { open: frame.field, found };
+            return self.halt(at, at, kind);
+        }
+        self.stack.pop();
+        self.restore(&frame);
+        let idx = frame.row.index();
+        let descendants = row_u32(self.rows.len() - 1 - idx);
+        // SAFETY: frame rows are in-table (as `seal_descendants`).
+        let r = unsafe { self.rows.get_unchecked_mut(idx) };
+        let body_start = r.start.as_inner() + u32::from(r.tag_width.as_inner());
+        // SAFETY: the end tag sits at or after the body start,
+        // admission-bounded — the interior is inside the coordinate
+        // class.
+        r.payload_len = unsafe { Extent::new_unchecked(at - body_start) };
+        r.delim_width = Some(tag_width);
+        r.descendants = descendants;
+        self.cursor = at + u32::from(tag_width.as_inner());
+        Ok(())
+    }
+
+    fn push_leaf(
+        &mut self,
+        at: u32,
+        field: FieldNumber,
+        kind: RecordKind,
+        tag_width: WordWidth,
+        payload_len: Extent,
+        delim_width: Option<WordWidth>,
+    ) {
+        // SAFETY: every caller passes the record head's cursor,
+        // which the run loop holds strictly below the sealed zone
+        // end — inside the admitted input, so the offset is in
+        // class.
+        let start = unsafe { Coord::new_unchecked(at) };
+        self.rows.push(Row {
+            start,
+            payload_len,
+            parent: self.parent_row(),
+            descendants: 0,
+            field,
+            kind,
+            tag_width,
+            delim_width,
+        });
+    }
+
+    /// Stops: clips every open container to the failure's `cut`
+    /// with the same close-time writes as a normal pop, so the row
+    /// table leaves the machine already satisfying every row
+    /// invariant. Groups clip to the boundary (their end tag never
+    /// appeared); LEN rows keep their declared spans (the seal is
+    /// an input fact independent of parse progress).
+    fn clip(mut self, failure: Failure) -> Parts {
+        let cut = failure.cut;
+        while let Some(frame) = self.stack.pop() {
+            match frame.kind {
+                FrameKind::Group => self.clip_group_row(frame.row, cut),
+                FrameKind::Len => self.seal_descendants(frame.row),
+            }
+        }
+        self.finish_at(cut, Some(failure.fault))
+    }
+
+    fn finish(self, fault: Option<Fault>) -> Parts {
+        let end = crate::admission::admitted_u32(self.bytes.len());
+        self.finish_at(end, fault)
+    }
+
+    fn finish_at(self, indexed_end: u32, fault: Option<Fault>) -> Parts {
+        Parts { rows: self.rows.into_boxed_slice(), indexed_end, fault }
+    }
+}
+
+#[cfg(test)]
+mod tests;

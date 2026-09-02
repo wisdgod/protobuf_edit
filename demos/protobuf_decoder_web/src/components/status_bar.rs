@@ -6,7 +6,7 @@ use crate::state::{MessageCatalogState, UiState, WorkspaceState};
 use leptos::html;
 use leptos::oco::Oco;
 use leptos::prelude::*;
-use protobuf_edit::WireType;
+use protobuf_edit::wire::grouped::RecordKind;
 use wasm_bindgen::JsCast;
 
 /// Byte/row/field/highlight counts for the workspace in context.
@@ -45,25 +45,27 @@ pub(crate) fn StatusCounts() -> impl IntoView {
 pub(crate) fn SelectionMeta() -> impl IntoView {
     let workspace = expect_context::<WorkspaceState>();
     let locale = expect_context::<UiState>().locale;
-    let patch_state = workspace.patch_state;
+    let session_state = workspace.session;
     let selected = workspace.selected;
 
     let meta = Memo::new(move |_| {
-        let fid = selected.get()?;
-        patch_state.with(|p| {
-            let patch = p.as_ref()?;
-            let tag = patch.field_tag(fid).ok()?;
-            let local = patch.field_spans(fid).ok().flatten().map(|s| s.field);
-            let root = patch.field_root_spans(fid).ok().flatten().map(|s| s.field);
-            let payload_len = match tag.wire_type() {
-                WireType::Varint => {
-                    patch.varint(fid).ok().map(|v| protobuf_edit::varint::encoded_len64(v) as u32)
+        let handle = selected.get()?;
+        session_state.with(|s| {
+            let session = s.as_ref()?;
+            let n = session.field(handle).ok()?.as_inner();
+            let kind = session.kind(handle).ok()?;
+            // Document coordinates; command-authored rows own no hex.
+            let span = session.span(handle).ok().flatten();
+            let payload_len = match kind {
+                RecordKind::Varint => {
+                    session.varint_word(handle).ok().map(protobuf_edit::varint::encoded_len64)
                 }
-                WireType::Len => patch.bytes(fid).ok().map(|b| b.len() as u32),
-                WireType::I32 => Some(4),
-                WireType::I64 => Some(8),
+                RecordKind::Len => session.payload_bytes(handle).ok().map(|b| b.len() as u32),
+                RecordKind::I32 => Some(4),
+                RecordKind::I64 => Some(8),
+                RecordKind::Group => None,
             };
-            Some((tag.field_number().as_inner(), tag.wire_type(), local, root, payload_len))
+            Some((n, kind, span, payload_len))
         })
     });
 
@@ -71,18 +73,16 @@ pub(crate) fn SelectionMeta() -> impl IntoView {
         <div>
             {move || {
                 let t = locale.get().t();
-                let Some((n, wt, local, root, payload)) = meta.get() else {
+                let Some((n, kind, span, payload)) = meta.get() else {
                     return Oco::Borrowed(t.no_selection);
                 };
-                let mut out = format!("{} {n} ({wt:?})", t.field);
-                for (label, span) in [(t.span, local), (t.root_span, root)] {
-                    match span {
-                        Some(s) => {
-                            let _ = write!(out, " | {label} {}..{}", s.start(), s.end());
-                        }
-                        None => {
-                            let _ = write!(out, " | {label} \u{2014}");
-                        }
+                let mut out = format!("{} {n} ({kind})", t.field);
+                match span {
+                    Some(s) => {
+                        let _ = write!(out, " | {} {}..{}", t.span, s.start(), s.end());
+                    }
+                    None => {
+                        let _ = write!(out, " | {} \u{2014}", t.span);
                     }
                 }
                 match payload {
@@ -205,7 +205,7 @@ pub(crate) fn StatusBar() -> impl IntoView {
                             if workspace.dirty_count.get() == 0 {
                                 !has_current_message()
                             } else {
-                                workspace.patch_state.with(std::option::Option::is_none)
+                                workspace.session.with(std::option::Option::is_none)
                             }
                         }
                     >

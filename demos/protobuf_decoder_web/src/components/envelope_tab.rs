@@ -24,7 +24,7 @@ pub(crate) fn EnvelopeTabView(env: EnvelopeTabState, split_px: RwSignal<f64>) ->
 
     let locale = expect_context::<UiState>().locale;
     let preview = env.preview.clone();
-    let patch_state = preview.patch_state;
+    let session_state = preview.session;
     let raw_bytes = preview.raw_bytes;
 
     let split_ref = NodeRef::<html::Div>::new();
@@ -71,11 +71,7 @@ pub(crate) fn EnvelopeTabView(env: EnvelopeTabState, split_px: RwSignal<f64>) ->
         }
     };
 
-    let field_tree_view = move || {
-        patch_state
-            .with(|p| p.as_ref().map(protobuf_edit::Patch::root))
-            .map(|root| view! { <FieldTree msg=root depth=0 /> })
-    };
+    let field_tree_view = move || view! { <FieldTree parent=None depth=0 /> };
 
     view! {
         <div class="document">
@@ -116,7 +112,9 @@ pub(crate) fn EnvelopeTabView(env: EnvelopeTabState, split_px: RwSignal<f64>) ->
                             <div class="structure">
                                 <div class="field-list" tabindex="0">
                                     <Show
-                                        when=move || patch_state.with(std::option::Option::is_some)
+                                        when=move || {
+                                            session_state.with(std::option::Option::is_some)
+                                        }
                                         fallback=preview_fallback
                                     >
                                         {field_tree_view}

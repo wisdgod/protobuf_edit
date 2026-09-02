@@ -3,14 +3,14 @@ use crate::toast::ToastKind;
 use crate::workspace::{format_user_path, parse_user_path, resolve_user_path};
 use leptos::html;
 use leptos::prelude::*;
-use protobuf_edit::patch::FieldId;
+use protobuf_edit::session::Handle;
 use std::sync::Arc;
 use wasm_bindgen::JsCast;
 
 #[derive(Clone, PartialEq, Eq)]
 struct Crumb {
     label: Arc<str>,
-    field_id: Option<FieldId>,
+    field_id: Option<Handle>,
 }
 
 #[component]
@@ -20,7 +20,7 @@ pub(crate) fn Breadcrumb() -> impl IntoView {
     let toast = ui.toast;
     let locale = ui.locale;
     let read_only = ui.read_only;
-    let patch_state = workspace.patch_state;
+    let session_state = workspace.session;
     let selected = workspace.selected;
     let expanded = workspace.expanded;
     let inspector_open = workspace.inspector_open;
@@ -30,40 +30,40 @@ pub(crate) fn Breadcrumb() -> impl IntoView {
     let input_ref = NodeRef::<html::Input>::new();
 
     let crumbs = Memo::new(move |_| {
-        let selected_field = selected.get();
-        patch_state.with(|p| {
-            let Some(patch) = p.as_ref() else {
+        let selected_handle = selected.get();
+        session_state.with(|s| {
+            let Some(session) = s.as_ref() else {
                 return vec![Crumb { label: Arc::<str>::from("."), field_id: None }];
             };
 
-            let mut chain_fields: Vec<FieldId> = selected_field
-                .map(|fid| {
-                    core::iter::once(fid)
-                        .chain(crate::workspace::ancestor_fields(patch, fid))
+            let mut chain: Vec<Handle> = selected_handle
+                .map(|handle| {
+                    core::iter::once(handle)
+                        .chain(session.ancestors(handle).ok().into_iter().flatten())
                         .collect()
                 })
                 .unwrap_or_default();
-            chain_fields.reverse();
+            chain.reverse();
 
-            let mut out = Vec::with_capacity(chain_fields.len().saturating_add(1));
+            let mut out = Vec::with_capacity(chain.len().saturating_add(1));
             out.push(Crumb { label: Arc::<str>::from("."), field_id: None });
-            for fid in chain_fields {
-                let label = patch.field_tag(fid).map_or_else(
+            for handle in chain {
+                let label = session.field(handle).map_or_else(
                     |_| Arc::<str>::from("?"),
-                    |tag| Arc::<str>::from(tag.field_number().as_inner().to_string()),
+                    |field| Arc::<str>::from(field.as_inner().to_string()),
                 );
-                out.push(Crumb { label, field_id: Some(fid) });
+                out.push(Crumb { label, field_id: Some(handle) });
             }
             out
         })
     });
 
     let current_path = Memo::new(move |_| {
-        patch_state
-            .with(|p| {
-                let patch = p.as_ref()?;
-                let fid = selected.get()?;
-                format_user_path(patch, fid)
+        session_state
+            .with(|s| {
+                let session = s.as_ref()?;
+                let handle = selected.get()?;
+                format_user_path(session, handle)
             })
             .unwrap_or_else(|| ".".to_string())
     });
@@ -98,24 +98,23 @@ pub(crate) fn Breadcrumb() -> impl IntoView {
         }
 
         let mut result = None;
-        patch_state.update(|p| {
-            let Some(patch) = p.as_mut() else {
-                result = Some(Err(protobuf_edit::TreeError::InvalidId));
+        session_state.update(|s| {
+            let Some(session) = s.as_mut() else {
                 return;
             };
-            result = Some(resolve_user_path(patch, &steps));
+            result = Some(resolve_user_path(session, &steps));
         });
 
         match result {
-            Some(Ok(Some((fid, new_expanded)))) => {
+            Some(Ok(Some((handle, new_expanded)))) => {
                 expanded.update(|s| s.extend(new_expanded));
-                selected.set(Some(fid));
+                selected.set(Some(handle));
             }
             Some(Ok(None)) => {
                 toast.show(ToastKind::Alert, format!("Path not found: {input}"));
             }
             Some(Err(e)) => {
-                toast.show(ToastKind::Alert, format!("Path resolution error: {e:?}"));
+                toast.show(ToastKind::Alert, format!("Path resolution error: {e}"));
             }
             None => {
                 toast.show(ToastKind::Alert, "No protobuf loaded.");

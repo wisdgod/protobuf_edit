@@ -1,0 +1,569 @@
+name: CI
+
+on:
+  push:
+    branches: [main, 'feat/**']
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  # One runner carries the whole per-push battery: format, lints,
+  # the native test battery with doctests, and the live write-side
+  # oracle. One suite needs local-only artifacts and is not spelled
+  # here: tests/oracle.rs reads frozen libprotoc observations from
+  # the gitignored /references tree, and it panics by name on a
+  # missing corpus rather than skipping silently. The live oracle's
+  # schema is materialized below because /references is gitignored;
+  # the field numbers are pinned by tests/protoc_live.rs itself. If
+  # protoc cannot be installed the step notes that loudly and the
+  # job passes — an environment refusal is not a library verdict.
+  battery:
+    name: battery (fmt, clippy, tests, live oracle)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: nightly
+          components: clippy, rustfmt
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo fmt --check
+      - run: cargo clippy --all-features --all-targets -- -W clippy::all -W clippy::nursery -W missing_docs -D warnings
+      - name: Unit and integration tests
+        run: cargo test --all-features --lib --test alloc_fault --test auto_traits --test commission --test coordinates --test differential --test fixed_inplace --test fixed_inspect --test fixed_patch --test maintain --test padded_twins --test panic_location --test panic_safety --test parity --test patch_oracle --test reemit --test refit --test replay_convert_judges --test replay_judges --test replay_rewrite_judges --test replay_splice_judges --test substrate_presence --test transfer_online --test transfer_static --test width_law
+      - name: Doctests
+        run: cargo test --all-features --doc
+      - name: Release battery
+        run: cargo test --release --all-features --lib --test alloc_fault --test auto_traits --test commission --test coordinates --test differential --test fixed_inplace --test fixed_inspect --test fixed_patch --test maintain --test padded_twins --test panic_location --test panic_safety --test parity --test patch_oracle --test reemit --test refit --test replay_convert_judges --test replay_judges --test replay_rewrite_judges --test replay_splice_judges --test substrate_presence --test transfer_online --test transfer_static --test width_law
+      - name: The 32-bit layout gate (wasm32 check)
+        run: |
+          rustup target add wasm32-unknown-unknown
+          cargo check --target wasm32-unknown-unknown --all-features
+      - name: The README's counts face the compiled suite
+        run: |
+          tests=$(cargo test --all-features --lib --test alloc_fault --test auto_traits --test commission --test coordinates --test differential --test fixed_inplace --test fixed_inspect --test fixed_patch --test maintain --test oracle --test padded_twins --test panic_location --test panic_safety --test parity --test patch_oracle --test protoc_live --test reemit --test refit --test replay_convert_judges --test replay_judges --test replay_rewrite_judges --test replay_splice_judges --test substrate_presence --test transfer_online --test transfer_static --test width_law -- --list 2>/dev/null | grep -c ': test$')
+          docs=$(cargo test --all-features --doc -- --list 2>/dev/null | grep -c ': test$')
+          claim_tests=$(grep -oP '\b\K[0-9]+(?= unit and integration tests)' README.md)
+          claim_docs=$(grep -oP 'plus \K[0-9]+(?= doctests)' README.md)
+          echo "suite: $tests tests + $docs doctests; README claims: $claim_tests + $claim_docs"
+          test "$tests" -eq "$claim_tests"
+          test "$docs" -eq "$claim_docs"
+          # `--list` counts compiled tests; an ignored one would be
+          # listed yet never run, so the battery's green would
+          # over-claim. Pin zero ignored: the listed count is the
+          # run count.
+          ignored=$(cargo test --all-features --lib --test alloc_fault --test auto_traits --test commission --test coordinates --test differential --test fixed_inplace --test fixed_inspect --test fixed_patch --test maintain --test oracle --test padded_twins --test panic_location --test panic_safety --test parity --test patch_oracle --test protoc_live --test reemit --test refit --test replay_convert_judges --test replay_judges --test replay_rewrite_judges --test replay_splice_judges --test substrate_presence --test transfer_online --test transfer_static --test width_law -- --list --ignored 2>/dev/null | grep -c ': test$' || true)
+          echo "ignored: $ignored"
+          test "$ignored" -eq 0
+      - name: Install protoc (best effort)
+        id: protoc
+        run: |
+          if sudo apt-get update && sudo apt-get install -y protobuf-compiler; then
+            echo "installed=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "installed=false" >> "$GITHUB_OUTPUT"
+            echo "::warning::protoc could not be installed; the live write-side oracle was not exercised"
+          fi
+      - name: Materialize the live-oracle schema
+        if: steps.protoc.outputs.installed == 'true'
+        run: |
+          mkdir -p references/vectors
+          cat > references/vectors/wire.proto <<'EOF'
+          // Schema for schema-aware vector cases (decode/encode via protoc).
+          // Field numbers are load-bearing: cases in cases.toml hard-code the tags.
+          syntax = "proto3";
+
+          message M {
+            int64 v = 1;
+            string s = 2;
+            M m = 3;
+            sint32 z32 = 4;
+            sint64 z64 = 5;
+            repeated int32 r = 6;
+            M2 sub = 7;
+          }
+
+          message M2 {
+            int64 a = 1;
+            int64 b = 2;
+          }
+          EOF
+      - name: Run the live oracle
+        if: steps.protoc.outputs.installed == 'true'
+        run: cargo test --all-features --test protoc_live
+
+  # All feature cells on one runner, sequentially: every
+  # single-feature cell plus the no-feature cell under `cargo check
+  # --all-targets -D warnings`, then the same cells plus
+  # all-features under rustdoc -D warnings, each cell also
+  # executing its doctests — `cargo doc` renders examples but never
+  # compiles them, so the doctest run is what proves a cell's
+  # examples ride only the machines that cell enables. A cell
+  # regresses when a feature gate, a doc link, or a doc example's
+  # gate moves, and only the priced cells carry (two small)
+  # dependencies, so a virgin-target check costs seconds — the
+  # coverage needs the cells, not a runner per cell. Each check
+  # cell gets a fresh target directory on purpose: cross-cell
+  # artifacts must not mask a cfg hole. Each check compiles every
+  # test target and the bench harness, so a test item, import, or
+  # helper whose uses are narrower than its cell's build goes red
+  # here (the battery's all-features build cannot see that). The
+  # cell list is the manifest's feature declaration order, and the
+  # coordinate census holds both arrays equal to that declaration
+  # list, so a feature cannot land unenrolled.
+  cells:
+    name: feature cells (109 check --all-targets + 110 doc + 109 doctest)
+    runs-on: ubuntu-latest
+    env:
+      RUSTFLAGS: -D warnings
+      RUSTDOCFLAGS: -D warnings
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: nightly
+      - name: Check every cell on a virgin target
+        run: |
+          cells=("" wire-grouped wire-groupless varint-slice varint-carry scalar replay-source select-grouped select-groupless traverse-grouped traverse-groupless inspect-grouped inspect-groupless fixed-inspect-grouped fixed-inspect-groupless retain-grouped retain-groupless route-grouped route-groupless scan-grouped scan-groupless collect-grouped collect-groupless survey-grouped survey-groupless rewrite-grouped rewrite-groupless inplace-grouped inplace-groupless fixed-inplace-grouped fixed-inplace-groupless convert-grouped convert-groupless splice-grouped splice-groupless patch-grouped patch-groupless transfer-patch-grouped transfer-patch-groupless fixed-patch-grouped fixed-patch-groupless markup-grouped markup-groupless transfer-markup-grouped transfer-markup-groupless adopt-grouped adopt-groupless transfer-adopt-grouped transfer-adopt-groupless draft-grouped draft-groupless transfer-draft-grouped transfer-draft-groupless amend-grouped amend-groupless transfer-amend-grouped transfer-amend-groupless review-grouped review-groupless transfer-review-grouped transfer-review-groupless intake-grouped intake-groupless transfer-intake-grouped transfer-intake-groupless session-grouped session-groupless priced-session-grouped priced-session-groupless transfer-session-grouped transfer-session-groupless priced-transfer-session-grouped priced-transfer-session-groupless rewire-grouped rewire-groupless transcode-grouped transcode-groupless transfer-rewrite-grouped transfer-rewrite-groupless transfer-splice-grouped transfer-splice-groupless stream-adopt-grouped stream-adopt-groupless transfer-stream-adopt-grouped transfer-stream-adopt-groupless stream-draft-grouped stream-draft-groupless transfer-stream-draft-grouped transfer-stream-draft-groupless stream-intake-grouped stream-intake-groupless transfer-stream-intake-grouped transfer-stream-intake-groupless replay-rewrite-grouped replay-rewrite-groupless replay-convert-grouped replay-convert-groupless replay-splice-grouped replay-splice-groupless overhaul-grouped overhaul-groupless maintain-grouped maintain-groupless refit-grouped refit-groupless commission-grouped commission-groupless construct-grouped construct-groupless)
+          for f in "${cells[@]}"; do
+            echo "::group::check ${f:-no features}"
+            rm -rf target-cell
+            if [ -z "$f" ]; then
+              CARGO_TARGET_DIR=target-cell cargo check --no-default-features --all-targets
+            else
+              CARGO_TARGET_DIR=target-cell cargo check --no-default-features --features "$f" --all-targets
+            fi
+            echo "::endgroup::"
+          done
+      - name: Doc and doctest every cell and the all-features closure
+        run: |
+          cells=("" wire-grouped wire-groupless varint-slice varint-carry scalar replay-source select-grouped select-groupless traverse-grouped traverse-groupless inspect-grouped inspect-groupless fixed-inspect-grouped fixed-inspect-groupless retain-grouped retain-groupless route-grouped route-groupless scan-grouped scan-groupless collect-grouped collect-groupless survey-grouped survey-groupless rewrite-grouped rewrite-groupless inplace-grouped inplace-groupless fixed-inplace-grouped fixed-inplace-groupless convert-grouped convert-groupless splice-grouped splice-groupless patch-grouped patch-groupless transfer-patch-grouped transfer-patch-groupless fixed-patch-grouped fixed-patch-groupless markup-grouped markup-groupless transfer-markup-grouped transfer-markup-groupless adopt-grouped adopt-groupless transfer-adopt-grouped transfer-adopt-groupless draft-grouped draft-groupless transfer-draft-grouped transfer-draft-groupless amend-grouped amend-groupless transfer-amend-grouped transfer-amend-groupless review-grouped review-groupless transfer-review-grouped transfer-review-groupless intake-grouped intake-groupless transfer-intake-grouped transfer-intake-groupless session-grouped session-groupless priced-session-grouped priced-session-groupless transfer-session-grouped transfer-session-groupless priced-transfer-session-grouped priced-transfer-session-groupless rewire-grouped rewire-groupless transcode-grouped transcode-groupless transfer-rewrite-grouped transfer-rewrite-groupless transfer-splice-grouped transfer-splice-groupless stream-adopt-grouped stream-adopt-groupless transfer-stream-adopt-grouped transfer-stream-adopt-groupless stream-draft-grouped stream-draft-groupless transfer-stream-draft-grouped transfer-stream-draft-groupless stream-intake-grouped stream-intake-groupless transfer-stream-intake-grouped transfer-stream-intake-groupless replay-rewrite-grouped replay-rewrite-groupless replay-convert-grouped replay-convert-groupless replay-splice-grouped replay-splice-groupless overhaul-grouped overhaul-groupless maintain-grouped maintain-groupless refit-grouped refit-groupless commission-grouped commission-groupless construct-grouped construct-groupless)
+          for f in "${cells[@]}"; do
+            echo "::group::doc ${f:-no features}"
+            if [ -z "$f" ]; then
+              cargo doc --no-deps --no-default-features
+              cargo test --doc --no-default-features
+            else
+              cargo doc --no-deps --no-default-features --features "$f"
+              cargo test --doc --no-default-features --features "$f"
+            fi
+            echo "::endgroup::"
+          done
+          echo "::group::doc --all-features"
+          cargo doc --no-deps --all-features
+          echo "::endgroup::"
+      # The roster reconciliation: rustdoc JSON reads the compiled
+      # crate, so it sees every public item through macro expansion —
+      # the vantage the census's text walk lacks. The judge holds the
+      # census's own mint (written by the env-gated dump, before any
+      # census verdict) equal to the compiled public surface in four
+      # directions; the dependency graph is already hot from the doc
+      # cells above, so the JSON pass re-documents only this crate.
+      - name: Reconcile the roster against rustdoc JSON
+        run: |
+          cargo rustdoc --all-features -- -Zunstable-options --output-format json
+          COORDINATES_DUMP="$RUNNER_TEMP/coordinates.dump" cargo test --all-features --test coordinates every_public_type_faces_the_auto_trait_matrix
+          python3 probes/roster_reconcile/judge.py target/doc/protobuf_edit.json "$RUNNER_TEMP/coordinates.dump"
+      # The base-identity judge: the eleven base cells owe none of the
+      # transfer capability, and the judgment is a measurement, not
+      # a record — each cell expands feature-off (both dialects, no
+      # transfer feature), the emitted `pub mod <cell>` region is
+      # sliced out by column-zero brace matching (macro definition
+      # text emits nothing and is excluded), and the region must
+      # carry zero hits on the transfer vocabulary. Name identity
+      # is not region identity: the layers below judge names and
+      # name counts, and byte-level region identity has no judge in
+      # any venue (derivation is preferred over checked-in digests
+      # because a digest reddens on expansion-format drift alone).
+      # Three peer layers:
+      # - The hand-listed terms name the capability's faces so a
+      #   hit reads as a diagnosis — and they are the one layer
+      #   that can name a transfer helper whose identifier the base
+      #   cell also defines: a bleed of such a name inflates both
+      #   same-run expansions identically and cancels out of every
+      #   derivation, so the hand list stays a standing peer, not
+      #   a subordinate.
+      # - The derived layer: the cell's transfer sibling expands in
+      #   the same run; every item name it defines beyond the base
+      #   cell's own definitions — fns, types, traits, mods,
+      #   consts, statics, type aliases, and enum variants — is
+      #   vocabulary, and the base region's emitted code must carry
+      #   zero of them, so a newly named transfer helper is caught
+      #   without any list edit.
+      # - The collision layer: names defined by both sides are
+      #   judged by exact occurrence-count equality over the base
+      #   region alone — the transfer build's slice drops its
+      #   nested transfer modules first, so the two builds' emission
+      #   of the same region is compared name by name, and a
+      #   feature-gated occurrence bleeding outside the transfer
+      #   module moves a count and reds. (A bleed present in both
+      #   builds cancels here too; that class is the hand list's.)
+      # Every counter self-checks on every run: the hand terms are
+      # planted into a copy of the region and must count; a
+      # synthetic fn, const, and enum variant are planted into a
+      # copy of the sibling expansion and must flow through
+      # derivation and counting. The region floor and the
+      # derivation floor catch a slicer or extractor that silently
+      # loses its input.
+      - name: The eleven base cells emit zero transfer vocabulary
+        run: |
+          # One collation for every sort/comm/join below: the name
+          # sets must pair identically in any venue's locale.
+          export LC_ALL=C
+          base_terms=(PayloadTarget copy_record_from copy_record copy_payload move_record move_payload "Base::Src" Imported import_slot import_zone import_ SourceRecord SourcePayload "Edit::Moved" "Moved {" "EditStatus::Moved" SrcValue FLAG_ALIAS BASE_SRC MoveIntoSource SourceModified TransferFault)
+          base_cells=(patch markup adopt draft amend review intake session stream_adopt stream_draft stream_intake)
+          expand_cell() {
+            CARGO_TARGET_DIR=target-expand cargo rustc --lib --no-default-features \
+              --features "$1" --quiet -- -Zunpretty=expanded
+          }
+          slice_mod() {
+            awk -v open="pub mod $1 {" '$0 == open {inr=1} inr {print} inr && $0 == "}" {inr=0}'
+          }
+          # The transfer machine lives in `mod transfer` blocks —
+          # one `pub mod transfer` per dialect plus the cell's
+          # `pub(crate) mod transfer` facade stratum; dropping them
+          # leaves the transfer build's own emission of the base
+          # region. The pretty-printer indents a module's closing
+          # brace to its opening column, so each block ends at the
+          # first brace on the opening line's indent.
+          drop_transfer() {
+            awk '
+              skip { if ($0 == close_line) { skip = 0 }; next }
+              /^[[:space:]]*pub(\(crate\))? mod transfer \{$/ {
+                close_line = $0
+                sub(/pub(\(crate\))? mod transfer \{$/, "}", close_line)
+                skip = 1
+                next
+              }
+              { print }
+            '
+          }
+          # Emitted code only: attributes (the pretty-printer wraps
+          # long doc attrs over continuation lines, so a line filter
+          # alone leaks their prose) and comments drop; everything
+          # the compiler treats as code stays.
+          code_of() {
+            awk '
+              skip { if ($0 ~ /\]$/) { skip = 0 }; next }
+              /^[[:space:]]*#!?\[.*\]$/ { next }
+              /^[[:space:]]*#!?\[/ && $0 !~ /\]/ { skip = 1; next }
+              /^[[:space:]]*\/\// { next }
+              { print }
+            '
+          }
+          variants_of() {
+            awk '
+              !inenum {
+                if ($0 ~ /(^|[[:space:]])enum [A-Za-z_][A-Za-z0-9_]*[^{]*\{[[:space:]]*$/) { inenum = 1; depth = 1 }
+                next
+              }
+              {
+                if (depth == 1 && $0 ~ /^[[:space:]]*[A-Za-z_][A-Za-z0-9_]*[[:space:]]*(\{|\(|,|$)/) {
+                  name = $1
+                  sub(/[^A-Za-z0-9_].*$/, "", name)
+                  if (name ~ /^[A-Za-z_][A-Za-z0-9_]*$/) { print name }
+                }
+                depth += gsub(/\{/, "{") - gsub(/\}/, "}")
+                if (depth <= 0) { inenum = 0 }
+              }
+            '
+          }
+          defs_of() {
+            local text
+            # Definitions live in code lines, and each name anchors
+            # on the item form's own following syntax, so prose can
+            # donate nothing.
+            text=$(code_of)
+            {
+              printf '%s\n' "$text" | grep -oP '\bfn\s+\K[A-Za-z_]\w*(?=\s*[(<])'
+              printf '%s\n' "$text" | grep -oP '\b(?:struct|enum|union|trait)\s+\K[A-Za-z_]\w*(?=\s*[{;(<])'
+              printf '%s\n' "$text" | grep -oP '\bmod\s+\K[A-Za-z_]\w*(?=\s*[{;])'
+              printf '%s\n' "$text" | grep -oP '\btype\s+\K[A-Za-z_]\w*(?=\s*[=<;])'
+              printf '%s\n' "$text" | grep -oP '\b(?:const|static)\s+(?:mut\s+)?\K[A-Za-z_]\w*(?=\s*:)'
+              printf '%s\n' "$text" | variants_of
+            } | grep -vx '_' | sort -u
+          }
+          for cell in "${base_cells[@]}"; do
+            feat="${cell//_/-}"
+            region=$(expand_cell "$feat-grouped,$feat-groupless" | slice_mod "$cell")
+            lines=$(printf '%s' "$region" | wc -l)
+            [ "$lines" -ge 1000 ] || {
+              echo "base identity: $cell sliced to $lines lines — the slicer lost the emitted module" >&2
+              exit 1
+            }
+            red=0
+            for t in "${base_terms[@]}"; do
+              n=$(printf '%s' "$region" | grep -cF -- "$t" || true)
+              [ "${n:-0}" -eq 0 ] || { echo "base identity RED: $cell emits '$t' ×$n" >&2; red=1; }
+            done
+            [ "$red" -eq 0 ] || exit 1
+            planted="$region
+          planted: ${base_terms[*]}"
+            for t in "${base_terms[@]}"; do
+              n=$(printf '%s' "$planted" | grep -cF -- "$t" || true)
+              [ "${n:-0}" -ge 1 ] || {
+                echo "base identity: the planted term '$t' did not redden the counter" >&2
+                exit 1
+              }
+            done
+            sibling=$(expand_cell "transfer-$feat-grouped,transfer-$feat-groupless" | slice_mod "$cell")
+            derived=$(comm -23 <(printf '%s\n' "$sibling" | defs_of) <(printf '%s\n' "$region" | defs_of))
+            dcount=$(printf '%s\n' "$derived" | grep -c . || true)
+            [ "$dcount" -ge 10 ] || {
+              echo "base identity: $cell derived only $dcount transfer names — the derivation lost its input" >&2
+              exit 1
+            }
+            hits=$(printf '%s\n' "$region" | code_of | grep -owF -f <(printf '%s\n' "$derived") | sort | uniq -c || true)
+            [ -z "$hits" ] || {
+              echo "base identity RED: $cell emits derived transfer names:" >&2
+              echo "$hits" >&2
+              exit 1
+            }
+            colliding=$(comm -12 <(printf '%s\n' "$sibling" | defs_of) <(printf '%s\n' "$region" | defs_of))
+            ccount=$(printf '%s\n' "$colliding" | grep -c . || true)
+            [ "$ccount" -ge 10 ] || {
+              echo "base identity: $cell collided only $ccount names — the collision set lost its input" >&2
+              exit 1
+            }
+            tx_base=$(printf '%s\n' "$sibling" | drop_transfer)
+            [ "$(printf '%s' "$tx_base" | wc -l)" -lt "$(printf '%s' "$sibling" | wc -l)" ] || {
+              echo "base identity: $cell: drop_transfer removed nothing — the transfer module moved" >&2
+              exit 1
+            }
+            off_counts=$(printf '%s\n' "$region" | code_of | grep -owF -f <(printf '%s\n' "$colliding") | sort | uniq -c | awk '{print $2, $1}' | sort)
+            on_counts=$(printf '%s\n' "$tx_base" | code_of | grep -owF -f <(printf '%s\n' "$colliding") | sort | uniq -c | awk '{print $2, $1}' | sort)
+            moved=$(join -a1 -a2 -e 0 -o 0,1.2,2.2 <(printf '%s\n' "$off_counts") <(printf '%s\n' "$on_counts") | awk '$2 != $3 {print "  " $1 ": " $2 " feature-off vs " $3 " feature-on"}')
+            [ -z "$moved" ] || {
+              echo "base identity RED: $cell: the transfer feature moved shared-name occurrences inside the base region:" >&2
+              echo "$moved" >&2
+              exit 1
+            }
+            bled=$(printf '%s\n' "$on_counts" | awk 'NR == 1 {print $1, $2 + 1; next} {print}')
+            planted_move=$(join -a1 -a2 -e 0 -o 0,1.2,2.2 <(printf '%s\n' "$off_counts") <(printf '%s\n' "$bled") | awk '$2 != $3')
+            [ -n "$planted_move" ] || {
+              echo "base identity: the planted count shift did not redden the equality detector" >&2
+              exit 1
+            }
+            plant_src="$sibling
+          fn __planted_probe()
+          const __PLANTED_CONST: u8 = 0;
+          enum __PlantedEnum {
+              __PlantedVariant,
+          }"
+            derived_planted=$(comm -23 <(printf '%s\n' "$plant_src" | defs_of) <(printf '%s\n' "$region" | defs_of))
+            for p in __planted_probe __PLANTED_CONST __PlantedEnum __PlantedVariant; do
+              printf '%s\n' "$derived_planted" | grep -qx "$p" || {
+                echo "base identity: the derivation lost the planted definition '$p'" >&2
+                exit 1
+              }
+            done
+            n=$(printf '%s\n__planted_probe() __PLANTED_CONST __PlantedVariant\n' "$region" | code_of | grep -owF -f <(printf '%s\n' "$derived_planted") | grep -c '__[Pp][Ll][Aa][Nn][Tt]' || true)
+            [ "${n:-0}" -ge 3 ] || {
+              echo "base identity: the planted derived names did not redden the counter (saw $n of 3)" >&2
+              exit 1
+            }
+            echo "base identity ok: $cell ($lines lines, ${#base_terms[@]} terms x 0, $dcount derived names x 0, $ccount shared names count-identical)"
+          done
+      # The priced-crossing legs: the crossing feature is exactly
+      # the transfer baseline plus its own machine. With the
+      # priced-session feature off, a priced-transfer build must
+      # carry no base-priced type; with the priced-transfer feature
+      # off, the transfer baseline must carry no priced-transfer
+      # type. Both vocabularies derive in-run from the expansions'
+      # nominal type names (methods are excluded: both priced doors
+      # share a name by design). Anchors pin the derivations to the
+      # machines they must contain, and a planted type must flow
+      # through the same pipeline.
+      - name: The priced crossing stays off its baselines
+        run: |
+          expand_cell() {
+            CARGO_TARGET_DIR=target-expand cargo rustc --lib --no-default-features \
+              --features "$1" --quiet -- -Zunpretty=expanded
+          }
+          slice_mod() {
+            awk -v open="pub mod $1 {" '$0 == open {inr=1} inr {print} inr && $0 == "}" {inr=0}'
+          }
+          types_of() {
+            grep -oP '\b(?:struct|enum|union|trait)\s+\K[A-Za-z_]\w*' | sort -u
+          }
+          code_of() { grep -Ev '^[[:space:]]*(#!?\[doc|//)'; }
+          s_base=$(expand_cell "session-grouped,session-groupless" | slice_mod session)
+          s_tx=$(expand_cell "transfer-session-grouped,transfer-session-groupless" | slice_mod session)
+          s_pr=$(expand_cell "priced-session-grouped,priced-session-groupless" | slice_mod session)
+          s_ptx=$(expand_cell "priced-transfer-session-grouped,priced-transfer-session-groupless" | slice_mod session)
+          for r in s_base s_tx s_pr s_ptx; do
+            lines=$(printf '%s' "${!r}" | wc -l)
+            [ "$lines" -ge 1000 ] || { echo "priced crossing: $r sliced to $lines lines" >&2; exit 1; }
+          done
+          priced_only=$(comm -23 <(printf '%s\n' "$s_pr" | types_of) <(printf '%s\n' "$s_base" | types_of))
+          ptx_only=$(comm -23 <(printf '%s\n' "$s_ptx" | types_of) <(printf '%s\n' "$s_tx" | types_of))
+          # The frame and fault names recur inside the crossing's own
+          # machine module by design (each machine invocation declares
+          # its own), so only the base machine's name separates the
+          # two priced cells. The anchor keeps that name honest
+          # against renames: it must still be a derived base-priced
+          # type before it is counted.
+          printf '%s\n' "$priced_only" | grep -qx 'PricedSession' || {
+            echo "priced crossing: the derivation lost PricedSession" >&2
+            exit 1
+          }
+          printf '%s\n' "$ptx_only" | grep -qx 'PricedTransferSession' || {
+            echo "priced crossing: the derivation lost PricedTransferSession" >&2
+            exit 1
+          }
+          n=$(printf '%s\n' "$s_ptx" | code_of | grep -cw -- 'PricedSession' || true)
+          [ "${n:-0}" -eq 0 ] || {
+            echo "priced crossing RED: the priced-transfer build carries the base priced machine (PricedSession ×$n)" >&2
+            exit 1
+          }
+          hits=$(printf '%s\n' "$s_tx" | code_of | grep -owF -f <(printf '%s\n' "$ptx_only") | sort | uniq -c || true)
+          [ -z "$hits" ] || {
+            echo "priced crossing RED: the transfer baseline carries priced-transfer types:" >&2
+            echo "$hits" >&2
+            exit 1
+          }
+          planted=$(comm -23 <(printf '%s\nstruct __PlantedProbe\n' "$s_pr" | types_of) <(printf '%s\n' "$s_base" | types_of))
+          printf '%s\n' "$planted" | grep -qx '__PlantedProbe' || {
+            echo "priced crossing: the derivation lost the planted type" >&2
+            exit 1
+          }
+          n=$(printf '%s\n__PlantedProbe\n' "$s_ptx" | code_of | grep -owF -f <(printf '%s\n' "$planted") | grep -c '__PlantedProbe' || true)
+          [ "${n:-0}" -ge 1 ] || {
+            echo "priced crossing: the planted type did not redden the counter" >&2
+            exit 1
+          }
+          echo "priced crossing ok: the base priced machine x 0 in priced-transfer; $(printf '%s\n' "$ptx_only" | grep -c .) priced-transfer types x 0 in the baseline"
+
+  # The fixed-scratch family's feature-form judge: a no_std,
+  # no-main consumer with only the fixed cells enabled and no
+  # #[global_allocator] must build for a bare-metal target — the
+  # allocator link obligation is billed by crate-graph membership,
+  # so this one build mechanically enforces the gated alloc crate,
+  # the strata's gated alloc faces, and the cells' no-implication
+  # rule, with no trusted checklist. The judge carries its own
+  # controls: the allocation-free heap cell must keep the build
+  # green (gate tightness), and one allocating heap cell must fail
+  # naming the allocator obligation (four parts, judge.sh).
+  no-alloc-consumer:
+    name: no-alloc consumer (fixed cells, bare metal)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: nightly
+          targets: x86_64-unknown-none
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: probes/no_alloc_consumer
+      - run: probes/no_alloc_consumer/judge.sh
+      # The gate's necessity sweep, the mechanical inverse of the
+      # judge above: every feature the alloc gate bills must NEED
+      # the alloc crate. The gate list is parsed from src/lib.rs in
+      # the same run (no hand mirror), `extern crate alloc` is
+      # commented out of this job's disposable checkout, and every
+      # billed cell must then fail to check, naming the alloc
+      # resolution — a billed cell that still compiles is an
+      # over-billed consumer and reds. Budget: one shared target
+      # dir, ~55 crate-only checks (dependencies build once), well
+      # under the cells job's 95 virgin-dir checks. Runs last: the
+      # checkout is mutated.
+      - name: Every billed cell needs the alloc crate
+        run: |
+          gate=$(awk '/^#\[cfg\(any\(/{buf=""; live=1} live{buf=buf $0 "\n"} /^\)\)\]$/{live=0} /^extern crate alloc;$/{printf "%s" , buf; exit}' src/lib.rs)
+          feats=$(printf '%s' "$gate" | grep -oP 'feature = "\K[a-z0-9-]+')
+          count=$(printf '%s\n' "$feats" | grep -c .)
+          [ "$count" -ge 40 ] || {
+            echo "alloc sweep: parsed only $count gated features — the parser lost the gate" >&2
+            exit 1
+          }
+          sed -i 's/^extern crate alloc;$/\/\/ extern crate alloc;/' src/lib.rs
+          grep -q '^// extern crate alloc;$' src/lib.rs || {
+            echo "alloc sweep: the scratch mutation did not land" >&2
+            exit 1
+          }
+          for f in $feats; do
+            if out=$(cargo check --no-default-features --features "$f" --quiet 2>&1); then
+              echo "alloc sweep RED: billed cell $f compiles without the alloc crate — the gate over-bills" >&2
+              exit 1
+            fi
+            printf '%s' "$out" | grep -q 'alloc' || {
+              echo "alloc sweep: $f refused for a reason other than the alloc crate:" >&2
+              printf '%s\n' "$out" >&2
+              exit 1
+            }
+          done
+          echo "alloc sweep ok: all $count billed cells need the alloc crate"
+
+  # Review-boundary judges: they sit on pull requests and manual
+  # dispatch, not on every push. The locally run canonical Miri set
+  # is the authority; this job is the clean-machine regression
+  # sentinel. In scope: the library tests and the allocator-fault,
+  # panic-location, and re-emission suites. Out of scope, each for
+  # a stated reason: oracle (corpus lives in the gitignored
+  # /references tree), parity (an exhaustive sweep, infeasible
+  # under the interpreter), protoc_live (spawns processes,
+  # unsupported under Miri).
+  miri:
+    name: miri (strict provenance)
+    if: github.event_name != 'push'
+    runs-on: ubuntu-latest
+    env:
+      MIRIFLAGS: -Zmiri-strict-provenance -Zmiri-disable-isolation
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: nightly
+          components: miri, rust-src
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo miri setup
+      # The canonical Miri set is enumerated once, in the README's
+      # Verification section; this list is that set minus the corpus
+      # oracle (its fixtures are untracked and absent on CI). The
+      # three replay judge suites are deliberately absent: the
+      # replay cells' whole unsafe surface is lib-level and rides
+      # the --lib run (147 rows measured green in 60 s scoped);
+      # the integration layer is counting-source byte budgets and
+      # buffered-twin differentials — native battery work with no
+      # pointer obligations of its own.
+      - run: cargo miri test --all-features --lib --test alloc_fault --test differential --test padded_twins --test panic_location --test panic_safety --test patch_oracle --test reemit --test substrate_presence --test transfer_online --test transfer_static
+      # The fixed suites' Miri obligation is the named carve, lane,
+      # store, and walk-bound rows below (their in-module lib rows
+      # ride the --lib run above). The differential and
+      # twin-identity rows run native in the battery instead:
+      # twin_identity_groupless alone exceeds 560 s under the
+      # interpreter, so a whole-suite enrollment would time out
+      # rather than judge. Measured cost of the named set under
+      # strict provenance: fixed_inplace 4 rows in 29 s,
+      # fixed_patch 9 rows in 4 s. fixed_inspect's peak row is the
+      # unwinding-speculation case: the dispose order (registers →
+      # path → stack → rows, the store lane's truncation
+      # precondition) runs under the interpreter there.
+      - run: cargo miri test --all-features --test fixed_inplace -- --exact adversarial_shapes_stay_inside_the_derived_bounds carve_honesty_holds_at_the_boundary_and_any_address the_write_lane_sweep_refuses_every_short_plan_and_lands_the_exact_one the_grouped_write_lane_sweep_covers_the_pair
+      - run: cargo miri test --all-features --test fixed_inspect -- --exact carve_honesty::bytes_is_the_exact_boundary exhaustion::one_short_refuses_at_the_peak peak::speculation_peak_governs_the_plan batteries::grouped_clip_survives_the_boundary
+      - run: cargo miri test --all-features --test fixed_patch -- --exact carve_honesty::bytes_is_the_exact_boundary exhaustion::rows_exhaust_at_open exhaustion::rows_exhaust_at_descend exhaustion::words_exhaust_and_resets_ride exhaustion::payload_lanes_exhaust exhaustion::faults_exhaust_without_parking exhaustion::abandoned_frames_reclaim_bytes exhaustion::sized_frames_hold_their_word batteries::grouped_depth_refuses_at_scan
+
+  # Smoke only: the bench harness must build and run to completion.
+  # Numbers on shared runners are not comparable and are not judged.
+  bench-smoke:
+    name: bench (smoke)
+    if: github.event_name != 'push'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: nightly
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo bench --features adopt-grouped,collect-grouped,collect-groupless,construct-grouped,convert-groupless,inplace-grouped,inplace-groupless,inspect-grouped,maintain-grouped,maintain-groupless,overhaul-grouped,patch-grouped,patch-groupless,priced-session-grouped,priced-transfer-session-grouped,replay-convert-grouped,replay-convert-groupless,retain-grouped,retain-groupless,rewire-grouped,rewrite-grouped,rewrite-groupless,route-grouped,scan-grouped,scan-groupless,select-grouped,session-grouped,splice-grouped,transcode-grouped,traverse-grouped

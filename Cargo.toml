@@ -3,27 +3,318 @@ name = "protobuf_edit"
 version = "0.0.0"
 edition = "2024"
 authors = ["wisdgod <nav@wisdgod.com>"]
-description = "A low-level, high-performance library for inspecting and editing raw Protocol Buffers binary data without a schema."
+description = "Inspect, edit, construct, scan, traverse, rewrite, and transcode raw Protocol Buffers without a schema."
 license = "Apache-2.0"
 repository = "https://github.com/wisdgod/protobuf_edit"
 documentation = "https://docs.rs/protobuf_edit"
 keywords = ["protobuf", "protocol-buffers", "binary", "parser", "no-schema"]
-categories = ["parser-implementations", "encoding", "development-tools::debugging"]
+categories = ["parser-implementations", "encoding"]
 
+# The default feature set is empty; without this docs.rs would show
+# only the unconditional strata and hide every scenario module.
+[package.metadata.docs.rs]
+all-features = true
+
+# One feature per scenario cell; features are strictly additive (no
+# public type's shape moves with any combination — the vocabulary
+# and theorem strata are unconditional and scenario modules share no
+# public types). Declaration order is the lattice's enumeration
+# order — axis-lexicographic under the crate root's axis sequence
+# and the recorded pole orders, exterior last — derived and enforced
+# by the coordinate census (tests/coordinates.rs).
 [features]
-default = ["nightly"]
-nightly = [
-  "hashbrown/nightly",
-  "rustc-hash/nightly",
+default = []
+# Direct substrate selection for hand-rolled consumers: each names
+# one conditional leaf of the substrate strata — a dialect table,
+# a reading kernel, or the scalar matrix. The scenario features
+# below pull the leaves they consume through their own gates;
+# these exist so a consumer composing the substrate by hand pays
+# for exactly the leaves it names. Empty implication lists by
+# design: a leaf implies nothing.
+wire-grouped = []
+wire-groupless = []
+varint-slice = []
+varint-carry = []
+scalar = []
+# The stable-replay supply stratum: the sequential-repeatable
+# source contract, its walk vocabulary, and the slice-backed
+# reference source — one conditional stratum consumed by every
+# replay cell, selectable directly for hand-rolled composition.
+replay-source = []
+# The path-program read selector pair.
+select-grouped = []
+select-groupless = []
+# The borrowed single-pass traversal pair (dynamic-decode substrate).
+traverse-grouped = []
+traverse-groupless = []
+# The eager schema-less inspector over one buffered message; the
+# groupless dialect refuses group codes as a capability class.
+inspect-grouped = []
+inspect-groupless = []
+# The fixed-scratch inspector pair: the same eager whole-tree
+# queries with the row arena and the parse's stacks carved from one
+# caller slab under a capacity contract — zero allocator traffic,
+# exhaustion a deterministic refusal. No implication onto the heap
+# inspect cell.
+fixed-inspect-grouped = []
+fixed-inspect-groupless = []
+# The self-contained owned inspector pair (the detachable,
+# Send + Sync inspection product over a moved-in buffer).
+retain-grouped = []
+retain-groupless = []
+# The streaming path-program router pair.
+route-grouped = []
+route-groupless = []
+# The one-pass chunked scanning pair (validator/extractor).
+scan-grouped = []
+scan-groupless = []
+# The stream-collect owned inspector pair: chunks parsed as they
+# arrive into an owned source, sealed at finish into the standing
+# queryable index — no implication onto the buffered cells.
+collect-grouped = []
+collect-groupless = []
+# The standing-index survey pair over a stable-replay source: one
+# index walk builds the queryable row product (topology, spans,
+# decoded scalar words), payload bytes are fetched by later walks
+# — no implication onto the buffered or stream cells.
+survey-grouped = []
+survey-groupless = []
+# The rule-driven batch rewriter pair.
+rewrite-grouped = []
+rewrite-groupless = []
+# The rule-driven same-allocation in-place editor pair: equal-width
+# edits landed directly in the caller's buffer.
+inplace-grouped = []
+inplace-groupless = []
+# The fixed-scratch in-place editor pair: the same equal-width rule
+# jobs with working memory — matcher tables, walk stacks, the write
+# list — carved from one caller slab under a capacity contract;
+# zero allocator traffic, exhaustion a deterministic refusal.
+fixed-inplace-grouped = []
+fixed-inplace-groupless = []
+# The dialect-crossing converter pair; the suffix names the OUTPUT
+# dialect, so each cell reads through the opposite dialect.
+convert-grouped = []
+convert-groupless = []
+# The rule-driven buffered splicer pair (variable-length edits).
+splice-grouped = []
+splice-groupless = []
+# The borrowed one-shot patch pair (byte-fidelity commit-only editor).
+patch-grouped = []
+patch-groupless = []
+# The transfer-capable patch pair: sibling machines over the patch
+# cell that add whole-record relocation and external import; the
+# base patch machines carry none of it.
+transfer-patch-grouped = ["patch-grouped"]
+transfer-patch-groupless = ["patch-groupless"]
+# The fixed-scratch patch pair: the borrowed one-shot editor over
+# caller-supplied working memory under a capacity contract — no
+# allocator anywhere, saves into a caller slice or sink. No
+# implication onto the heap patch cell.
+fixed-patch-grouped = []
+fixed-patch-groupless = []
+# The borrowed revisable editing markup pair (draft's faces and
+# undo over a slice the caller keeps).
+markup-grouped = []
+markup-groupless = []
+# The transfer-capable markup pair: sibling machines over the
+# markup cell that add whole-record relocation and external import;
+# the base markup machines carry none of it.
+transfer-markup-grouped = ["markup-grouped"]
+transfer-markup-groupless = ["markup-groupless"]
+# The ownership-transfer one-shot editor pair (patch's command and
+# save faces over a moved-in buffer, transactional tenure).
+adopt-grouped = []
+adopt-groupless = []
+# The transfer-capable adopt pair: sibling machines over the adopt
+# cell that add whole-record relocation and external import; the
+# base adopt machines carry none of it.
+transfer-adopt-grouped = ["adopt-grouped"]
+transfer-adopt-groupless = ["adopt-groupless"]
+# The tolerant revisable editing draft pair (session's faces with
+# patch's byte fidelity over a moved-in buffer).
+draft-grouped = []
+draft-groupless = []
+# The transfer-capable draft pair: sibling machines over the draft
+# cell that add whole-record relocation and external import; the
+# base draft machines carry none of it.
+transfer-draft-grouped = ["draft-grouped"]
+transfer-draft-groupless = ["draft-groupless"]
+# The canonical-admission borrowed one-shot editor pair (patch's
+# command and save faces under canonical-minimal admission).
+amend-grouped = []
+amend-groupless = []
+# The transfer-capable amend pair: sibling machines over the amend
+# cell that add whole-record relocation and external import; the
+# base amend machines carry none of it.
+transfer-amend-grouped = ["amend-grouped"]
+transfer-amend-groupless = ["amend-groupless"]
+# The canonical-admission borrowed revisable editing review pair
+# (session's faces and undo over a slice the caller keeps).
+review-grouped = []
+review-groupless = []
+# The transfer-capable review pair: sibling machines over the
+# review cell that add whole-record relocation and external import;
+# the base review machines carry none of it.
+transfer-review-grouped = ["review-grouped"]
+transfer-review-groupless = ["review-groupless"]
+# The canonical-admission one-shot editor pair (adopt's command and
+# save faces and tenure under canonical-minimal admission).
+intake-grouped = []
+intake-groupless = []
+# The transfer-capable intake pair: sibling machines over the
+# intake cell that add whole-record relocation and external import;
+# the base intake machines carry none of it.
+transfer-intake-grouped = ["intake-grouped"]
+transfer-intake-groupless = ["intake-groupless"]
+# The buffered editing session pair.
+session-grouped = []
+session-groupless = []
+# The priced session typestate pair: the session's faces with an
+# exact, incrementally settled save price (O(1) `save_len` while
+# every rewritten body sits in the length class).
+priced-session-grouped = ["session-grouped", "dep:hashbrown", "dep:rustc-hash"]
+priced-session-groupless = ["session-groupless", "dep:hashbrown", "dep:rustc-hash"]
+# The transfer-capable session pair: sibling machines over the
+# session cell that add whole-record relocation and external
+# import; the base session machines carry none of it.
+transfer-session-grouped = ["session-grouped"]
+transfer-session-groupless = ["session-groupless"]
+# The priced transfer session pair: the transfer session's faces
+# with the exact settled save price, under the transfer profile's
+# own ceiling theorem (designation aliasing multiplies emitted
+# bytes, so the base ceiling does not apply).
+priced-transfer-session-grouped = ["transfer-session-grouped", "dep:hashbrown", "dep:rustc-hash"]
+priced-transfer-session-groupless = [
+    "transfer-session-groupless",
+    "dep:hashbrown",
+    "dep:rustc-hash",
 ]
-group = []
-# for tests
-__std = []
+# The streaming path-program rewirer pair.
+rewire-grouped = []
+rewire-groupless = []
+# The streaming equal-length transcoder pair.
+transcode-grouped = []
+transcode-groupless = []
+# The source-transfer capability over the batch rewriter pair: a
+# third compiled plan type whose jobs copy and move path-designated
+# records and payloads; the plain rewrite plans carry none of it.
+transfer-rewrite-grouped = ["rewrite-grouped"]
+transfer-rewrite-groupless = ["rewrite-groupless"]
+# The source-transfer capability over the buffered splicer pair: a
+# source-aware rule overlay whose verdicts relocate the current
+# record or payload; the plain splice rules carry none of it.
+transfer-splice-grouped = ["splice-grouped"]
+transfer-splice-groupless = ["splice-groupless"]
+# The stream-ingest one-shot editor pair: chunked input parsed as it
+# arrives into an owned source, sealed at finish into adopt's
+# editing machine — no implication onto the buffered cells.
+stream-adopt-grouped = []
+stream-adopt-groupless = []
+# The transfer-capable stream-adopt pair: a sibling sealed editor
+# over the stream-ingested source that adds whole-record relocation
+# and external import; the base machines carry none of it.
+transfer-stream-adopt-grouped = ["stream-adopt-grouped"]
+transfer-stream-adopt-groupless = ["stream-adopt-groupless"]
+# The stream-ingest revisable editor pair: the same fed construction
+# sealed into draft's editing machine, fallible at every growth edge.
+stream-draft-grouped = []
+stream-draft-groupless = []
+# The transfer-capable stream-draft pair: a sibling sealed editor
+# over the stream-ingested source that adds whole-record relocation
+# and external import; the base machines carry none of it.
+transfer-stream-draft-grouped = ["stream-draft-grouped"]
+transfer-stream-draft-groupless = ["stream-draft-groupless"]
+# The stream-ingest canonical one-shot editor pair: chunked input
+# judged canonical-minimal word by word as it arrives into an owned
+# source, sealed at finish into intake's editing machine — no
+# implication onto the buffered cells.
+stream-intake-grouped = []
+stream-intake-groupless = []
+# The transfer-capable stream-intake pair: a sibling sealed editor
+# over the stream-ingested source that adds whole-record relocation
+# and external import; the base machines carry none of it.
+transfer-stream-intake-grouped = ["stream-intake-grouped"]
+transfer-stream-intake-groupless = ["stream-intake-groupless"]
+# The rule-driven batch rewriter pair over a stable-replay source:
+# one walk judges and compiles the edit script, one walk splices —
+# no implication onto the buffered rewrite cells.
+replay-rewrite-grouped = []
+replay-rewrite-groupless = []
+# The dialect-crossing converter pair over a stable-replay source;
+# the suffix names the OUTPUT dialect, so each cell walks the
+# opposite dialect — no implication onto the buffered convert cells.
+replay-convert-grouped = []
+replay-convert-groupless = []
+# The rule-driven splicer pair over a stable-replay source: one
+# walk asks every verdict and stages the answers, one walk splices
+# — no implication onto the buffered splice cells.
+replay-splice-grouped = []
+replay-splice-groupless = []
+# The one-shot overhaul editor pair over a stable-replay source:
+# handle-addressed edits over an index built by walks, saved by
+# one splicing walk — no implication onto the buffered editors.
+overhaul-grouped = []
+overhaul-groupless = []
+# The tolerant revisable maintenance editor pair over a
+# stable-replay source: the markup twin's commands, revision log,
+# and byte-fidelity saves rebuilt over walks — no implication onto
+# the buffered editors.
+maintain-grouped = []
+maintain-groupless = []
+# The canonical-admission one-shot refit editor pair over a
+# stable-replay source (overhaul's faces under canonical-minimal
+# admission) — no implication onto the buffered editors.
+refit-grouped = []
+refit-groupless = []
+# The canonical-admission revisable commissioning editor pair over
+# a stable-replay source (the review twin's faces and undo over
+# walks) — no implication onto the buffered editors.
+commission-grouped = []
+commission-groupless = []
+# The value-side constructor pair (typed values to message bytes).
+construct-grouped = []
+construct-groupless = []
 
 [dependencies]
-hashbrown = { version = "0.17", default-features = false, features = ["inline-more"] }
-rustc-hash = { version = "2", default-features = false }
+# The strata state wire facts with core/alloc alone; every entry
+# below is optional and justified by the scenario cells that pull
+# it in. The priced session cells carry the container-body ledger
+# in a hash map: `hashbrown` supplies the no_std map with fallible
+# reservation, `rustc-hash` the hasher.
+hashbrown = { version = "0.17.1", default-features = false, optional = true }
+rustc-hash = { version = "2.1.3", default-features = false, optional = true }
 
 [[bench]]
 name = "core"
 harness = false
+required-features = [
+    "adopt-grouped",
+    "collect-grouped",
+    "collect-groupless",
+    "commission-grouped",
+    "commission-groupless",
+    "construct-grouped",
+    "convert-groupless",
+    "inspect-grouped",
+    "maintain-grouped",
+    "maintain-groupless",
+    "overhaul-grouped",
+    "patch-grouped",
+    "refit-grouped",
+    "refit-groupless",
+    "replay-convert-grouped",
+    "replay-convert-groupless",
+    "retain-grouped",
+    "retain-groupless",
+    "rewire-grouped",
+    "rewrite-grouped",
+    "route-grouped",
+    "scan-grouped",
+    "scan-groupless",
+    "select-grouped",
+    "session-grouped",
+    "splice-grouped",
+    "transcode-grouped",
+    "traverse-grouped",
+]

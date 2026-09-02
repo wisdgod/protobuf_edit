@@ -1,13 +1,23 @@
+use super::{is_shown, shown_children};
+use protobuf_edit::session::grouped::{Descent, EditFault, Session};
+use protobuf_edit::session::Handle;
+use protobuf_edit::wire::grouped::{classify, RecordKind, TagClass};
+use protobuf_edit::wire::{FieldNumber, Low3};
 use rustc_hash::FxHashSet;
-use protobuf_edit::patch::FieldId;
-use protobuf_edit::{Buf, FieldNumber, Patch, Tag, TreeError, WireType};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct SelectionStep {
-    pub tag: Tag,
+    pub field: FieldNumber,
+    pub kind: RecordKind,
     pub occurrence: u32,
 }
 
+const fn is_container(kind: RecordKind) -> bool {
+    matches!(kind, RecordKind::Len | RecordKind::Group)
+}
+
+/// Encodes a step as `field:code:occurrence` (`code` is the kind's
+/// wire code), steps joined by `/`.
 pub(crate) fn encode_selection_path(path: &[SelectionStep]) -> String {
     use core::fmt::Write as _;
 
@@ -16,9 +26,13 @@ pub(crate) fn encode_selection_path(path: &[SelectionStep]) -> String {
         if i != 0 {
             out.push('/');
         }
-        let (field_number, wire_type) = step.tag.split();
-        let _ =
-            write!(&mut out, "{}:{}:{}", field_number.as_inner(), wire_type as u8, step.occurrence);
+        let _ = write!(
+            &mut out,
+            "{}:{}:{}",
+            step.field.as_inner(),
+            step.kind.low3().as_inner(),
+            step.occurrence
+        );
     }
     out
 }
@@ -33,51 +47,55 @@ pub(crate) fn decode_selection_path(input: &str) -> Option<Vec<SelectionStep>> {
     for part in input.split('/') {
         let mut it = part.trim().split(':');
         let field_number = it.next()?.parse::<u32>().ok()?;
-        let wire_type = it.next()?.parse::<u32>().ok()?;
+        let wire_code = it.next()?.parse::<u8>().ok()?;
         let occurrence = it.next()?.parse::<u32>().ok()?;
         if it.next().is_some() {
             return None;
         }
 
-        let field_number = protobuf_edit::FieldNumber::new(field_number)?;
-        let wire_type = protobuf_edit::WireType::from_low3(wire_type)?;
-        let tag = protobuf_edit::Tag::from_parts(field_number, wire_type);
-        out.push(SelectionStep { tag, occurrence });
+        let field = FieldNumber::new(field_number)?;
+        let TagClass::Record(kind) = classify(Low3::new(wire_code)?) else {
+            return None;
+        };
+        out.push(SelectionStep { field, kind, occurrence });
     }
 
     Some(out)
 }
 
-/// Walks the parent fields of `fid` (exclusive) up to the root message.
-pub(crate) fn ancestor_fields(patch: &Patch, fid: FieldId) -> impl Iterator<Item = FieldId> + '_ {
-    let mut msg = patch.field_parent_message(fid).ok();
-    core::iter::from_fn(move || {
-        let parent_field = patch.message_parent_field(msg?).ok()??;
-        msg = patch.field_parent_message(parent_field).ok();
-        Some(parent_field)
-    })
+/// The presentable sibling of the layer under `parent` matching the
+/// step's field, kind, and occurrence.
+fn find_step(session: &Session, parent: Option<Handle>, step: &SelectionStep) -> Option<Handle> {
+    shown_children(session, parent)
+        .filter(|&handle| {
+            session.field(handle) == Ok(step.field) && session.kind(handle) == Ok(step.kind)
+        })
+        .nth(step.occurrence as usize)
 }
 
-pub(crate) fn build_selection_path(patch: &Patch, selected: FieldId) -> Option<Vec<SelectionStep>> {
-    let mut chain_fields: Vec<FieldId> =
-        core::iter::once(selected).chain(ancestor_fields(patch, selected)).collect();
-    chain_fields.reverse();
+pub(crate) fn build_selection_path(
+    session: &Session,
+    selected: Handle,
+) -> Option<Vec<SelectionStep>> {
+    let mut chain: Vec<Handle> =
+        core::iter::once(selected).chain(session.ancestors(selected).ok()?).collect();
+    chain.reverse();
 
-    let mut out = Vec::with_capacity(chain_fields.len());
-    for fid in chain_fields {
-        let tag = patch.field_tag(fid).ok()?;
-        let parent = patch.field_parent_message(fid).ok()?;
+    let mut out = Vec::with_capacity(chain.len());
+    for handle in chain {
+        let field = session.field(handle).ok()?;
+        let kind = session.kind(handle).ok()?;
+        let parent = session.parent(handle).ok()?;
 
-        // fields_by_number already skips deleted fields; occurrence counts
-        // per full tag, so same-number fields with another wire type are
-        // filtered out here.
+        // Occurrence counts presentable rows of the same field and
+        // kind, so a shrouded selection has no path.
         let mut occurrence: u32 = 0;
         let mut found = false;
-        for f in patch.fields_by_number(parent, tag.field_number()).ok()? {
-            if patch.field_tag(f).ok()? != tag {
+        for sibling in shown_children(session, parent) {
+            if session.field(sibling) != Ok(field) || session.kind(sibling) != Ok(kind) {
                 continue;
             }
-            if f == fid {
+            if sibling == handle {
                 found = true;
                 break;
             }
@@ -87,71 +105,49 @@ pub(crate) fn build_selection_path(patch: &Patch, selected: FieldId) -> Option<V
             return None;
         }
 
-        out.push(SelectionStep { tag, occurrence });
+        out.push(SelectionStep { field, kind, occurrence });
     }
     Some(out)
 }
 
-fn find_field_by_tag_occurrence(
-    patch: &Patch,
-    msg: protobuf_edit::patch::MessageId,
-    tag: Tag,
-    occurrence: u32,
-) -> Result<Option<FieldId>, TreeError> {
-    let mut seen: u32 = 0;
-    for field in patch.fields_by_number(msg, tag.field_number())? {
-        if patch.field_tag(field)? != tag {
-            continue;
-        }
-        if seen == occurrence {
-            return Ok(Some(field));
-        }
-        seen = seen.saturating_add(1);
-    }
-    Ok(None)
-}
-
+/// Walks a selection path, descending containers on the way; the
+/// returned set holds every container opened for the walk. `None`
+/// when the path names no record in this session.
 pub(crate) fn resolve_selection_path(
-    patch: &mut Patch,
+    session: &mut Session,
     path: &[SelectionStep],
-    expand_last_len: bool,
-) -> Result<Option<(FieldId, FxHashSet<FieldId>)>, TreeError> {
-    let mut msg = patch.root();
-    let mut expanded: FxHashSet<FieldId> = FxHashSet::default();
-    let mut current: Option<FieldId> = None;
+    expand_last_container: bool,
+) -> Option<(Handle, FxHashSet<Handle>)> {
+    let mut parent: Option<Handle> = None;
+    let mut expanded: FxHashSet<Handle> = FxHashSet::default();
+    let mut current: Option<Handle> = None;
 
     for (i, step) in path.iter().enumerate() {
-        let Some(field) = find_field_by_tag_occurrence(patch, msg, step.tag, step.occurrence)?
-        else {
-            return Ok(None);
-        };
-        current = Some(field);
+        let handle = find_step(session, parent, step)?;
+        current = Some(handle);
 
         let is_last = i + 1 == path.len();
         if is_last {
-            if expand_last_len
-                && step.tag.wire_type() == WireType::Len
-                && patch.parse_child_message(field).is_ok()
+            if expand_last_container
+                && is_container(step.kind)
+                && matches!(session.descend(handle), Ok(Descent::Opened { .. }))
             {
-                expanded.insert(field);
+                expanded.insert(handle);
             }
             break;
         }
 
-        if step.tag.wire_type() != WireType::Len {
+        if !is_container(step.kind) {
             break;
         }
-
-        match patch.parse_child_message(field) {
-            Ok(child) => {
-                expanded.insert(field);
-                msg = child;
-            }
-            Err(_) => break,
+        if !matches!(session.descend(handle), Ok(Descent::Opened { .. })) {
+            break;
         }
+        expanded.insert(handle);
+        parent = Some(handle);
     }
 
-    Ok(current.map(|fid| (fid, expanded)))
+    current.map(|handle| (handle, expanded))
 }
 
 /// Parse a user path like ".3:0.1.2" into (`field_number`, occurrence) pairs.
@@ -173,22 +169,20 @@ pub(crate) fn parse_user_path(input: &str) -> Option<Vec<(u32, u32)>> {
             Some((n, o)) => (n, o.parse::<u32>().ok()?),
             None => (part, 0),
         };
-        let field_number = num_str.parse::<u32>().ok()?;
-        FieldNumber::new(field_number)?;
-        out.push((field_number, occ));
+        let field = FieldNumber::new(num_str.parse::<u32>().ok()?)?;
+        out.push((field.as_inner(), occ));
     }
     Some(out)
 }
 
-/// Format a user-friendly path string like ".3.1.2" for a given field.
-pub(crate) fn format_user_path(patch: &Patch, fid: FieldId) -> Option<String> {
-    let steps = build_selection_path(patch, fid)?;
+/// Format a user-friendly path string like ".3.1.2" for a given record.
+pub(crate) fn format_user_path(session: &Session, handle: Handle) -> Option<String> {
+    let steps = build_selection_path(session, handle)?;
     let mut out = String::new();
     for step in &steps {
-        let (field_number, _wire_type) = step.tag.split();
         out.push('.');
         use core::fmt::Write as _;
-        let _ = write!(out, "{}", field_number.as_inner());
+        let _ = write!(out, "{}", step.field.as_inner());
         if step.occurrence > 0 {
             let _ = write!(out, ":{}", step.occurrence);
         }
@@ -199,72 +193,70 @@ pub(crate) fn format_user_path(patch: &Patch, fid: FieldId) -> Option<String> {
     Some(out)
 }
 
-fn find_field_by_number_occurrence(
-    patch: &Patch,
-    msg: protobuf_edit::patch::MessageId,
+/// The `occurrence`-th presentable record of field `field_number` in
+/// the layer under `parent`, whatever its kind.
+fn find_by_number_occurrence(
+    session: &Session,
+    parent: Option<Handle>,
     field_number: u32,
     occurrence: u32,
-) -> Result<Option<FieldId>, TreeError> {
-    let Some(number) = FieldNumber::new(field_number) else {
-        return Ok(None);
-    };
-    Ok(patch.fields_by_number(msg, number)?.nth(occurrence as usize))
+) -> Option<Handle> {
+    let field = FieldNumber::new(field_number)?;
+    shown_children(session, parent)
+        .filter(|&handle| session.field(handle) == Ok(field))
+        .nth(occurrence as usize)
 }
 
-/// Resolve a user path, auto-parsing child messages. For Len fields that
-/// don't parse as protobuf directly, tries decoding the bytes as
-/// hex/base64 first (via `decode_user_input`).
+/// Resolve a user path, descending containers on the way. For LEN
+/// records that don't open as protobuf directly, tries decoding the
+/// payload as hex/base64 first (via `decode_user_input`).
 pub(crate) fn resolve_user_path(
-    patch: &mut Patch,
+    session: &mut Session,
     path: &[(u32, u32)],
-) -> Result<Option<(FieldId, FxHashSet<FieldId>)>, TreeError> {
-    let mut msg = patch.root();
-    let mut expanded: FxHashSet<FieldId> = FxHashSet::default();
-    let mut current: Option<FieldId> = None;
+) -> Result<Option<(Handle, FxHashSet<Handle>)>, EditFault> {
+    let mut parent: Option<Handle> = None;
+    let mut expanded: FxHashSet<Handle> = FxHashSet::default();
+    let mut current: Option<Handle> = None;
 
     for (i, &(field_number, occurrence)) in path.iter().enumerate() {
-        let Some(field) = find_field_by_number_occurrence(patch, msg, field_number, occurrence)?
+        let Some(handle) = find_by_number_occurrence(session, parent, field_number, occurrence)
         else {
-            return Ok(current.map(|fid| (fid, expanded)));
+            return Ok(current.map(|h| (h, expanded)));
         };
-        current = Some(field);
+        current = Some(handle);
 
         let is_last = i + 1 == path.len();
-        let tag = patch.field_tag(field)?;
-        if tag.wire_type() != WireType::Len {
+        let kind = session.kind(handle)?;
+        if !is_container(kind) {
             if !is_last {
                 break;
             }
             continue;
         }
 
-        match patch.parse_child_message(field) {
-            Ok(child) => {
-                expanded.insert(field);
-                if !is_last {
-                    msg = child;
-                }
+        let opened = matches!(session.descend(handle)?, Descent::Opened { .. });
+        if opened {
+            expanded.insert(handle);
+            if !is_last {
+                parent = Some(handle);
             }
-            Err(_) if !is_last => {
-                if try_decode_and_parse(patch, field)? {
-                    let child = patch.parse_child_message(field)?;
-                    expanded.insert(field);
-                    msg = child;
-                } else {
-                    break;
-                }
+        } else if !is_last {
+            if try_decode_and_descend(session, handle)? {
+                expanded.insert(handle);
+                parent = Some(handle);
+            } else {
+                break;
             }
-            Err(_) => {}
         }
     }
 
-    Ok(current.map(|fid| (fid, expanded)))
+    Ok(current.map(|h| (h, expanded)))
 }
 
-fn try_decode_and_parse(patch: &mut Patch, field: FieldId) -> Result<bool, TreeError> {
-    // The copy is required: `set_bytes` below needs `&mut patch` while the
-    // original payload borrows it.
-    let bytes = patch.bytes(field)?.to_vec();
+fn try_decode_and_descend(session: &mut Session, handle: Handle) -> Result<bool, EditFault> {
+    // The copy is required: `set_payload` below needs `&mut` while
+    // the original payload borrows the session.
+    let bytes = session.payload_bytes(handle)?.to_vec();
     let Ok(text) = is_valid_utf8::validate_utf8(&bytes) else {
         return Ok(false);
     };
@@ -275,7 +267,11 @@ fn try_decode_and_parse(patch: &mut Patch, field: FieldId) -> Result<bool, TreeE
         return Ok(false);
     }
 
-    let buf = Buf::from(decoded);
-    patch.set_bytes(field, buf)?;
-    Ok(true)
+    session.set_payload(handle, &decoded)?;
+    Ok(matches!(session.descend(handle)?, Descent::Opened { .. }))
+}
+
+/// Keeps `selected` only while it still names a presentable row.
+pub(crate) fn selection_if_shown(session: &Session, selected: Option<Handle>) -> Option<Handle> {
+    selected.filter(|&handle| is_shown(session, handle))
 }

@@ -53,7 +53,7 @@ impl MessageService {
     // ------------------------------------------------------------------
 
     fn tab_is_empty(ws: &WorkspaceState) -> bool {
-        ws.patch_state.with_untracked(Option::is_none)
+        ws.session.with_untracked(Option::is_none)
             && ws.raw_bytes.with_untracked(Option::is_none)
     }
 
@@ -111,7 +111,7 @@ impl MessageService {
                             if stale() {
                                 return;
                             }
-                            ws_svc.load_patch_into(&ws, &label, loaded.bytes, auto_expand);
+                            ws_svc.load_document_into(&ws, &label, loaded.bytes, auto_expand);
                         }
                         LoadedBytesMode::Raw => {
                             ws.show_root_raw_bytes(loaded.bytes);
@@ -137,7 +137,7 @@ impl MessageService {
         let tab = self.tabs.push_message_tab(id);
         self.tabs.activate(tab.id);
         if let Some(ws) = tab.message_ws() {
-            self.ws_svc.load_patch_into(&ws, label, ByteView::from_vec(bytes), Vec::new());
+            self.ws_svc.load_document_into(&ws, label, ByteView::from_vec(bytes), Vec::new());
         }
     }
 

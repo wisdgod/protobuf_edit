@@ -22,7 +22,7 @@ pub(crate) fn DocumentView(ws: WorkspaceState, split_px: RwSignal<f64>) -> impl 
     let locale = ui.locale;
     let read_only = ui.read_only;
 
-    let patch_state = ws.patch_state;
+    let session_state = ws.session;
     let raw_bytes = ws.raw_bytes;
     let selected = ws.selected;
     let expanded = ws.expanded;
@@ -77,7 +77,7 @@ pub(crate) fn DocumentView(ws: WorkspaceState, split_px: RwSignal<f64>) -> impl 
 
             if (ev.ctrl_key() || ev.meta_key()) && key.eq_ignore_ascii_case("z") {
                 if !read_only.get_untracked()
-                    && patch_state.with_untracked(std::option::Option::is_some)
+                    && session_state.with_untracked(std::option::Option::is_some)
                     && dirty_count.get_untracked() > 0
                 {
                     ev.prevent_default();
@@ -89,7 +89,7 @@ pub(crate) fn DocumentView(ws: WorkspaceState, split_px: RwSignal<f64>) -> impl 
             if (ev.ctrl_key() || ev.meta_key()) && key.eq_ignore_ascii_case("s") {
                 ev.prevent_default();
                 if !read_only.get_untracked()
-                    && patch_state.with_untracked(std::option::Option::is_some)
+                    && session_state.with_untracked(std::option::Option::is_some)
                     && dirty_count.get_untracked() > 0
                 {
                     let _ = ws_svc.save_reparse();
@@ -145,15 +145,17 @@ pub(crate) fn DocumentView(ws: WorkspaceState, split_px: RwSignal<f64>) -> impl 
                     let Some(field) = selected.get_untracked() else {
                         return;
                     };
-                    let is_len = patch_state.with_untracked(|p| {
-                        let Some(patch) = p.as_ref() else {
+                    let is_container = session_state.with_untracked(|s| {
+                        let Some(session) = s.as_ref() else {
                             return false;
                         };
-                        patch
-                            .field_tag(field)
-                            .is_ok_and(|tag| tag.wire_type() == protobuf_edit::WireType::Len)
+                        matches!(
+                            session.kind(field),
+                            Ok(protobuf_edit::wire::grouped::RecordKind::Len
+                                | protobuf_edit::wire::grouped::RecordKind::Group)
+                        )
                     });
-                    if !is_len {
+                    if !is_container {
                         return;
                     }
 
@@ -166,14 +168,12 @@ pub(crate) fn DocumentView(ws: WorkspaceState, split_px: RwSignal<f64>) -> impl 
                         return;
                     }
 
-                    match crate::workspace::parse_child_untracked(patch_state, field) {
-                        Ok(_child) => expanded.update(|s| {
+                    match crate::workspace::descend_untracked(session_state, field) {
+                        Ok(()) => expanded.update(|s| {
                             s.insert(field);
                         }),
-                        Err(e) => toast.show(
-                            ToastKind::Alert,
-                            format!("Failed to parse child message: {e:?}"),
-                        ),
+                        Err(e) => toast
+                            .show(ToastKind::Alert, format!("Failed to open container: {e}")),
                     }
                 }
                 _ => {}
@@ -224,13 +224,9 @@ pub(crate) fn DocumentView(ws: WorkspaceState, split_px: RwSignal<f64>) -> impl 
         }
     };
 
-    let field_tree_view = move || {
-        // `Show` gates on patch presence, but never panic if the value went
-        // away between `when` and children evaluation.
-        patch_state
-            .with(|p| p.as_ref().map(protobuf_edit::Patch::root))
-            .map(|root| view! { <FieldTree msg=root depth=0 /> })
-    };
+    // `FieldTree` with `parent=None` renders the top layer and is
+    // empty-safe without a session, so no root lookup is needed.
+    let field_tree_view = move || view! { <FieldTree parent=None depth=0 /> };
 
     view! {
         <div class="document">
@@ -268,7 +264,9 @@ pub(crate) fn DocumentView(ws: WorkspaceState, split_px: RwSignal<f64>) -> impl 
 
                                 <div class="field-list" node_ref=tree_container_ref tabindex="0">
                                     <Show
-                                        when=move || patch_state.with(std::option::Option::is_some)
+                                        when=move || {
+                                            session_state.with(std::option::Option::is_some)
+                                        }
                                         fallback=structure_tree_fallback
                                     >
                                         {field_tree_view}

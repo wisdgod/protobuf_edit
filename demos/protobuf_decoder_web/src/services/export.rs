@@ -33,8 +33,8 @@ impl ExportService {
     /// Prefers the patch's byte mirror, then raw bytes; `None` means nothing
     /// is loaded in the workspace.
     fn with_bytes_of<R>(ws: &WorkspaceState, f: impl FnOnce(&[u8]) -> R) -> Option<R> {
-        if ws.patch_bytes.with_untracked(Option::is_some) {
-            return ws.patch_bytes.with_untracked(|b| b.as_ref().map(|v| f(v.as_slice())));
+        if ws.doc_bytes.with_untracked(Option::is_some) {
+            return ws.doc_bytes.with_untracked(|b| b.as_ref().map(|v| f(v.as_slice())));
         }
         ws.raw_bytes.with_untracked(|b| b.as_ref().map(|v| f(v.as_slice())))
     }

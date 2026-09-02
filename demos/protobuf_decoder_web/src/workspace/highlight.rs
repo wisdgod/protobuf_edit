@@ -1,5 +1,7 @@
-use protobuf_edit::patch::{FieldId, ValueSpans};
-use protobuf_edit::{Patch, WireType};
+use protobuf_edit::session::grouped::{RecordSpans, Session};
+use protobuf_edit::session::Handle;
+use protobuf_edit::wire::grouped::RecordKind;
+use protobuf_edit::Span;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum HighlightKind {
@@ -7,7 +9,7 @@ pub(crate) enum HighlightKind {
     Hovered,
     SelectedTag,
     SelectedLenPrefix,
-    SelectedField(WireType),
+    SelectedField(RecordKind),
 }
 
 impl HighlightKind {
@@ -39,63 +41,61 @@ impl HighlightRange {
     }
 }
 
-/// Highlight ranges for the selected field and its ancestor chain.
+fn range_of(span: Span, kind: HighlightKind) -> HighlightRange {
+    HighlightRange { start: span.start() as usize, end: span.end() as usize, kind }
+}
+
+/// Highlight ranges for the selected record and its ancestor chain.
+/// Command-authored rows own no hex, so they contribute nothing.
 ///
-/// Kept separate from the hover range so that high-frequency hover changes
-/// do not invalidate the (heavier) selection-derived ranges.
+/// Kept separate from the hover range so that high-frequency hover
+/// changes do not invalidate the (heavier) selection-derived ranges.
 pub(crate) fn compute_selected_highlights(
-    patch: &Patch,
-    selected: Option<FieldId>,
+    session: &Session,
+    selected: Option<Handle>,
 ) -> Vec<HighlightRange> {
     let mut out = Vec::new();
 
-    let Some(fid) = selected else {
+    let Some(handle) = selected else {
         return out;
     };
 
-    if let (Ok(tag), Ok(Some(spans))) = (patch.field_tag(fid), patch.field_root_spans(fid)) {
-        out.push(HighlightRange {
-            start: spans.field.start() as usize,
-            end: spans.field.end() as usize,
-            kind: HighlightKind::SelectedField(tag.wire_type()),
-        });
-        if let ValueSpans::Len { len, .. } = spans.value {
-            out.push(HighlightRange {
-                start: len.start() as usize,
-                end: len.end() as usize,
-                kind: HighlightKind::SelectedLenPrefix,
-            });
-        }
-        out.push(HighlightRange {
-            start: spans.tag.start() as usize,
-            end: spans.tag.end() as usize,
-            kind: HighlightKind::SelectedTag,
-        });
+    if let (Ok(kind), Ok(Some(span))) = (session.kind(handle), session.span(handle)) {
+        out.push(range_of(span, HighlightKind::SelectedField(kind)));
     }
 
-    for parent_field in super::ancestor_fields(patch, fid) {
-        if let Ok(Some(spans)) = patch.field_root_spans(parent_field) {
-            out.push(HighlightRange {
-                start: spans.field.start() as usize,
-                end: spans.field.end() as usize,
-                kind: HighlightKind::Ancestor,
-            });
+    if let Ok(Some(spans)) = session.source_spans(handle) {
+        let (tag, prefix, end_tag) = match spans {
+            RecordSpans::Varint { tag, .. }
+            | RecordSpans::I64 { tag, .. }
+            | RecordSpans::I32 { tag, .. } => (tag, None, None),
+            RecordSpans::Len { tag, prefix, .. } => (tag, Some(prefix), None),
+            RecordSpans::Group { tag, end_tag, .. } => (tag, None, Some(end_tag)),
+        };
+        if let Some(prefix) = prefix {
+            out.push(range_of(prefix, HighlightKind::SelectedLenPrefix));
+        }
+        out.push(range_of(tag, HighlightKind::SelectedTag));
+        if let Some(end_tag) = end_tag {
+            out.push(range_of(end_tag, HighlightKind::SelectedTag));
+        }
+    }
+
+    for ancestor in session.ancestors(handle).ok().into_iter().flatten() {
+        if let Ok(Some(span)) = session.span(ancestor) {
+            out.push(range_of(span, HighlightKind::Ancestor));
         }
     }
 
     out
 }
 
-/// Root-coordinate range of the hovered field, if any.
+/// Root-coordinate range of the hovered record, if it owns hex.
 pub(crate) fn compute_hovered_range(
-    patch: &Patch,
-    hovered: Option<FieldId>,
+    session: &Session,
+    hovered: Option<Handle>,
 ) -> Option<HighlightRange> {
-    let fid = hovered?;
-    let spans = patch.field_root_spans(fid).ok()??;
-    Some(HighlightRange {
-        start: spans.field.start() as usize,
-        end: spans.field.end() as usize,
-        kind: HighlightKind::Hovered,
-    })
+    let handle = hovered?;
+    let span = session.span(handle).ok()??;
+    Some(range_of(span, HighlightKind::Hovered))
 }

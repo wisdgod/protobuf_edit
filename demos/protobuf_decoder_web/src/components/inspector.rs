@@ -1,12 +1,15 @@
 use crate::error::UiError;
 use crate::state::{UiState, WorkspaceState};
 use crate::toast::{ToastManager, ToastKind};
+use crate::workspace::collect_descendants;
 use base64::Engine as _;
 use leptos::html;
 use leptos::prelude::*;
 use leptos_use::use_event_listener;
-use protobuf_edit::patch::FieldId;
-use protobuf_edit::{Buf, Patch, Tag, TreeError, WireType};
+use protobuf_edit::session::grouped::{EditFault, EditStatus, InsertAt, Session};
+use protobuf_edit::session::Handle;
+use protobuf_edit::wire::grouped::RecordKind;
+use protobuf_edit::wire::FieldNumber;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum BytesView {
@@ -34,23 +37,34 @@ impl BytesView {
     }
 }
 
-/// Runs one edit against the live patch inside an ensured transaction.
-///
-/// Every mutating inspector action shares this shape; the transaction is
-/// begun lazily so Ctrl+Z can roll all pending edits back to the last save.
-fn edit_patch<T>(
-    patch_state: RwSignal<Option<Patch>, LocalStorage>,
-    f: impl FnOnce(&mut Patch) -> Result<T, TreeError>,
-) -> Result<T, TreeError> {
-    patch_state
-        .try_update(|p| {
-            let patch = p.as_mut().ok_or(TreeError::InvalidId)?;
-            if !patch.txn_active() {
-                patch.txn_begin();
-            }
-            f(patch)
+/// Runs one edit command against the live session. The session's undo
+/// log covers every command, so Ctrl+Z rolls all pending edits back to
+/// the last save without any transaction bracketing.
+fn edit_session<T>(
+    session_state: RwSignal<Option<Session>, LocalStorage>,
+    f: impl FnOnce(&mut Session) -> Result<T, EditFault>,
+) -> Result<T, String> {
+    session_state
+        .try_update(|s| {
+            let session = s.as_mut().ok_or_else(|| "no document loaded".to_string())?;
+            f(session).map_err(|e| e.to_string())
         })
-        .unwrap_or(Err(TreeError::InvalidId))
+        .unwrap_or_else(|| Err("no document loaded".to_string()))
+}
+
+/// Materialized descendants of `handle`, for pruning the UI's handle
+/// sets when a container's content is replaced or removed.
+fn descendants_of(
+    session_state: RwSignal<Option<Session>, LocalStorage>,
+    handle: Handle,
+) -> Vec<Handle> {
+    session_state.with_untracked(|s| {
+        s.as_ref().map_or_else(Vec::new, |session| {
+            let mut out = Vec::new();
+            collect_descendants(session, handle, &mut out);
+            out
+        })
+    })
 }
 
 /// Multi-format preview line for a validated bytes payload.
@@ -109,7 +123,7 @@ fn validation_error<T: Send + Sync + 'static>(
 pub(crate) fn InspectorDrawer() -> impl IntoView {
     let workspace = expect_context::<WorkspaceState>();
     let ui = expect_context::<UiState>();
-    let patch_state = workspace.patch_state;
+    let session_state = workspace.session;
     let selected = workspace.selected;
     let expanded = workspace.expanded;
     let dirty_fields = workspace.dirty_fields;
@@ -164,35 +178,32 @@ pub(crate) fn InspectorDrawer() -> impl IntoView {
     let fixed_base: RwSignal<Option<u64>> = RwSignal::new(None);
 
     let insert_field_number = RwSignal::new(String::new());
-    let insert_wire: RwSignal<WireType> = RwSignal::new(WireType::Varint);
+    let insert_wire: RwSignal<RecordKind> = RwSignal::new(RecordKind::Varint);
     let insert_varint_text = RwSignal::new(String::new());
     let insert_bytes_view: RwSignal<BytesView> = RwSignal::new(BytesView::Hex);
     let insert_bytes_text = RwSignal::new(String::new());
     let insert_fixed_text = RwSignal::new(String::new());
 
-    let selected_wire = Memo::new(move |_| {
-        let fid = selected.get()?;
-        patch_state.with(|p| {
-            let patch = p.as_ref()?;
-            patch.field_tag(fid).ok().map(protobuf_edit::Tag::wire_type)
-        })
+    let selected_kind = Memo::new(move |_| {
+        let handle = selected.get()?;
+        session_state.with(|s| s.as_ref()?.kind(handle).ok())
     });
 
-    // Backfills the editor inputs from the field's current value; shared by
+    // Backfills the editor inputs from the record's current value; shared by
     // the selection effect and Clear (which reverts to the source value).
-    let refresh_from_patch = move |patch: &Patch, fid: FieldId| {
-        let Ok(tag) = patch.field_tag(fid) else {
+    let refresh_from_session = move |session: &Session, handle: Handle| {
+        let Ok(kind) = session.kind(handle) else {
             return;
         };
-        match tag.wire_type() {
-            WireType::Varint => {
-                if let Ok(v) = patch.varint(fid) {
+        match kind {
+            RecordKind::Varint => {
+                if let Ok(v) = session.varint_word(handle) {
                     varint_text.set(v.to_string());
                     varint_base.set(Some(v));
                 }
             }
-            WireType::Len => {
-                if let Ok(bytes) = patch.bytes(fid) {
+            RecordKind::Len => {
+                if let Ok(bytes) = session.payload_bytes(handle) {
                     match is_valid_utf8::validate_utf8(bytes) {
                         Ok(s) if is_readable_utf8(s) => {
                             bytes_view.set(BytesView::Utf8);
@@ -205,23 +216,25 @@ pub(crate) fn InspectorDrawer() -> impl IntoView {
                     }
                 }
             }
-            WireType::I32 => {
-                if let Ok(bits) = patch.i32_bits(fid) {
+            RecordKind::I32 => {
+                if let Ok(bits) = session.i32_bits(handle) {
                     fixed_text.set(format!("0x{bits:08X}"));
                     fixed_base.set(Some(u64::from(bits)));
                 }
             }
-            WireType::I64 => {
-                if let Ok(bits) = patch.i64_bits(fid) {
+            RecordKind::I64 => {
+                if let Ok(bits) = session.i64_bits(handle) {
                     fixed_text.set(format!("0x{bits:016X}"));
                     fixed_base.set(Some(bits));
                 }
             }
+            // Groups carry no scalar value; there is nothing to edit.
+            RecordKind::Group => {}
         }
     };
 
     Effect::new(move |_| {
-        let Some(fid) = selected.get() else {
+        let Some(handle) = selected.get() else {
             varint_text.set(String::new());
             bytes_text.set(String::new());
             fixed_text.set(String::new());
@@ -230,25 +243,22 @@ pub(crate) fn InspectorDrawer() -> impl IntoView {
             return;
         };
 
-        patch_state.with(|p| {
-            if let Some(patch) = p.as_ref() {
-                refresh_from_patch(patch, fid);
+        session_state.with(|s| {
+            if let Some(session) = s.as_ref() {
+                refresh_from_session(session, handle);
             }
         });
     });
 
     let clear_enabled = Memo::new(move |_| {
-        let Some(fid) = selected.get() else {
+        let Some(handle) = selected.get() else {
             return false;
         };
-        dirty_fields.with(|s| s.contains(&fid))
+        dirty_fields.with(|s| s.contains(&handle))
     });
 
     let varint_validation: Memo<Result<Option<u64>, UiError>> = Memo::new(move |_| {
-        let Some(wt) = selected_wire.get() else {
-            return Ok(None);
-        };
-        if wt != WireType::Varint {
+        if selected_kind.get() != Some(RecordKind::Varint) {
             return Ok(None);
         }
         let raw = varint_text.get();
@@ -258,39 +268,36 @@ pub(crate) fn InspectorDrawer() -> impl IntoView {
     });
 
     let bytes_validation: Memo<Result<Option<Vec<u8>>, UiError>> = Memo::new(move |_| {
-        let Some(wt) = selected_wire.get() else {
-            return Ok(None);
-        };
-        if wt != WireType::Len {
+        if selected_kind.get() != Some(RecordKind::Len) {
             return Ok(None);
         }
         decode_bytes_view(&bytes_text.get(), bytes_view.get()).map(Some)
     });
 
     let fixed_validation: Memo<Result<Option<u64>, UiError>> = Memo::new(move |_| {
-        let Some(wt) = selected_wire.get() else {
+        let Some(kind) = selected_kind.get() else {
             return Ok(None);
         };
-        if !matches!(wt, WireType::I32 | WireType::I64) {
+        if !matches!(kind, RecordKind::I32 | RecordKind::I64) {
             return Ok(None);
         }
 
         let raw = fixed_text.get();
         let v = parse_u64(&raw)
             .map_err(|()| UiError::from("Invalid fixed value. Use decimal or 0x-prefixed hex."))?;
-        if wt == WireType::I32 && v > u64::from(u32::MAX) {
+        if kind == RecordKind::I32 && v > u64::from(u32::MAX) {
             return Err("Invalid fixed32: value out of range for u32.".into());
         }
         Ok(Some(v))
     });
 
     let apply_enabled = Memo::new(move |_| {
-        let Some(wt) = selected_wire.get() else {
+        let Some(kind) = selected_kind.get() else {
             return false;
         };
 
-        match wt {
-            WireType::Varint => {
+        match kind {
+            RecordKind::Varint => {
                 let Ok(Some(v)) = varint_validation.get() else {
                     return false;
                 };
@@ -299,8 +306,8 @@ pub(crate) fn InspectorDrawer() -> impl IntoView {
                 };
                 v != base
             }
-            WireType::Len => {
-                let Some(fid) = selected.get() else {
+            RecordKind::Len => {
+                let Some(handle) = selected.get() else {
                     return false;
                 };
                 // `.with` avoids cloning the decoded payload on every
@@ -309,12 +316,14 @@ pub(crate) fn InspectorDrawer() -> impl IntoView {
                     let Ok(Some(bytes)) = v else {
                         return false;
                     };
-                    patch_state.with(|p| {
-                        p.as_ref().is_some_and(|patch| patch.bytes(fid) != Ok(bytes.as_slice()))
+                    session_state.with(|s| {
+                        s.as_ref().is_some_and(|session| {
+                            session.payload_bytes(handle) != Ok(bytes.as_slice())
+                        })
                     })
                 })
             }
-            WireType::I32 | WireType::I64 => {
+            RecordKind::I32 | RecordKind::I64 => {
                 let Ok(Some(v)) = fixed_validation.get() else {
                     return false;
                 };
@@ -323,6 +332,7 @@ pub(crate) fn InspectorDrawer() -> impl IntoView {
                 };
                 v != base
             }
+            RecordKind::Group => false,
         }
     });
 
@@ -331,19 +341,19 @@ pub(crate) fn InspectorDrawer() -> impl IntoView {
             return;
         }
 
-        let Some(fid) = selected.get_untracked() else {
+        let Some(handle) = selected.get_untracked() else {
             return;
         };
 
-        let Some(wt) = selected_wire.get_untracked() else {
+        let Some(kind) = selected_kind.get_untracked() else {
             toast.show(ToastKind::Alert, "No field selected.");
             return;
         };
 
         // Reuse the validation memos: the inputs were already parsed for the
         // enabled state, so re-parsing here could only disagree with it.
-        match wt {
-            WireType::Varint => {
+        match kind {
+            RecordKind::Varint => {
                 let Ok(Some(value)) = varint_validation.get_untracked() else {
                     toast.show(
                         ToastKind::Alert,
@@ -352,17 +362,17 @@ pub(crate) fn InspectorDrawer() -> impl IntoView {
                     return;
                 };
 
-                match edit_patch(patch_state, |patch| patch.set_varint(fid, value)) {
+                match edit_session(session_state, |session| session.set_varint(handle, value)) {
                     Ok(()) => {
                         dirty_fields.update(|s| {
-                            s.insert(fid);
+                            s.insert(handle);
                         });
                         varint_base.set(Some(value));
                     }
-                    Err(e) => toast.show(ToastKind::Alert, format!("Failed to apply edit: {e:?}")),
+                    Err(e) => toast.show(ToastKind::Alert, format!("Failed to apply edit: {e}")),
                 }
             }
-            WireType::Len => {
+            RecordKind::Len => {
                 let bytes = match bytes_validation.get_untracked() {
                     Ok(Some(bytes)) => bytes,
                     Ok(None) => return,
@@ -381,27 +391,19 @@ pub(crate) fn InspectorDrawer() -> impl IntoView {
                     }
                 };
 
-                let descendants = patch_state.with_untracked(|p| {
-                    p.as_ref().map(|patch| collect_child_subtree(patch, fid)).unwrap_or_default()
-                });
+                let descendants = descendants_of(session_state, handle);
 
-                let mut buf = Buf::new();
-                if let Err(e) = buf.extend_from_slice(&bytes) {
-                    toast.show(ToastKind::Alert, format!("Failed to allocate buffer: {e:?}"));
-                    return;
-                }
-
-                match edit_patch(patch_state, |patch| patch.set_bytes(fid, buf)) {
+                match edit_session(session_state, |session| session.set_payload(handle, &bytes)) {
                     Ok(()) => {
                         expanded.update(|s| {
-                            s.remove(&fid);
+                            s.remove(&handle);
                             for d in &descendants {
                                 s.remove(d);
                             }
                         });
                         // New payload, undetermined expandability again.
                         parse_failed.update(|s| {
-                            s.remove(&fid);
+                            s.remove(&handle);
                             for d in &descendants {
                                 s.remove(d);
                             }
@@ -410,14 +412,14 @@ pub(crate) fn InspectorDrawer() -> impl IntoView {
                             for d in &descendants {
                                 s.remove(d);
                             }
-                            s.insert(fid);
+                            s.insert(handle);
                         });
                         bytes_text.set(canonical_text);
                     }
-                    Err(e) => toast.show(ToastKind::Alert, format!("Failed to apply edit: {e:?}")),
+                    Err(e) => toast.show(ToastKind::Alert, format!("Failed to apply edit: {e}")),
                 }
             }
-            WireType::I32 | WireType::I64 => {
+            RecordKind::I32 | RecordKind::I64 => {
                 let Ok(Some(value)) = fixed_validation.get_untracked() else {
                     toast.show(
                         ToastKind::Alert,
@@ -426,15 +428,15 @@ pub(crate) fn InspectorDrawer() -> impl IntoView {
                     return;
                 };
 
-                let (res, text) = if wt == WireType::I32 {
+                let (res, text) = if kind == RecordKind::I32 {
                     let bits = value as u32;
                     (
-                        edit_patch(patch_state, |patch| patch.set_i32_bits(fid, bits)),
+                        edit_session(session_state, |session| session.set_i32(handle, bits)),
                         format!("0x{bits:08X}"),
                     )
                 } else {
                     (
-                        edit_patch(patch_state, |patch| patch.set_i64_bits(fid, value)),
+                        edit_session(session_state, |session| session.set_i64(handle, value)),
                         format!("0x{value:016X}"),
                     )
                 };
@@ -442,30 +444,30 @@ pub(crate) fn InspectorDrawer() -> impl IntoView {
                 match res {
                     Ok(()) => {
                         dirty_fields.update(|s| {
-                            s.insert(fid);
+                            s.insert(handle);
                         });
                         fixed_text.set(text);
                         fixed_base.set(Some(value));
                     }
-                    Err(e) => toast.show(ToastKind::Alert, format!("Failed to apply edit: {e:?}")),
+                    Err(e) => toast.show(ToastKind::Alert, format!("Failed to apply edit: {e}")),
                 }
             }
+            // The apply button is never enabled for groups.
+            RecordKind::Group => {}
         }
     };
 
     let on_delete = move |_| {
-        let Some(fid) = selected.get_untracked() else {
+        let Some(handle) = selected.get_untracked() else {
             return;
         };
 
-        let descendants = patch_state.with_untracked(|p| {
-            p.as_ref().map(|patch| collect_child_subtree(patch, fid)).unwrap_or_default()
-        });
+        let descendants = descendants_of(session_state, handle);
 
-        match edit_patch(patch_state, |patch| patch.delete_field(fid)) {
+        match edit_session(session_state, |session| session.delete(handle)) {
             Ok(()) => {
                 expanded.update(|s| {
-                    s.remove(&fid);
+                    s.remove(&handle);
                     for d in &descendants {
                         s.remove(d);
                     }
@@ -474,38 +476,44 @@ pub(crate) fn InspectorDrawer() -> impl IntoView {
                     for d in &descendants {
                         s.remove(d);
                     }
-                    s.insert(fid);
+                    s.insert(handle);
                 });
                 selected.set(None);
             }
-            Err(e) => toast.show(ToastKind::Alert, format!("Failed to delete field: {e:?}")),
+            Err(e) => toast.show(ToastKind::Alert, format!("Failed to delete field: {e}")),
         }
     };
 
     let on_clear = move |_| {
-        let Some(fid) = selected.get_untracked() else {
+        let Some(handle) = selected.get_untracked() else {
             return;
         };
 
-        let (was_inserted, descendants) = patch_state.with_untracked(|p| {
-            let Some(patch) = p.as_ref() else {
-                return (false, Vec::new());
-            };
-            let was_inserted = matches!(patch.field_spans(fid), Ok(None));
-            let descendants = collect_child_subtree(patch, fid);
-            (was_inserted, descendants)
+        let was_inserted = session_state.with_untracked(|s| {
+            s.as_ref()
+                .is_some_and(|session| session.status(handle) == Ok(EditStatus::Inserted))
         });
+        let descendants = descendants_of(session_state, handle);
 
-        match edit_patch(patch_state, |patch| patch.clear_field_edit(fid)) {
+        // A replaced record clears back to its scanned value; an
+        // inserted one has no scanned state — deleting it shrouds the
+        // authored row instead.
+        let res = if was_inserted {
+            edit_session(session_state, |session| session.delete(handle))
+        } else {
+            edit_session(session_state, |session| session.clear_edit(handle))
+        };
+
+        match res {
             Ok(()) => {
                 expanded.update(|s| {
-                    s.remove(&fid);
+                    s.remove(&handle);
                     for d in &descendants {
                         s.remove(d);
                     }
                 });
                 dirty_fields.update(|s| {
-                    s.remove(&fid);
+                    s.remove(&handle);
                     for d in &descendants {
                         s.remove(d);
                     }
@@ -516,61 +524,68 @@ pub(crate) fn InspectorDrawer() -> impl IntoView {
                     return;
                 }
 
-                patch_state.with_untracked(|p| {
-                    if let Some(patch) = p.as_ref() {
-                        refresh_from_patch(patch, fid);
+                session_state.with_untracked(|s| {
+                    if let Some(session) = s.as_ref() {
+                        refresh_from_session(session, handle);
                     }
                 });
             }
-            Err(e) => toast.show(ToastKind::Alert, format!("Failed to clear edit: {e:?}")),
+            Err(e) => toast.show(ToastKind::Alert, format!("Failed to clear edit: {e}")),
         }
     };
 
+    // The insertion container: `None` is the top layer. An expanded
+    // container (its descend succeeded when it was expanded) receives
+    // the insertion directly; any other selection inserts as its
+    // sibling.
     let insert_target = Memo::new(move |_| {
-        patch_state.with(|p| {
-            let patch = p.as_ref()?;
-            let Some(fid) = selected.get() else {
-                return Some((patch.root(), "root message"));
+        session_state.with(|s| {
+            let session = s.as_ref()?;
+            let Some(handle) = selected.get() else {
+                return Some((None, "root message"));
             };
 
-            if let Ok(tag) = patch.field_tag(fid)
-                && tag.wire_type() == WireType::Len
-                && expanded.with(|s| s.contains(&fid))
-                && let Ok(Some(child)) = patch.field_child_message(fid)
+            if matches!(session.kind(handle), Ok(RecordKind::Len | RecordKind::Group))
+                && expanded.with(|set| set.contains(&handle))
             {
-                return Some((child, "child message of selected field"));
+                return Some((Some(handle), "interior of selected container"));
             }
 
-            let parent = patch.field_parent_message(fid).ok()?;
-            Some((parent, "parent message of selected field"))
+            let parent = session.parent(handle).ok()?;
+            match parent {
+                Some(p) => Some((Some(p), "parent container of selected field")),
+                None => Some((None, "root message")),
+            }
         })
     });
 
-    let insert_tag_validation: Memo<Result<Option<Tag>, UiError>> = Memo::new(move |_| {
-        if patch_state.with(std::option::Option::is_none) {
-            return Ok(None);
-        }
+    let insert_field_validation: Memo<Result<Option<FieldNumber>, UiError>> =
+        Memo::new(move |_| {
+            if session_state.with(std::option::Option::is_none) {
+                return Ok(None);
+            }
 
-        let raw = insert_field_number.get();
-        if raw.trim().is_empty() {
-            return Ok(None);
-        }
+            let raw = insert_field_number.get();
+            if raw.trim().is_empty() {
+                return Ok(None);
+            }
 
-        let n64 = parse_u64(&raw)
-            .map_err(|()| UiError::from("Invalid field number. Use decimal or 0x-prefixed hex."))?;
-        let n: u32 = n64.try_into().map_err(|_| UiError::from("Field number out of range."))?;
+            let n64 = parse_u64(&raw).map_err(|()| {
+                UiError::from("Invalid field number. Use decimal or 0x-prefixed hex.")
+            })?;
+            let n: u32 =
+                n64.try_into().map_err(|_| UiError::from("Field number out of range."))?;
 
-        let wt = insert_wire.get();
-        let tag = Tag::try_from_parts(n, wt)
-            .ok_or_else(|| UiError::from("Field number must be in 1..=(1<<29)-1."))?;
-        Ok(Some(tag))
-    });
+            let field = FieldNumber::new(n)
+                .ok_or_else(|| UiError::from("Field number must be in 1..=(1<<29)-1."))?;
+            Ok(Some(field))
+        });
 
     let insert_varint_validation: Memo<Result<Option<u64>, UiError>> = Memo::new(move |_| {
-        if patch_state.with(std::option::Option::is_none) {
+        if session_state.with(std::option::Option::is_none) {
             return Ok(None);
         }
-        if insert_wire.get() != WireType::Varint {
+        if insert_wire.get() != RecordKind::Varint {
             return Ok(None);
         }
         let raw = insert_varint_text.get();
@@ -583,22 +598,22 @@ pub(crate) fn InspectorDrawer() -> impl IntoView {
     });
 
     let insert_bytes_validation: Memo<Result<Option<Vec<u8>>, UiError>> = Memo::new(move |_| {
-        if patch_state.with(std::option::Option::is_none) {
+        if session_state.with(std::option::Option::is_none) {
             return Ok(None);
         }
-        if insert_wire.get() != WireType::Len {
+        if insert_wire.get() != RecordKind::Len {
             return Ok(None);
         }
         decode_bytes_view(&insert_bytes_text.get(), insert_bytes_view.get()).map(Some)
     });
 
     let insert_fixed_validation: Memo<Result<Option<u64>, UiError>> = Memo::new(move |_| {
-        if patch_state.with(std::option::Option::is_none) {
+        if session_state.with(std::option::Option::is_none) {
             return Ok(None);
         }
 
-        let wt = insert_wire.get();
-        if !matches!(wt, WireType::I32 | WireType::I64) {
+        let kind = insert_wire.get();
+        if !matches!(kind, RecordKind::I32 | RecordKind::I64) {
             return Ok(None);
         }
 
@@ -609,23 +624,27 @@ pub(crate) fn InspectorDrawer() -> impl IntoView {
         let v = parse_u64(&raw)
             .map_err(|()| UiError::from("Invalid fixed value. Use decimal or 0x-prefixed hex."))?;
 
-        if wt == WireType::I32 && v > u64::from(u32::MAX) {
+        if kind == RecordKind::I32 && v > u64::from(u32::MAX) {
             return Err("Invalid fixed32: value out of range for u32.".into());
         }
         Ok(Some(v))
     });
 
     let insert_enabled = Memo::new(move |_| {
-        if patch_state.with(std::option::Option::is_none) {
+        if session_state.with(std::option::Option::is_none) {
             return false;
         }
-        let Ok(Some(_tag)) = insert_tag_validation.get() else {
+        let Ok(Some(_field)) = insert_field_validation.get() else {
             return false;
         };
         match insert_wire.get() {
-            WireType::Varint => matches!(insert_varint_validation.get(), Ok(Some(_))),
-            WireType::Len => matches!(insert_bytes_validation.get(), Ok(Some(_))),
-            WireType::I32 | WireType::I64 => matches!(insert_fixed_validation.get(), Ok(Some(_))),
+            RecordKind::Varint => matches!(insert_varint_validation.get(), Ok(Some(_))),
+            RecordKind::Len => matches!(insert_bytes_validation.get(), Ok(Some(_))),
+            RecordKind::I32 | RecordKind::I64 => {
+                matches!(insert_fixed_validation.get(), Ok(Some(_)))
+            }
+            // The insert form never offers the group kind.
+            RecordKind::Group => false,
         }
     });
 
@@ -638,77 +657,72 @@ pub(crate) fn InspectorDrawer() -> impl IntoView {
             toast.show(ToastKind::Alert, "No data loaded.");
             return;
         };
+        let at = InsertAt::TailOf(target);
 
-        let Ok(Some(tag)) = insert_tag_validation.get_untracked() else {
-            toast.show(ToastKind::Alert, "Invalid tag.");
+        let Ok(Some(field)) = insert_field_validation.get_untracked() else {
+            toast.show(ToastKind::Alert, "Invalid field number.");
             return;
         };
 
-        let wt = insert_wire.get_untracked();
+        let kind = insert_wire.get_untracked();
 
-        let res = match wt {
-            WireType::Varint => {
+        let res = match kind {
+            RecordKind::Varint => {
                 let Ok(Some(value)) = insert_varint_validation.get_untracked() else {
                     toast.show(ToastKind::Alert, "Invalid varint.");
                     return;
                 };
-                edit_patch(patch_state, |patch| patch.insert_varint(target, tag, value))
+                edit_session(session_state, |session| session.insert_varint(at, field, value))
             }
-            WireType::Len => {
+            RecordKind::Len => {
                 let Ok(Some(bytes)) = insert_bytes_validation.get_untracked() else {
                     toast.show(ToastKind::Alert, "Invalid bytes payload.");
                     return;
                 };
-
-                let mut buf = Buf::new();
-                if let Err(e) = buf.extend_from_slice(&bytes) {
-                    toast.show(ToastKind::Alert, format!("Failed to allocate buffer: {e:?}"));
-                    return;
-                }
-
-                edit_patch(patch_state, |patch| patch.insert_bytes(target, tag, buf))
+                edit_session(session_state, |session| session.insert_payload(at, field, &bytes))
             }
-            WireType::I32 | WireType::I64 => {
+            RecordKind::I32 | RecordKind::I64 => {
                 let Ok(Some(value)) = insert_fixed_validation.get_untracked() else {
                     toast.show(ToastKind::Alert, "Invalid fixed value.");
                     return;
                 };
-                if wt == WireType::I32 {
-                    edit_patch(patch_state, |patch| {
-                        patch.insert_i32_bits(target, tag, value as u32)
+                if kind == RecordKind::I32 {
+                    edit_session(session_state, |session| {
+                        session.insert_i32(at, field, value as u32)
                     })
                 } else {
-                    edit_patch(patch_state, |patch| patch.insert_i64_bits(target, tag, value))
+                    edit_session(session_state, |session| session.insert_i64(at, field, value))
                 }
             }
+            // The insert form never offers the group kind.
+            RecordKind::Group => return,
         };
 
         match res {
-            Ok(fid) => {
+            Ok(handle) => {
                 dirty_fields.update(|s| {
-                    s.insert(fid);
+                    s.insert(handle);
                 });
-                selected.set(Some(fid));
+                selected.set(Some(handle));
             }
-            Err(e) => toast.show(ToastKind::Alert, format!("Insert failed: {e:?}")),
+            Err(e) => toast.show(ToastKind::Alert, format!("Insert failed: {e}")),
         }
     };
 
     let meta = Memo::new(move |_| {
-        let fid = selected.get()?;
-        patch_state.with(|p| {
-            let patch = p.as_ref()?;
-            let tag = patch.field_tag(fid).ok()?;
-            Some((fid, tag))
+        let handle = selected.get()?;
+        session_state.with(|s| {
+            let session = s.as_ref()?;
+            let field = session.field(handle).ok()?;
+            let kind = session.kind(handle).ok()?;
+            Some((field.as_inner(), kind))
         })
     });
 
     let header_title = Memo::new(move |_| {
         let t = locale.get().t();
-        if let Some((_fid, tag)) = meta.get() {
-            let field_number = tag.field_number().as_inner();
-            let wt = tag.wire_type();
-            return format!("{}: {} {field_number} ({wt:?})", t.inspector, t.field);
+        if let Some((field_number, kind)) = meta.get() {
+            return format!("{}: {} {field_number} ({kind})", t.inspector, t.field);
         }
         t.inspector.to_string()
     });
@@ -723,10 +737,10 @@ pub(crate) fn InspectorDrawer() -> impl IntoView {
         bytes_view_change_handler(insert_bytes_view, insert_bytes_text, toast);
     let on_insert_wire_change = UnsyncCallback::new(move |ev: leptos::ev::Event| {
         let v = event_target_value(&ev);
-        let Some(wt) = wire_type_from_value(v.trim()) else {
+        let Some(kind) = record_kind_from_value(v.trim()) else {
             return;
         };
-        insert_wire.set(wt);
+        insert_wire.set(kind);
     });
 
     let panel_header = move || {
@@ -768,14 +782,12 @@ pub(crate) fn InspectorDrawer() -> impl IntoView {
     let selected_field_view = move || {
         // `Show` gates on `meta.is_some()`, but re-evaluation order between
         // `when` and children is not guaranteed; never panic here.
-        let (_fid, tag) = meta.get()?;
-
-        let wt = tag.wire_type();
+        let (_field_number, kind) = meta.get()?;
 
         Some(view! {
             <>
                 <div class="inspector-editor">
-                    <Show when=move || wt == WireType::Varint fallback=|| ()>
+                    <Show when=move || kind == RecordKind::Varint fallback=|| ()>
                         <label class="inspector-label">"Varint"</label>
                         <input
                             class="input inspector-input"
@@ -789,14 +801,14 @@ pub(crate) fn InspectorDrawer() -> impl IntoView {
                                     let Ok(Some(v)) = varint_validation.get() else {
                                         return "—".to_string();
                                     };
-                                    let zz = protobuf_edit::varint::zigzag_decode64(v);
+                                    let zz = protobuf_edit::scalar::decode_sint64(v);
                                     format!("zigzag i64: {zz} | hex: 0x{v:X}")
                                 }}
                             </div>
                         </Show>
                     </Show>
 
-                    <Show when=move || wt == WireType::Len fallback=|| ()>
+                    <Show when=move || kind == RecordKind::Len fallback=|| ()>
                         <label class="inspector-label">"Bytes"</label>
                         <select
                             class="select inspector-select"
@@ -829,7 +841,10 @@ pub(crate) fn InspectorDrawer() -> impl IntoView {
                         </Show>
                     </Show>
 
-                    <Show when=move || matches!(wt, WireType::I32 | WireType::I64) fallback=|| ()>
+                    <Show
+                        when=move || matches!(kind, RecordKind::I32 | RecordKind::I64)
+                        fallback=|| ()
+                    >
                         <label class="inspector-label">"Fixed"</label>
                         <input
                             class="input inspector-input"
@@ -843,14 +858,14 @@ pub(crate) fn InspectorDrawer() -> impl IntoView {
                                     let Ok(Some(v)) = fixed_validation.get() else {
                                         return "—".to_string();
                                     };
-                                    match wt {
-                                        WireType::I32 => {
+                                    match kind {
+                                        RecordKind::I32 => {
                                             let bits = v as u32;
                                             let signed = bits as i32;
                                             let float = f32::from_bits(bits);
                                             format!("u32: {bits} | i32: {signed} | f32: {float}")
                                         }
-                                        WireType::I64 => {
+                                        RecordKind::I64 => {
                                             let signed = v as i64;
                                             let float = f64::from_bits(v);
                                             format!("u64: {v} | i64: {signed} | f64: {float}")
@@ -890,7 +905,7 @@ pub(crate) fn InspectorDrawer() -> impl IntoView {
                                 .get()
                                 .map_or_else(
                                     || format!("{}: —", t.target),
-                                    |(msg, label)| format!("{}: {label} ({msg:?})", t.target),
+                                    |(_container, label)| format!("{}: {label}", t.target),
                                 )
                         }}
                     </div>
@@ -905,21 +920,21 @@ pub(crate) fn InspectorDrawer() -> impl IntoView {
                         prop:value=move || insert_field_number.get()
                         on:input=move |ev| insert_field_number.set(event_target_value(&ev))
                     />
-                    {validation_error(insert_tag_validation)}
+                    {validation_error(insert_field_validation)}
 
                     <label class="inspector-label">{move || locale.get().t().wire_type}</label>
                     <select
                         class="select inspector-select"
-                        prop:value=move || wire_type_value(insert_wire.get())
+                        prop:value=move || record_kind_value(insert_wire.get())
                         on:change=move |ev| on_insert_wire_change.run(ev)
                     >
-                        <option value={wire_type_value(WireType::Varint)}>"Varint"</option>
-                        <option value={wire_type_value(WireType::Len)}>"Len"</option>
-                        <option value={wire_type_value(WireType::I32)}>"I32 (fixed32)"</option>
-                        <option value={wire_type_value(WireType::I64)}>"I64 (fixed64)"</option>
+                        <option value={record_kind_value(RecordKind::Varint)}>"Varint"</option>
+                        <option value={record_kind_value(RecordKind::Len)}>"Len"</option>
+                        <option value={record_kind_value(RecordKind::I32)}>"I32 (fixed32)"</option>
+                        <option value={record_kind_value(RecordKind::I64)}>"I64 (fixed64)"</option>
                     </select>
 
-                    <Show when=move || insert_wire.get() == WireType::Varint fallback=|| ()>
+                    <Show when=move || insert_wire.get() == RecordKind::Varint fallback=|| ()>
                         <label class="inspector-label">{move || locale.get().t().value}</label>
                         <input
                             class="input inspector-input"
@@ -937,14 +952,14 @@ pub(crate) fn InspectorDrawer() -> impl IntoView {
                                     let Ok(Some(v)) = insert_varint_validation.get() else {
                                         return "—".to_string();
                                     };
-                                    let zz = protobuf_edit::varint::zigzag_decode64(v);
+                                    let zz = protobuf_edit::scalar::decode_sint64(v);
                                     format!("zigzag i64: {zz} | hex: 0x{v:X}")
                                 }}
                             </div>
                         </Show>
                     </Show>
 
-                    <Show when=move || insert_wire.get() == WireType::Len fallback=|| ()>
+                    <Show when=move || insert_wire.get() == RecordKind::Len fallback=|| ()>
                         <label class="inspector-label">"Bytes"</label>
                         <select
                             class="select inspector-select"
@@ -982,7 +997,7 @@ pub(crate) fn InspectorDrawer() -> impl IntoView {
                     </Show>
 
                     <Show
-                        when=move || matches!(insert_wire.get(), WireType::I32 | WireType::I64)
+                        when=move || matches!(insert_wire.get(), RecordKind::I32 | RecordKind::I64)
                         fallback=|| ()
                     >
                         <label class="inspector-label">{move || locale.get().t().bits}</label>
@@ -1003,11 +1018,11 @@ pub(crate) fn InspectorDrawer() -> impl IntoView {
                                         return "—".to_string();
                                     };
                                     match insert_wire.get() {
-                                        WireType::I32 => {
+                                        RecordKind::I32 => {
                                             let bits = v as u32;
                                             format!("u32: {bits} | hex: 0x{bits:08X}")
                                         }
-                                        WireType::I64 => format!("u64: {v} | hex: 0x{v:016X}"),
+                                        RecordKind::I64 => format!("u64: {v} | hex: 0x{v:016X}"),
                                         _ => "—".to_string(),
                                     }
                                 }}
@@ -1210,47 +1225,24 @@ fn truncate_for_hint(text: &str, max_chars: usize) -> String {
     out
 }
 
-const fn wire_type_value(wt: WireType) -> &'static str {
-    match wt {
-        WireType::Varint => "varint",
-        WireType::Len => "len",
-        WireType::I32 => "i32",
-        WireType::I64 => "i64",
+// Group is deliberately absent: the insert form only authors the four
+// scalar/payload kinds.
+const fn record_kind_value(kind: RecordKind) -> &'static str {
+    match kind {
+        RecordKind::Varint => "varint",
+        RecordKind::Len => "len",
+        RecordKind::I32 => "i32",
+        RecordKind::I64 => "i64",
+        RecordKind::Group => "varint",
     }
 }
 
-fn wire_type_from_value(value: &str) -> Option<WireType> {
+fn record_kind_from_value(value: &str) -> Option<RecordKind> {
     match value {
-        "varint" => Some(WireType::Varint),
-        "len" => Some(WireType::Len),
-        "i32" => Some(WireType::I32),
-        "i64" => Some(WireType::I64),
+        "varint" => Some(RecordKind::Varint),
+        "len" => Some(RecordKind::Len),
+        "i32" => Some(RecordKind::I32),
+        "i64" => Some(RecordKind::I64),
         _ => None,
     }
-}
-
-fn collect_reachable_fields(
-    patch: &Patch,
-    msg: protobuf_edit::patch::MessageId,
-    out: &mut Vec<FieldId>,
-) {
-    let Ok(fields) = patch.message_fields(msg) else {
-        return;
-    };
-    for fid in fields {
-        out.push(fid);
-        let Ok(Some(child)) = patch.field_child_message(fid) else {
-            continue;
-        };
-        collect_reachable_fields(patch, child, out);
-    }
-}
-
-fn collect_child_subtree(patch: &Patch, field: FieldId) -> Vec<FieldId> {
-    let Ok(Some(child)) = patch.field_child_message(field) else {
-        return Vec::new();
-    };
-    let mut out = Vec::new();
-    collect_reachable_fields(patch, child, &mut out);
-    out
 }

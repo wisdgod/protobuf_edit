@@ -1,40 +1,33 @@
 use crate::state::{UiState, WorkspaceState};
 use crate::toast::ToastKind;
+use crate::workspace::shown_children;
 use leptos::html;
 use leptos::prelude::*;
-use protobuf_edit::patch::{FieldId, MessageId};
-use protobuf_edit::{Patch, TreeError, WireType};
+use protobuf_edit::session::Handle;
+use protobuf_edit::wire::grouped::RecordKind;
 
+/// One tree layer: the top layer for `parent == None`, a container's
+/// interior otherwise.
 #[component]
-pub(crate) fn FieldTree(msg: MessageId, depth: usize) -> AnyView {
+pub(crate) fn FieldTree(parent: Option<Handle>, depth: usize) -> AnyView {
     let workspace = expect_context::<WorkspaceState>();
-    let patch_state = workspace.patch_state;
+    let session_state = workspace.session;
 
     let fields = Memo::new(move |_| {
-        patch_state.with(|p| {
-            let Some(patch) = p.as_ref() else {
+        session_state.with(|s| {
+            let Some(session) = s.as_ref() else {
                 return Vec::new();
             };
-            let Ok(fields) = patch.message_fields(msg) else {
-                return Vec::new();
-            };
-            let mut out = Vec::with_capacity(fields.len());
-            for fid in fields {
-                if matches!(patch.field_is_deleted(fid), Ok(true)) {
-                    continue;
-                }
-                out.push(fid);
-            }
-            out
+            shown_children(session, parent).collect()
         })
     });
 
     view! {
         <For
             each=move || fields.get()
-            key=|fid| fid.as_inner()
-            children=move |fid| view! {
-                <FieldRow field=fid depth=depth />
+            key=|handle| *handle
+            children=move |handle| view! {
+                <FieldRow field=handle depth=depth />
             }
         />
     }
@@ -42,10 +35,10 @@ pub(crate) fn FieldTree(msg: MessageId, depth: usize) -> AnyView {
 }
 
 #[component]
-fn FieldRow(field: FieldId, depth: usize) -> AnyView {
+fn FieldRow(field: Handle, depth: usize) -> AnyView {
     let workspace = expect_context::<WorkspaceState>();
     let ui = expect_context::<UiState>();
-    let patch_state = workspace.patch_state;
+    let session_state = workspace.session;
     let selected = workspace.selected;
     let hovered = workspace.hovered;
     let expanded = workspace.expanded;
@@ -54,12 +47,11 @@ fn FieldRow(field: FieldId, depth: usize) -> AnyView {
     let toast = ui.toast;
 
     let tag_info = Memo::new(move |_| {
-        patch_state.with(|p| {
-            let patch = p.as_ref()?;
-            let tag = patch.field_tag(field).ok()?;
-            let n = tag.field_number().as_inner();
-            let wt = tag.wire_type();
-            Some((n, wt))
+        session_state.with(|s| {
+            let session = s.as_ref()?;
+            let n = session.field(field).ok()?.as_inner();
+            let kind = session.kind(field).ok()?;
+            Some((n, kind))
         })
     });
 
@@ -67,69 +59,67 @@ fn FieldRow(field: FieldId, depth: usize) -> AnyView {
     let is_expanded = move || expanded.with(|s| s.contains(&field));
     let is_dirty = move || dirty_fields.with(|s| s.contains(&field));
 
-    // The expand affordance of a Len field is three-state: undetermined
-    // until a click settles it (a successful parse leaves a child, a
-    // failed one lands in `parse_failed`), then definitely yes or no.
+    // The expand affordance of a container is three-state: undetermined
+    // until a click settles it (a successful descend leaves children, a
+    // faulted one lands in `parse_failed`), then definitely yes or no.
     // No payload pre-scan: the answer is revealed lazily.
     let is_failed = Memo::new(move |_| parse_failed.with(|s| s.contains(&field)));
 
-    // Deliberately not a memo: expansion parses the child through
-    // `try_update_untracked` (no patch_state notification, to avoid a
+    // Deliberately not a memo: expansion descends the container through
+    // `try_update_untracked` (no session notification, to avoid a
     // whole-tree rerender), which would leave a memo stale on collapse.
     // The icon closure re-runs on every `expanded` change and reads the
-    // current child then.
+    // current children then.
     let has_child = move || {
-        patch_state.with(|p| {
-            p.as_ref()
-                .is_some_and(|patch| matches!(patch.field_child_message(field), Ok(Some(_))))
+        session_state.with(|s| {
+            s.as_ref().is_some_and(|session| shown_children(session, Some(field)).next().is_some())
         })
     };
 
     let is_expandable = Memo::new(move |_| {
-        matches!(tag_info.get().map(|(_, wt)| wt), Some(WireType::Len)) && !is_failed.get()
-    });
-
-    let child_msg = Memo::new(move |_| {
-        if !is_expanded() {
-            return None;
-        }
-        patch_state.with(|p| {
-            let patch = p.as_ref()?;
-            patch.field_child_message(field).ok().flatten()
-        })
+        matches!(
+            tag_info.get().map(|(_, kind)| kind),
+            Some(RecordKind::Len | RecordKind::Group)
+        ) && !is_failed.get()
     });
 
     let payload_summary = Memo::new(move |_| {
-        patch_state.with(|p| {
-            let Some(patch) = p.as_ref() else {
+        session_state.with(|s| {
+            let Some(session) = s.as_ref() else {
                 return "—".to_string();
             };
             match tag_info.get() {
-                Some((_n, WireType::Varint)) => {
-                    patch.varint(field).map_or_else(|_| "varint(?)".to_string(), |v| format!("{v}"))
-                }
-                Some((_n, WireType::Len)) => {
-                    patch.bytes(field).map_or_else(|_| "len(?)".to_string(), format_len_summary)
-                }
-                Some((_n, WireType::I32)) => fixed32_bits(patch, field)
+                Some((_n, RecordKind::Varint)) => session
+                    .varint_word(field)
+                    .map_or_else(|_| "varint(?)".to_string(), |v| format!("{v}")),
+                Some((_n, RecordKind::Len)) => session
+                    .payload_bytes(field)
+                    .map_or_else(|_| "len(?)".to_string(), format_len_summary),
+                Some((_n, RecordKind::I32)) => session
+                    .i32_bits(field)
                     .map_or_else(|_| "i32(?)".to_string(), |bits| format!("0x{bits:08X}")),
-                Some((_n, WireType::I64)) => fixed64_bits(patch, field)
+                Some((_n, RecordKind::I64)) => session
+                    .i64_bits(field)
                     .map_or_else(|_| "i64(?)".to_string(), |bits| format!("0x{bits:016X}")),
+                Some((_n, RecordKind::Group)) => {
+                    format!("group · {} field(s)", shown_children(session, Some(field)).count())
+                }
                 None => "—".to_string(),
             }
         })
     });
 
-    let badge_class = move || match tag_info.get().map(|(_, wt)| wt) {
-        Some(WireType::Varint) => "tag-badge tag-badge--varint",
-        Some(WireType::I64) => "tag-badge tag-badge--i64",
-        Some(WireType::Len) => "tag-badge tag-badge--len",
-        Some(WireType::I32) => "tag-badge tag-badge--i32",
+    let badge_class = move || match tag_info.get().map(|(_, kind)| kind) {
+        Some(RecordKind::Varint) => "tag-badge tag-badge--varint",
+        Some(RecordKind::I64) => "tag-badge tag-badge--i64",
+        // Groups borrow the LEN palette: both are containers.
+        Some(RecordKind::Len | RecordKind::Group) => "tag-badge tag-badge--len",
+        Some(RecordKind::I32) => "tag-badge tag-badge--i32",
         None => "tag-badge",
     };
 
     let badge_label = move || match tag_info.get() {
-        Some((n, wt)) => format!("{n} {wt:?}"),
+        Some((n, kind)) => format!("{n} {kind}"),
         None => "?".to_string(),
     };
 
@@ -166,8 +156,8 @@ fn FieldRow(field: FieldId, depth: usize) -> AnyView {
             return;
         }
 
-        match crate::workspace::parse_child_untracked(patch_state, field) {
-            Ok(_child) => expanded.update(|s| {
+        match crate::workspace::descend_untracked(session_state, field) {
+            Ok(()) => expanded.update(|s| {
                 s.insert(field);
             }),
             Err(e) => {
@@ -175,7 +165,7 @@ fn FieldRow(field: FieldId, depth: usize) -> AnyView {
                 parse_failed.update(|s| {
                     s.insert(field);
                 });
-                toast.show(ToastKind::Alert, format!("Failed to parse child message: {e:?}"));
+                toast.show(ToastKind::Alert, format!("Failed to open container: {e}"));
             }
         }
     };
@@ -223,7 +213,7 @@ fn FieldRow(field: FieldId, depth: usize) -> AnyView {
             </div>
 
             {move || {
-                child_msg.get().map(|child| view! { <FieldTree msg=child depth=depth + 1 /> })
+                is_expanded().then(|| view! { <FieldTree parent=Some(field) depth=depth + 1 /> })
             }}
         </>
     }
@@ -263,12 +253,4 @@ fn printable_ascii(bytes: &[u8]) -> Option<&str> {
     }
     // SAFETY: ASCII-only bytes are valid UTF-8.
     Some(unsafe { core::str::from_utf8_unchecked(bytes) })
-}
-
-fn fixed32_bits(patch: &Patch, field: FieldId) -> Result<u32, TreeError> {
-    patch.i32_bits(field)
-}
-
-fn fixed64_bits(patch: &Patch, field: FieldId) -> Result<u64, TreeError> {
-    patch.i64_bits(field)
 }

@@ -1,77 +1,55 @@
-use protobuf_edit::patch::{FieldId, ValueSpans};
-use protobuf_edit::{Patch, WireType};
+use super::is_shown;
+use protobuf_edit::session::grouped::{Descent, RecordSpans, Session};
+use protobuf_edit::session::Handle;
+use protobuf_edit::wire::grouped::RecordKind;
 
-pub(crate) fn drilldown_byte(patch: &mut Patch, idx: usize) -> (Option<FieldId>, Vec<FieldId>) {
-    let mut msg = patch.root();
-    let mut expand = Vec::new();
-    let mut selected = None;
-    let mut depth: u32 = 0;
+/// Resolves a hex-grid byte to the deepest record containing it,
+/// descending LEN payloads on the way (group interiors are already
+/// materialized, so `narrowest` sees through them by itself).
+/// Returns the record plus its container chain for the tree to
+/// expand.
+pub(crate) fn drilldown_byte(session: &mut Session, idx: usize) -> (Option<Handle>, Vec<Handle>) {
+    let Ok(pos) = u32::try_from(idx) else {
+        return (None, Vec::new());
+    };
 
-    loop {
-        depth = depth.saturating_add(1);
-        if depth > 128 {
+    let mut current: Option<Handle> = None;
+    // After each successful descend `narrowest` lands strictly
+    // deeper; the bound mirrors the tree's own depth tolerance.
+    for _ in 0..128 {
+        let Some(handle) = session.narrowest(pos) else { break };
+        if current == Some(handle) {
             break;
         }
+        current = Some(handle);
 
-        let Ok(fields) = patch.message_fields(msg) else { break };
-
-        let mut best: Option<(FieldId, protobuf_edit::patch::Span)> = None;
-        for fid in fields {
-            if matches!(patch.field_is_deleted(fid), Ok(true)) {
-                continue;
-            }
-            let Ok(Some(spans)) = patch.field_root_spans(fid) else {
-                continue;
-            };
-            let field_span = spans.field;
-            let start = field_span.start() as usize;
-            let end = field_span.end() as usize;
-            if start <= idx && idx < end {
-                best = match best {
-                    None => Some((fid, field_span)),
-                    Some((prev, prev_span)) => {
-                        if field_span.len() < prev_span.len() {
-                            Some((fid, field_span))
-                        } else {
-                            Some((prev, prev_span))
-                        }
-                    }
-                };
-            }
-        }
-
-        let Some((fid, _span)) = best else {
-            break;
-        };
-        selected = Some(fid);
-
-        let Ok(tag) = patch.field_tag(fid) else {
-            break;
-        };
-        if tag.wire_type() != WireType::Len {
+        if session.kind(handle) != Ok(RecordKind::Len) {
             break;
         }
-
-        let Ok(Some(root_spans)) = patch.field_root_spans(fid) else {
-            break;
-        };
-        let ValueSpans::Len { payload, .. } = root_spans.value else {
-            break;
-        };
-        let payload_start = payload.start() as usize;
-        let payload_end = payload.end() as usize;
-        if idx < payload_start || idx >= payload_end {
+        let payload_hit = matches!(
+            session.source_spans(handle),
+            Ok(Some(RecordSpans::Len { payload, .. }))
+                if payload.start() <= pos && pos < payload.end()
+        );
+        if !payload_hit {
             break;
         }
-
-        match patch.parse_child_message(fid) {
-            Ok(child) => {
-                expand.push(fid);
-                msg = child;
-            }
-            Err(_) => break,
+        if !matches!(session.descend(handle), Ok(Descent::Opened { .. })) {
+            break;
         }
     }
 
-    (selected, expand)
+    // A shrouded record is not selectable; its nearest presentable
+    // ancestor answers instead.
+    while let Some(handle) = current {
+        if is_shown(session, handle) {
+            break;
+        }
+        current = session.parent(handle).ok().flatten();
+    }
+
+    let expand = current.map_or_else(Vec::new, |handle| {
+        session.ancestors(handle).ok().into_iter().flatten().collect()
+    });
+    (current, expand)
 }
